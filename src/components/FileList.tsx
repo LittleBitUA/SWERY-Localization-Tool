@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { useStore, type TreeNode } from "../lib/store";
 import { useT } from "../lib/i18n";
+import { alert as showAlert, confirm as showConfirm } from "../lib/dialogs";
 
 interface CtxMenuState { x: number; y: number; node: TreeNode }
 
@@ -159,11 +160,15 @@ export function FileList() {
 
   async function handleRestore(node: TreeNode) {
     setCtxMenu(null);
-    const confirmed = window.confirm(t("files.confirmRestore", { name: node.name }));
+    const confirmed = await showConfirm(
+      t("files.confirmRestoreTitle"),
+      t("files.confirmRestore", { name: node.name }),
+      { tone: "danger", okLabel: t("files.restoreOriginal") }
+    );
     if (!confirmed) return;
     const ok = await restoreOriginal(node.path);
     if (!ok) {
-      alert(t("files.noBackup"));
+      await showAlert(t("dialog.error"), t("files.noBackup"));
     }
   }
 

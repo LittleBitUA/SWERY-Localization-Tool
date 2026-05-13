@@ -3,14 +3,16 @@ import Editor, { type OnMount } from "@monaco-editor/react";
 import { useDp1Store, dp1Key } from "./store";
 import { dp1Stats, isDp1Translated, bracesBalanced } from "./parser";
 import { useT } from "../../lib/i18n";
-import { LangToggle } from "../../components/LangToggle";
+import { useAutosave } from "../../lib/useAutosave";
 import { TmPanel } from "../../components/TmPanel";
 import { GlossaryModal } from "../../components/GlossaryModal";
+import { CorpusStatsModal } from "../../components/CorpusStatsModal";
 import { MetricsBadge } from "../../components/MetricsBadge";
 import { ColResizer } from "../../components/ColResizer";
-import { WrapToggle, type WrapMode } from "../../components/WrapToggle";
+import type { WrapMode } from "../../components/WrapToggle";
 import { useLocalStorage } from "../../lib/useLocalStorage";
 import { readGlossary, type GlossaryEntry } from "../../lib/glossary";
+import { alert as showAlert } from "../../lib/dialogs";
 
 interface Dp1ColWidths {
   num: number;
@@ -81,6 +83,11 @@ export function Dp1Editor({ onHome, onOpenSettings }: Dp1EditorProps) {
   const bulkTrim = useDp1Store((s) => s.bulkTrim);
   const exportTxt = useDp1Store((s) => s.exportTxt);
   const importTxtContent = useDp1Store((s) => s.importTxtContent);
+  const undo = useDp1Store((s) => s.undo);
+  const autosave = useDp1Store((s) => s.autosave);
+  const lastAutosaveAt = useDp1Store((s) => s.lastAutosaveAt);
+
+  useAutosave(dirty, autosave);
 
   async function handleExportTxt() {
     const r = exportTxt();
@@ -92,7 +99,7 @@ export function Dp1Editor({ onHome, onOpenSettings }: Dp1EditorProps) {
     });
     if (!dest) return;
     await window.dp2.writeFile(dest, r.content);
-    alert(t("txt.exported", { path: dest }));
+    await showAlert(t("dialog.exportSuccess"), t("txt.exported", { path: dest }), { tone: "success" });
   }
 
   async function handleImportTxt() {
@@ -103,16 +110,17 @@ export function Dp1Editor({ onHome, onOpenSettings }: Dp1EditorProps) {
     if (!src) return;
     const txt = await window.dp2.readFile(src);
     const { applied, missing } = importTxtContent(txt);
-    alert(t("txt.imported", { applied, missing }));
+    await showAlert(t("dialog.importResult"), t("txt.imported", { applied, missing }));
   }
 
   const [packState, setPackState] = useState<"idle" | "packing" | "done" | "error">("idle");
   const [packMsg, setPackMsg] = useState("");
+  const [statsOpen, setStatsOpen] = useState(false);
   const [selection, setSelection] = useState<Set<number>>(new Set());
   const [ctxMenu, setCtxMenu] = useState<{ x: number; y: number; index: number } | null>(null);
   const [colWidths, setColWidths] = useLocalStorage<Dp1ColWidths>("dp1.ui.tableCols", DP1_DEFAULT_COL_WIDTHS);
   const setCol = (k: keyof Dp1ColWidths) => (w: number) => setColWidths({ ...colWidths, [k]: w });
-  const [wrapMode, setWrapMode] = useLocalStorage<WrapMode>("dp1.ui.tableWrap", "default");
+  const [wrapMode] = useLocalStorage<WrapMode>("dp1.ui.tableWrap", "default");
   const wrapCls =
     wrapMode === "wrap" ? "whitespace-pre-wrap break-words"
     : wrapMode === "clip" ? "line-clamp-1 whitespace-pre-wrap break-words"
@@ -221,10 +229,16 @@ export function Dp1Editor({ onHome, onOpenSettings }: Dp1EditorProps) {
         bulkSetStatus(realIndices, undefined);
         return;
       }
+      // Ctrl+Z — скасувати останню масову зміну (імпорт .txt тощо).
+      if (ctrl && !e.shiftKey && !e.altKey && e.key.toLowerCase() === "z") {
+        e.preventDefault();
+        undo();
+        return;
+      }
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [activeIndex, selection, entries, toggleBookmark, bulkSetStatus]);
+  }, [activeIndex, selection, entries, toggleBookmark, bulkSetStatus, undo]);
 
   // Глобальні шорткати редагування — як у DP2 редакторі.
   useEffect(() => {
@@ -334,7 +348,6 @@ export function Dp1Editor({ onHome, onOpenSettings }: Dp1EditorProps) {
           </button>
           <span className="text-[13px] text-[var(--text-muted)]">{t("dp1.brand")}</span>
           <div className="flex-1" />
-          <LangToggle compact />
         </header>
         <div className="flex-1 flex items-center justify-center p-8">
           <div className="max-w-[520px] text-center">
@@ -379,7 +392,15 @@ export function Dp1Editor({ onHome, onOpenSettings }: Dp1EditorProps) {
           </span>
         )}
 
-        <LangToggle compact />
+        <button
+          className="dp-btn dp-btn--ghost"
+          onClick={() => setStatsOpen(true)}
+          title={t("stats.btn")}
+        >
+          <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+            <path strokeLinecap="round" strokeLinejoin="round" d="M9 19V9m4 10V5m4 14v-6M5 19h14" />
+          </svg>
+        </button>
         <button className="dp-btn dp-btn--ghost" onClick={onOpenSettings} title={t("dp1.set.title")}>
           <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
             <path strokeLinecap="round" strokeLinejoin="round" d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z" />
@@ -387,6 +408,16 @@ export function Dp1Editor({ onHome, onOpenSettings }: Dp1EditorProps) {
           </svg>
         </button>
         <button className="dp-btn" onClick={pickEng}>{t("btn.open")}</button>
+        {dirty && lastAutosaveAt && (
+          <span
+            className="text-[10.5px] text-[var(--text-faint)] tabular-nums whitespace-nowrap"
+            title={t("autosave.savedAt", {
+              time: new Date(lastAutosaveAt).toLocaleTimeString(),
+            })}
+          >
+            ● {t("autosave.saved")}
+          </span>
+        )}
         <button
           className="dp-btn"
           disabled={!dirty}
@@ -450,8 +481,6 @@ export function Dp1Editor({ onHome, onOpenSettings }: Dp1EditorProps) {
               </svg>
               {t("txt.import")}
             </button>
-
-            <WrapToggle value={wrapMode} onChange={setWrapMode} />
           </div>
 
           <div className="flex-1 overflow-auto">
@@ -815,6 +844,11 @@ export function Dp1Editor({ onHome, onOpenSettings }: Dp1EditorProps) {
           setGlossaryOpen(false);
           if (saved) setGlossary(saved);
         }}
+      />
+      <CorpusStatsModal
+        open={statsOpen}
+        onClose={() => setStatsOpen(false)}
+        mode="dp1"
       />
     </div>
   );

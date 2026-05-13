@@ -172,13 +172,23 @@ ipcMain.handle("dp2:pick-save-file", async (_event, options) => {
   return result.filePath;
 });
 
+// Файли, які НЕ є user-візибл DP2-дампами і мають бути приховані у tree/listings.
+function isHiddenJson(name) {
+  return name.endsWith(".bak.json")
+    || name.endsWith(".autosave.json")
+    || name.endsWith(".dp-status.json")
+    || name.endsWith("_ua_work.json")
+    || name.endsWith("_ua_done.json")
+    || name.endsWith(".dp2-glossary.json");
+}
+
 // ── IPC: list JSON files ─────────────────────────────────────────
 ipcMain.handle("dp2:list-files", async (_event, folder) => {
   if (!folder) return [];
   const entries = await fs.readdir(folder, { withFileTypes: true });
   return entries
     .filter((e) => e.isFile() && e.name.toLowerCase().endsWith(".json"))
-    .filter((e) => !e.name.endsWith(".bak.json"))
+    .filter((e) => !isHiddenJson(e.name))
     .map((e) => e.name)
     .sort();
 });
@@ -197,7 +207,7 @@ async function readTree(dir) {
     } else if (
       e.isFile() &&
       e.name.toLowerCase().endsWith(".json") &&
-      !e.name.endsWith(".bak.json")
+      !isHiddenJson(e.name)
     ) {
       files.push({ type: "file", name: e.name, path: fullPath });
     }
@@ -260,7 +270,7 @@ async function collectJsonFiles(dir) {
     } else if (
       e.isFile() &&
       e.name.toLowerCase().endsWith(".json") &&
-      !e.name.endsWith(".bak.json")
+      !isHiddenJson(e.name)
     ) {
       out.push(full);
     }
@@ -283,10 +293,41 @@ ipcMain.handle("dp2:read-all", async (_event, folder) => {
   return result.filter(Boolean);
 });
 
+// ── IPC: autosave sidecar ────────────────────────────────────────
+// Пишемо `<file>.autosave.json` поруч з оригіналом — НЕ створюючи .bak і
+// НЕ чіпаючи реальний файл. При успішному saveFile цей sidecar видаляється.
+function autosavePathFor(fullPath) {
+  return fullPath.replace(/\.json$/i, ".autosave.json");
+}
+ipcMain.handle("dp2:write-autosave", async (_e, fullPath, content) => {
+  const dest = autosavePathFor(fullPath);
+  await fs.writeFile(dest, content, "utf8");
+  return dest;
+});
+ipcMain.handle("dp2:read-autosave", async (_e, fullPath) => {
+  const ap = autosavePathFor(fullPath);
+  try {
+    const [content, st] = await Promise.all([
+      fs.readFile(ap, "utf8"),
+      fs.stat(ap),
+    ]);
+    let originalMtime = 0;
+    try { originalMtime = (await fs.stat(fullPath)).mtimeMs; } catch {}
+    return { content, autosaveMtime: st.mtimeMs, originalMtime };
+  } catch {
+    return null;
+  }
+});
+ipcMain.handle("dp2:delete-autosave", async (_e, fullPath) => {
+  const ap = autosavePathFor(fullPath);
+  try { await fs.unlink(ap); return true; } catch { return false; }
+});
+
 // Heavy-worker задачі: всю важку роботу робить worker_threads — main залишається responsive.
-ipcMain.handle("dp2:scan-all", async (_event, folder) => callHeavy("scan-all", folder));
 ipcMain.handle("dp2:build-tm-worker", async (_event, payload) => callHeavy("build-tm", payload));
 ipcMain.handle("dp2:search-all-worker", async (_event, payload) => callHeavy("search-all", payload));
+ipcMain.handle("dp2:corpus-stats-worker", async (_event, payload) => callHeavy("corpus-stats", payload));
+ipcMain.handle("dp2:glossary-consistency-worker", async (_event, payload) => callHeavy("glossary-consistency", payload));
 
 // ── IPC: settings ────────────────────────────────────────────────
 ipcMain.handle("dp2:get-settings", async () => readSettings());

@@ -45,6 +45,8 @@ interface Dp1State {
   loading: boolean;
   error: string | null;
   saveTick: number;
+  /** ms таймстамп останнього успішного авто-збереження workfile. */
+  lastAutosaveAt: number | null;
   statuses: StatusFile;
 
   init: () => Promise<void>;
@@ -57,6 +59,8 @@ interface Dp1State {
   copyOriginalToTranslation: () => void;
   updateActive: (text: string) => void;
   saveWorkfile: () => Promise<void>;
+  /** Debounce-friendly авто-збереження у workfile (alias saveWorkfile + позначка часу). */
+  autosave: () => Promise<void>;
   saveDone: () => Promise<string | null>;
   // status helpers
   setEntryStatus: (i: number, status: StatusKind | undefined) => Promise<void>;
@@ -66,6 +70,11 @@ interface Dp1State {
   bulkTrim: (indices: number[]) => void;
   exportTxt: () => { fileName: string; content: string } | null;
   importTxtContent: (txt: string) => { applied: number; missing: number };
+  // Undo для масових операцій
+  undoStack: Array<{ label: string; uaTexts: string[]; entries: Dp1Entry[] }>;
+  pushUndo: (label: string) => void;
+  canUndo: () => boolean;
+  undo: () => boolean;
 }
 
 function sha1(_s: string): string {
@@ -87,7 +96,9 @@ export const useDp1Store = create<Dp1State>((set, get) => ({
   loading: false,
   error: null,
   saveTick: 0,
+  lastAutosaveAt: null,
   statuses: emptyStatusFile(),
+  undoStack: [],
 
   async init() {
     try {
@@ -227,6 +238,15 @@ export const useDp1Store = create<Dp1State>((set, get) => ({
     set({ saveTick: get().saveTick + 1, dirty: false });
   },
 
+  async autosave() {
+    const { engPath, dirty } = get();
+    if (!engPath || !dirty) return;
+    try {
+      await get().saveWorkfile();
+      set({ lastAutosaveAt: Date.now() });
+    } catch {}
+  },
+
   async saveDone() {
     const { engPath, records, uaTexts } = get();
     if (!engPath) return null;
@@ -323,21 +343,28 @@ export const useDp1Store = create<Dp1State>((set, get) => ({
     const { entries, engPath } = get();
     if (!entries.length || !engPath) return null;
     const fileName = (engPath.split(/[\\/]/).pop() ?? "export").replace(/\.json$/i, "");
-    // DP1 не має speaker — лише текст. У формат текстів усе одно лізуть теги.
+    const HAS_CYR = /[Ѐ-ӿ]/;
     const exportEntries: ExportEntry[] = entries
       .filter((e) => !e.empty)
-      .map((e) => ({
-        index: e.index + 1, // 1-based
-        speaker: undefined,
-        text: e.original,
-        hint: `${e.id} flags ${e.flags}`,
-      }));
+      .map((e) => {
+        // Якщо переклад уже є (UA містить кирилицю і відрізняється від ENG) —
+        // експортуємо саме його, щоб людина продовжила; інакше — англ-оригінал.
+        const isAlreadyTranslated =
+          !!e.ua && e.ua !== e.original && HAS_CYR.test(e.ua);
+        return {
+          index: e.index + 1,
+          speaker: undefined,
+          text: isAlreadyTranslated ? e.ua : e.original,
+          hint: `${e.id} flags ${e.flags}`,
+        };
+      });
     const content = buildTxt(`DP1: ${fileName}`, exportEntries);
     return { fileName, content };
   },
 
   importTxtContent(txt) {
     const { entries, uaTexts } = get();
+    get().pushUndo("import-txt");
     const blocks = parseTxt(txt);
     let applied = 0;
     let missing = 0;
@@ -354,5 +381,30 @@ export const useDp1Store = create<Dp1State>((set, get) => ({
     }
     if (applied > 0) set({ uaTexts: nextUa, entries: nextEntries, dirty: true });
     return { applied, missing };
+  },
+
+  pushUndo(label) {
+    const { undoStack, uaTexts, entries } = get();
+    const snapshot = { label, uaTexts: uaTexts.slice(), entries: entries.slice() };
+    const nextStack = [...undoStack, snapshot];
+    while (nextStack.length > 10) nextStack.shift();
+    set({ undoStack: nextStack });
+  },
+
+  canUndo() {
+    return get().undoStack.length > 0;
+  },
+
+  undo() {
+    const { undoStack } = get();
+    if (!undoStack.length) return false;
+    const snap = undoStack[undoStack.length - 1];
+    set({
+      uaTexts: snap.uaTexts,
+      entries: snap.entries,
+      undoStack: undoStack.slice(0, -1),
+      dirty: true,
+    });
+    return true;
   },
 }));

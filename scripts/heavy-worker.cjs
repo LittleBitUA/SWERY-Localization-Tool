@@ -30,6 +30,7 @@ async function collectJsonFiles(dir) {
       e.isFile() &&
       e.name.toLowerCase().endsWith('.json') &&
       !e.name.endsWith('.bak.json') &&
+      !e.name.endsWith('.autosave.json') &&
       !e.name.endsWith('.dp-status.json') &&
       !e.name.endsWith('_ua_work.json') &&
       !e.name.endsWith('.dp2-glossary.json')
@@ -127,89 +128,13 @@ function flattenDp2(filePath, root, origRoot) {
   return out;
 }
 
+const HAS_CYR = /[Ѐ-ӿ]/;
 function isTranslated(e) {
   if (!e.originalEn) return false;
-  return e.en !== e.originalEn;
-}
-
-// ── Tag helpers ─────────────────────────────────────────────────────────
-const TAG_RE = /\{[^{}]*\}|<\/?[a-zA-Z][^>]*>|\[[^\]]+\]/g;
-
-function extractTags(s) {
-  if (!s) return [];
-  const m = s.match(TAG_RE);
-  return m ? m.slice().sort() : [];
-}
-
-function countNewlines(s) {
-  if (!s) return 0;
-  let n = 0;
-  for (let i = 0; i < s.length; i++) if (s.charCodeAt(i) === 10) n++;
-  return n;
-}
-
-// ── Task: scan-all ──────────────────────────────────────────────────────
-async function taskScanAll(folder) {
-  const all = await readAllFromFolder(folder);
-  const issues = [];
-  let totalEntries = 0;
-  let totalTranslated = 0;
-
-  for (const f of all) {
-    let tree = null;
-    let bakTree = null;
-    try { tree = JSON.parse(f.content); } catch { continue; }
-    if (f.bakContent) {
-      try { bakTree = JSON.parse(f.bakContent); } catch {}
-    }
-    const entries = flattenDp2(f.path, tree, bakTree);
-    totalEntries += entries.length;
-
-    for (let i = 0; i < entries.length; i++) {
-      const e = entries[i];
-      const trans = isTranslated(e);
-      if (trans) totalTranslated++;
-
-      const orig = (e.originalEn != null ? e.originalEn : e.jp) || '';
-      const cur = e.en || '';
-      const eid = e.id || `#${i + 1}`;
-
-      if (!cur.trim() && orig.trim()) {
-        issues.push({ kind: 'empty', filePath: f.path, entryIndex: i, id: eid, detail: 'Переклад порожній' });
-      }
-      if (!cur.trim() || !orig.trim()) continue;
-
-      const nlOrig = countNewlines(orig);
-      const nlCur = countNewlines(cur);
-      if (nlOrig !== nlCur) {
-        issues.push({
-          kind: 'newline', filePath: f.path, entryIndex: i, id: eid,
-          detail: `\\n: оригінал=${nlOrig}, переклад=${nlCur}`,
-        });
-      }
-
-      const tOrig = extractTags(orig);
-      const tCur = extractTags(cur);
-      if (tOrig.length || tCur.length) {
-        let same = tOrig.length === tCur.length;
-        if (same) for (let k = 0; k < tOrig.length; k++) if (tOrig[k] !== tCur[k]) { same = false; break; }
-        if (!same) {
-          const missing = [];
-          const extra = [];
-          for (const t of tOrig) if (!tCur.includes(t)) missing.push(t);
-          for (const t of tCur) if (!tOrig.includes(t)) extra.push(t);
-          const parts = [];
-          if (missing.length) parts.push(`втрачено: ${missing.join(', ')}`);
-          if (extra.length) parts.push(`додано: ${extra.join(', ')}`);
-          issues.push({
-            kind: 'tag', filePath: f.path, entryIndex: i, id: eid,
-            detail: parts.join('; ') || 'теги відрізняються',
-          });
-        }
-      }
-    }
-  }
-  return { totalEntries, totalTranslated, issues };
+  if (e.en === e.originalEn) return false;
+  // Те саме що у frontend/src/lib/parser.ts: вимагаємо реальну кирилицю,
+  // щоб не ловити невидимі різниці у бекапі (пробіли/регістр/escape).
+  return HAS_CYR.test(e.en);
 }
 
 // ── Task: build-tm ──────────────────────────────────────────────────────
@@ -273,6 +198,165 @@ async function taskBuildTm(dp2Folder, dp1EngPath) {
   }
 
   return out;
+}
+
+// ── Task: corpus-stats ──────────────────────────────────────────────────
+// Підрахунок агрегованих метрик готовності по всьому DP2-корпусу:
+//   • кількість файлів, записів, перекладених записів, %
+//   • слова та символи (окремо UA-перекладені і EN-оригінал)
+//   • топ-файлів за обсягом + їх локальний прогрес
+function countWords(s) {
+  if (!s) return 0;
+  const trimmed = s.trim();
+  if (!trimmed) return 0;
+  return trimmed.split(/\s+/).filter(Boolean).length;
+}
+
+async function taskCorpusStats(folder) {
+  const summary = {
+    files: 0,
+    totalEntries: 0,
+    translatedEntries: 0,
+    percent: 0,
+    uaWords: 0,
+    enWords: 0,
+    uaChars: 0,
+    enChars: 0,
+    topFiles: [],
+  };
+  if (!folder) return summary;
+  const all = await readAllFromFolder(folder);
+  const perFile = [];
+  for (const f of all) {
+    let tree = null;
+    let bakTree = null;
+    try { tree = JSON.parse(f.content); } catch { continue; }
+    if (f.bakContent) {
+      try { bakTree = JSON.parse(f.bakContent); } catch {}
+    }
+    const entries = flattenDp2(f.path, tree, bakTree);
+    let fileTotal = 0;
+    let fileTrans = 0;
+    for (const e of entries) {
+      fileTotal++;
+      if (isTranslated(e)) {
+        fileTrans++;
+        const text = e.en || '';
+        summary.uaWords += countWords(text);
+        summary.uaChars += text.length;
+      } else {
+        const text = (e.originalEn != null ? e.originalEn : e.en) || '';
+        summary.enWords += countWords(text);
+        summary.enChars += text.length;
+      }
+    }
+    summary.totalEntries += fileTotal;
+    summary.translatedEntries += fileTrans;
+    summary.files++;
+    const fileName = (f.path.split(/[\\/]/).pop() || f.path).replace(/\.json$/i, '');
+    perFile.push({
+      fileName, filePath: f.path,
+      total: fileTotal, translated: fileTrans,
+      percent: fileTotal ? +(fileTrans / fileTotal * 100).toFixed(2) : 0,
+    });
+  }
+  summary.percent = summary.totalEntries
+    ? +(summary.translatedEntries / summary.totalEntries * 100).toFixed(2)
+    : 0;
+  // Топ-15 за обсягом — більше не вміщається у модалку без скролу.
+  perFile.sort((a, b) => b.total - a.total);
+  summary.topFiles = perFile.slice(0, 15);
+  return summary;
+}
+
+// ── Task: glossary-consistency ──────────────────────────────────────────
+// Для кожного glossary-терма перевіряємо: якщо у англ-оригіналі є `src`,
+// то у перекладі (e.en) має бути `tgt`. Якщо ні — порушення.
+// Логіка:
+//   • Рахуємо лише ПЕРЕКЛАДЕНІ записи (isTranslated) — щоб не позначати
+//     ще-не-роблене як "помилку".
+//   • Пошук substring case-insensitive — простий, без морфології.
+//   • Для UA-tgt свідомо НЕ робимо whole-word: словоформи (Йорк/Йорка/Йорку)
+//     порушенням не вважаємо. Достатньо, щоб корінь зустрічався.
+async function taskGlossaryConsistency(folder, glossary) {
+  const result = {
+    termResults: [],
+    totals: { terms: 0, violations: 0, entriesScanned: 0, entriesTranslated: 0 },
+  };
+  if (!folder || !Array.isArray(glossary) || glossary.length === 0) return result;
+
+  // Підготуємо терми: нормалізуємо й відкидаємо порожні. Пара (src, tgt)
+  // має бути унікальною — на випадок дублікатів у .dp2-glossary.json.
+  const terms = [];
+  const seen = new Set();
+  for (const g of glossary) {
+    const src = String((g && g.src) || '').trim();
+    const tgt = String((g && g.tgt) || '').trim();
+    if (!src || !tgt) continue;
+    const key = src.toLowerCase() + ' ' + tgt.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    terms.push({ src, tgt, srcLc: src.toLowerCase(), tgtLc: tgt.toLowerCase() });
+  }
+  result.totals.terms = terms.length;
+  if (terms.length === 0) return result;
+
+  const termStats = terms.map((t) => ({
+    src: t.src, tgt: t.tgt,
+    okCount: 0, violationCount: 0,
+    violations: [],
+  }));
+  const MAX_VIOLATIONS_PER_TERM = 200;
+
+  const all = await readAllFromFolder(folder);
+  for (const f of all) {
+    let tree = null;
+    let bakTree = null;
+    try { tree = JSON.parse(f.content); } catch { continue; }
+    if (f.bakContent) {
+      try { bakTree = JSON.parse(f.bakContent); } catch {}
+    }
+    const entries = flattenDp2(f.path, tree, bakTree);
+    const fileName = (f.path.split(/[\\/]/).pop() || f.path).replace(/\.json$/i, '');
+    for (let i = 0; i < entries.length; i++) {
+      const e = entries[i];
+      result.totals.entriesScanned++;
+      if (!isTranslated(e)) continue;
+      result.totals.entriesTranslated++;
+      const enLc = (e.en || '').toLowerCase();
+      const origLc = (e.originalEn || '').toLowerCase();
+      for (let ti = 0; ti < terms.length; ti++) {
+        const t = terms[ti];
+        if (origLc.indexOf(t.srcLc) === -1) continue;
+        const ts = termStats[ti];
+        if (enLc.indexOf(t.tgtLc) !== -1) {
+          ts.okCount++;
+        } else {
+          ts.violationCount++;
+          result.totals.violations++;
+          if (ts.violations.length < MAX_VIOLATIONS_PER_TERM) {
+            ts.violations.push({
+              filePath: f.path, fileName,
+              entryIndex: i,
+              entryId: e.id || '',
+              kind: e.kind,
+              charaName: e.charaName || '',
+              originalEn: e.originalEn || '',
+              en: e.en || '',
+              sheetIndex: e.sheetIndex,
+              listIndex: e.listIndex,
+              scenarioIndex: e.kind === 'sentence' ? e.scenarioIndex : undefined,
+            });
+          }
+        }
+      }
+    }
+  }
+
+  // Сортуємо за серйозністю: спершу терми з найбільшою кількістю порушень.
+  termStats.sort((a, b) => b.violationCount - a.violationCount || a.src.localeCompare(b.src));
+  result.termResults = termStats;
+  return result;
 }
 
 // ── Task: search-all ────────────────────────────────────────────────────
@@ -341,12 +425,14 @@ parentPort.on('message', async (msg) => {
     const type = msg && msg.type;
     const payload = msg && msg.payload;
     let result;
-    if (type === 'scan-all') {
-      result = await taskScanAll(payload);
-    } else if (type === 'build-tm') {
+    if (type === 'build-tm') {
       result = await taskBuildTm(payload.dp2Folder, payload.dp1EngPath);
     } else if (type === 'search-all') {
       result = await taskSearchAll(payload.folder, payload.opts);
+    } else if (type === 'corpus-stats') {
+      result = await taskCorpusStats(payload.folder);
+    } else if (type === 'glossary-consistency') {
+      result = await taskGlossaryConsistency(payload.folder, payload.glossary);
     } else {
       throw new Error('Unknown task type: ' + type);
     }

@@ -6,6 +6,8 @@ import { flatten, applyEdit, isTranslated } from "./parser";
 import { invalidateTm } from "./tm";
 import { recordTranslation } from "./metrics";
 import { buildTxt, parseTxt, blockToStorage, type ExportEntry } from "./txtRoundtrip";
+import { confirm as showConfirm } from "./dialogs";
+import { t } from "./i18n";
 import {
   emptyStatusFile,
   pruneEntry,
@@ -59,8 +61,12 @@ interface State {
   error: string | null;
   /** Інкрементується при кожному збереженні — щоб TM-панель перебудувала кеш. */
   saveTick: number;
+  /** ms unix-таймстамп останнього успішного autosave для поточного файла, або null. */
+  lastAutosaveAt: number | null;
   /** Side-car статуси (підвантажуються разом з folder). */
   statuses: StatusFile;
+  /** Undo-стек для масових операцій (імпорт .txt, bulk, find&replace). */
+  undoStack: Array<{ label: string; filePath: string; entries: FlatEntry[]; currentTree: any }>;
 
   init: () => Promise<void>;
   pickFolder: () => Promise<void>;
@@ -80,12 +86,18 @@ interface State {
   /** Експортувати поточний файл у .txt для зовнішнього перекладу. */
   exportTxt: () => { fileName: string; content: string } | null;
   /** Імпортувати раніше експортований .txt назад у поточний файл. */
-  importTxtContent: (txt: string) => { applied: number; missing: number };
+  importTxtContent: (txt: string) => { applied: number; missing: number; mismatched: number };
   /**
    * Відновити вміст файла з .bak.json (оригінального бекапу). Якщо файл
    * відкритий — перезавантажить ентрі. Повертає true, якщо успіх.
    */
   restoreOriginal: (filePath: string) => Promise<boolean>;
+  /** Зробити snapshot поточного entries+tree для майбутнього undo. */
+  pushUndo: (label: string) => void;
+  /** Чи є відкатуване — для UI Ctrl+Z indicator. */
+  canUndo: () => boolean;
+  /** Скасувати останню масову зміну. */
+  undo: () => boolean;
   /** Перейти до сусіднього рядка (delta=+1/-1), циклічно по entries. */
   step: (delta: number) => void;
   /** Стрибок до наступного неперекладеного рядка (від поточної позиції). */
@@ -94,6 +106,8 @@ interface State {
   copyOriginalToTranslation: () => void;
   updateActive: (charaName: string, text: string) => void;
   saveFile: () => Promise<void>;
+  /** Запис sidecar `<file>.autosave.json` з поточним currentTree. */
+  autosave: () => Promise<void>;
   refreshFileMeta: (fullPath: string) => void;
   /** Find/Replace по всіх записах поточного файла (charaName + текст). */
   findReplaceAll: (find: string, replace: string, opts: { caseSensitive: boolean; wholeWord: boolean }) =>
@@ -132,7 +146,9 @@ export const useStore = create<State>((set, get) => ({
   loading: false,
   error: null,
   saveTick: 0,
+  lastAutosaveAt: null,
   statuses: emptyStatusFile(),
+  undoStack: [],
 
   async init() {
     try {
@@ -178,8 +194,28 @@ export const useStore = create<State>((set, get) => ({
   async loadFile(fullPath) {
     set({ loading: true, error: null });
     try {
-      const raw = await window.dp2.readFile(fullPath);
-      const tree = JSON.parse(raw);
+      let rawForTree = await window.dp2.readFile(fullPath);
+      let restoredFromAutosave = false;
+
+      // Якщо є autosave свіжіший за файл — пропонуємо відновити. Це сценарій
+      // крашу/закриття без Ctrl+S: незбережені правки сидять у sidecar.
+      const auto = await window.dp2.readAutosave(fullPath);
+      if (auto && auto.autosaveMtime > auto.originalMtime + 100) {
+        const ago = Math.max(1, Math.round((Date.now() - auto.autosaveMtime) / 60000));
+        const yes = await showConfirm(
+          t("autosave.recover.title"),
+          t("autosave.recover.body", { minutes: ago }),
+        );
+        if (yes) {
+          rawForTree = auto.content;
+          restoredFromAutosave = true;
+        } else {
+          // Користувач відмовився — autosave більше не потрібен.
+          try { await window.dp2.deleteAutosave(fullPath); } catch {}
+        }
+      }
+
+      const tree = JSON.parse(rawForTree);
 
       let originalTree: any = null;
       const bak = await window.dp2.readBackup(fullPath);
@@ -193,7 +229,10 @@ export const useStore = create<State>((set, get) => ({
         currentTree: tree,
         entries,
         activeIndex: entries.length ? 0 : null,
-        dirty: false,
+        // Якщо відновили з autosave — це і є незбережений стан, треба
+        // показати кнопку Save як активну.
+        dirty: restoredFromAutosave,
+        lastAutosaveAt: null,
         loading: false,
       });
       get().refreshFileMeta(fullPath);
@@ -268,7 +307,7 @@ export const useStore = create<State>((set, get) => ({
   },
 
   bulkCopyOriginalToTranslation(indices) {
-    const { entries, currentTree } = get();
+    const { entries, currentTree, selectedFilePath } = get();
     if (!currentTree || !indices.length) return;
     const next = entries.slice();
     let changed = 0;
@@ -282,11 +321,14 @@ export const useStore = create<State>((set, get) => ({
       next[i] = { ...e, en: src };
       changed++;
     }
-    if (changed > 0) set({ entries: next, dirty: true });
+    if (changed > 0) {
+      set({ entries: next, dirty: true });
+      if (selectedFilePath) get().refreshFileMeta(selectedFilePath);
+    }
   },
 
   bulkTrim(indices) {
-    const { entries, currentTree } = get();
+    const { entries, currentTree, selectedFilePath } = get();
     if (!currentTree || !indices.length) return;
     const next = entries.slice();
     let changed = 0;
@@ -300,22 +342,86 @@ export const useStore = create<State>((set, get) => ({
       next[i] = { ...e, en: trimmed };
       changed++;
     }
-    if (changed > 0) set({ entries: next, dirty: true });
+    if (changed > 0) {
+      set({ entries: next, dirty: true });
+      if (selectedFilePath) get().refreshFileMeta(selectedFilePath);
+    }
   },
 
   exportTxt() {
     const { entries, selectedFilePath } = get();
     if (!entries.length || !selectedFilePath) return null;
     const fileName = (selectedFilePath.split(/[\\/]/).pop() ?? "export").replace(/\.json$/i, "");
-    const exportEntries: ExportEntry[] = entries.map((e, i) => ({
-      index: i + 1,
-      speaker: e.kind === "sentence" ? (e.charaName || e.charaNameJp || undefined) : (e.itemName || undefined),
-      // Експортуємо ОРИГІНАЛ (EN з .bak або поточний EN) — щоб людина бачила, що перекладати.
-      text: e.originalEn ?? e.en ?? "",
-      hint: e.id || (e.kind === "item" && e.itemName) || undefined,
-    }));
+    const HAS_CYR = /[Ѐ-ӿ]/;
+    const exportEntries: ExportEntry[] = entries.map((e, i) => {
+      const isSentence = e.kind === "sentence";
+      const speaker = isSentence ? (e.charaName || e.charaNameJp || undefined) : undefined;
+      const hintParts: string[] = [];
+      if (e.id) hintParts.push(e.id);
+      if (!isSentence && e.itemName) hintParts.push(e.itemName);
+      // Якщо рядок уже перекладений (en має кирилицю і відрізняється від .bak)
+      // — експортуємо ПЕРЕКЛАД, щоб людина продовжила. Інакше — англ-оригінал.
+      const isAlreadyTranslated =
+        !!e.originalEn && e.en !== e.originalEn && HAS_CYR.test(e.en);
+      const text = isAlreadyTranslated
+        ? e.en
+        : (e.originalEn ?? e.en ?? "");
+      return {
+        index: i + 1,
+        speaker,
+        text,
+        hint: hintParts.length ? hintParts.join(" · ") : undefined,
+      };
+    });
     const content = buildTxt(`DP2: ${fileName}`, exportEntries);
     return { fileName, content };
+  },
+
+  pushUndo(label) {
+    const { undoStack, entries, currentTree, selectedFilePath } = get();
+    if (!selectedFilePath || !currentTree) return;
+    // Тримаємо до 10 рівнів. Глибокий клон через JSON — простіше, ніж
+    // структурне копіювання великих дерев, і робиться раз на bulk-операцію.
+    const snapshot = {
+      label,
+      filePath: selectedFilePath,
+      entries: entries.slice(),
+      currentTree: JSON.parse(JSON.stringify(currentTree)),
+    };
+    const nextStack = [...undoStack, snapshot];
+    while (nextStack.length > 10) nextStack.shift();
+    set({ undoStack: nextStack });
+  },
+
+  canUndo() {
+    const { undoStack, selectedFilePath } = get();
+    if (!selectedFilePath) return false;
+    for (let i = undoStack.length - 1; i >= 0; i--) {
+      if (undoStack[i].filePath === selectedFilePath) return true;
+    }
+    return false;
+  },
+
+  undo() {
+    const { undoStack, selectedFilePath } = get();
+    if (!selectedFilePath) return false;
+    // Знаходимо ОСТАННІЙ snapshot для поточного файла.
+    let idx = -1;
+    for (let i = undoStack.length - 1; i >= 0; i--) {
+      if (undoStack[i].filePath === selectedFilePath) { idx = i; break; }
+    }
+    if (idx < 0) return false;
+    const snap = undoStack[idx];
+    const nextStack = [...undoStack.slice(0, idx), ...undoStack.slice(idx + 1)];
+    invalidateTm();
+    set({
+      entries: snap.entries,
+      currentTree: snap.currentTree,
+      undoStack: nextStack,
+      dirty: true,
+    });
+    get().refreshFileMeta(selectedFilePath);
+    return true;
   },
 
   async restoreOriginal(filePath) {
@@ -334,16 +440,46 @@ export const useStore = create<State>((set, get) => ({
   },
 
   importTxtContent(txt) {
-    const { entries, currentTree } = get();
-    if (!currentTree) return { applied: 0, missing: 0 };
+    const { entries, currentTree, selectedFilePath } = get();
+    if (!currentTree) return { applied: 0, missing: 0, mismatched: 0 };
+
+    // Snapshot для Ctrl+Z.
+    get().pushUndo("import-txt");
+
+    // Будуємо мапу id → positional index. ID унікальний у межах файла
+    // (m_messageId у sentence, m_enumName у item) — то надійніше за позицію.
+    const byId = new Map<string, number>();
+    for (let i = 0; i < entries.length; i++) {
+      const id = entries[i].id;
+      if (id) byId.set(id, i);
+    }
+
     const blocks = parseTxt(txt);
     let applied = 0;
     let missing = 0;
+    let mismatched = 0; // блоки, що змаплено за позицією через відсутність ID
     const next = entries.slice();
     for (const b of blocks) {
-      const i = b.index - 1;
+      // 1) Спершу шукаємо за ID, якщо він був у маркері.
+      let i = -1;
+      if (b.id) {
+        const byIdHit = byId.get(b.id);
+        if (byIdHit !== undefined) i = byIdHit;
+      }
+      // 2) Fallback — позиційно. Перевіряємо що ID збігається з тим, що в entries.
+      if (i < 0) {
+        const pos = b.index - 1;
+        if (entries[pos]) {
+          if (!b.id || !entries[pos].id || entries[pos].id === b.id) {
+            i = pos;
+          } else {
+            mismatched++;
+          }
+        }
+      }
+      if (i < 0) { missing++; continue; }
+
       const e = entries[i];
-      if (!e) { missing++; continue; }
       const { speaker, text } = blockToStorage(b);
       const newSpeaker = e.kind === "sentence"
         ? (speaker !== undefined ? speaker : (e.charaName ?? ""))
@@ -353,12 +489,19 @@ export const useStore = create<State>((set, get) => ({
       next[i] = {
         ...e,
         en: text,
+        // Якщо .bak.json не існував, originalEn був undefined і колонка
+        // «Оригінал» рендерила те, що тепер замінюємо. Перед перезаписом —
+        // зберігаємо попередній EN як originalEn, щоб референс не загубився.
+        ...(e.originalEn === undefined ? { originalEn: e.en } : {}),
         ...(e.kind === "sentence" ? { charaName: newSpeaker } : {}),
       };
       applied++;
     }
-    if (applied > 0) set({ entries: next, dirty: true });
-    return { applied, missing };
+    if (applied > 0) {
+      set({ entries: next, dirty: true });
+      if (selectedFilePath) get().refreshFileMeta(selectedFilePath);
+    }
+    return { applied, missing, mismatched };
   },
 
   step(delta) {
@@ -397,7 +540,7 @@ export const useStore = create<State>((set, get) => ({
   },
 
   updateActive(charaName, text) {
-    const { activeIndex, entries, currentTree } = get();
+    const { activeIndex, entries, currentTree, selectedFilePath } = get();
     if (activeIndex === null || !currentTree) return;
     const e = entries[activeIndex];
     if (!e) return;
@@ -410,12 +553,15 @@ export const useStore = create<State>((set, get) => ({
       ...(e.kind === "sentence" ? { charaName } : {}),
     };
     set({ entries: next, dirty: true });
-    // Зараховуємо у метрики лише якщо рядок переходить у "перекладений" стан,
-    // або вже був перекладений — щоб не двічі зараховувати одне й те ж.
     const wasTranslated = isTranslated(e);
     const becameTranslated = isTranslated(next[activeIndex]);
     if (becameTranslated && !wasTranslated) {
       recordTranslation(text, e.en);
+    }
+    // Live-update лічильника у дереві файлів. Оновлюємо лише при зміні
+    // is-translated стану, щоб не пере-малювати дерево на кожен символ.
+    if (selectedFilePath && becameTranslated !== wasTranslated) {
+      get().refreshFileMeta(selectedFilePath);
     }
   },
 
@@ -425,8 +571,22 @@ export const useStore = create<State>((set, get) => ({
     const json = JSON.stringify(currentTree, null, 2);
     await window.dp2.writeFile(selectedFilePath, json);
     invalidateTm();
-    set({ dirty: false, saveTick: get().saveTick + 1 });
+    // Стерти autosave: реальний файл актуальний, sidecar більше не потрібен.
+    try { await window.dp2.deleteAutosave(selectedFilePath); } catch {}
+    set({ dirty: false, saveTick: get().saveTick + 1, lastAutosaveAt: null });
     get().refreshFileMeta(selectedFilePath);
+  },
+
+  async autosave() {
+    const { selectedFilePath, currentTree, dirty } = get();
+    if (!selectedFilePath || !currentTree || !dirty) return;
+    try {
+      const json = JSON.stringify(currentTree, null, 2);
+      await window.dp2.writeAutosave(selectedFilePath, json);
+      set({ lastAutosaveAt: Date.now() });
+    } catch {
+      // Не критично: при наступному debounce-tick спробуємо знову.
+    }
   },
 
   refreshFileMeta(fullPath) {

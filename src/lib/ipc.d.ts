@@ -21,12 +21,10 @@ declare global {
       readFile: (fullPath: string) => Promise<string>;
       writeFile: (fullPath: string, content: string) => Promise<boolean>;
       readBackup: (fullPath: string) => Promise<string | null>;
+      writeAutosave: (fullPath: string, content: string) => Promise<string>;
+      readAutosave: (fullPath: string) => Promise<{ content: string; autosaveMtime: number; originalMtime: number } | null>;
+      deleteAutosave: (fullPath: string) => Promise<boolean>;
       readAll: (folder: string) => Promise<Array<{ path: string; content: string; bakContent: string | null }>>;
-      scanAll: (folder: string) => Promise<{
-        totalEntries: number;
-        totalTranslated: number;
-        issues: Array<{ kind: string; filePath: string; entryIndex: number; id: string; detail: string }>;
-      }>;
       buildTmWorker: (payload: { dp2Folder: string | null; dp1EngPath: string | null }) => Promise<Array<{
         source: "dp1" | "dp2"; src: string; tgt: string; jp: string;
         filePath: string; fileName: string; charaName?: string;
@@ -39,6 +37,8 @@ declare global {
         }>;
         truncated: boolean;
       }>;
+      corpusStatsWorker: (payload: { folder: string }) => Promise<CorpusStats>;
+      glossaryConsistencyWorker: (payload: { folder: string; glossary: Array<{ src: string; tgt: string }> }) => Promise<GlossaryConsistencyResult>;
       getSettings: () => Promise<DpSettings>;
       saveSettings: (partial: Record<string, unknown>) => Promise<DpSettings>;
       launchUabea: () => Promise<{ success: boolean; error?: string }>;
@@ -60,6 +60,56 @@ declare global {
       }>;
     };
   }
+}
+
+export interface CorpusStats {
+  files: number;
+  totalEntries: number;
+  translatedEntries: number;
+  percent: number;
+  uaWords: number;
+  enWords: number;
+  uaChars: number;
+  enChars: number;
+  topFiles: Array<{
+    fileName: string;
+    filePath: string;
+    total: number;
+    translated: number;
+    percent: number;
+  }>;
+}
+
+export interface GlossaryViolation {
+  filePath: string;
+  fileName: string;
+  entryIndex: number;
+  entryId: string;
+  kind: "sentence" | "item";
+  charaName?: string;
+  originalEn: string;
+  en: string;
+  sheetIndex: number;
+  listIndex: number;
+  scenarioIndex?: number;
+}
+
+export interface GlossaryTermResult {
+  src: string;
+  tgt: string;
+  okCount: number;
+  violationCount: number;
+  violations: GlossaryViolation[];
+}
+
+export interface GlossaryConsistencyResult {
+  termResults: GlossaryTermResult[];
+  totals: {
+    terms: number;
+    violations: number;
+    entriesScanned: number;
+    entriesTranslated: number;
+  };
 }
 
 export interface DpSettings {

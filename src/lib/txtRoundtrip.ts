@@ -10,12 +10,14 @@
 // Літеральні `\n` у JSON-записах перетворюються на справжні переноси у .txt
 // (зручніше для людини). При імпорті — навпаки.
 
-// Маркер: рядок починається з `###`, далі (опційно через пробіл) число.
-// Дозволяємо хвіст на кшталт " — line_001" — він іде як коментар і не використовується.
-const BLOCK_RE = /^\s*###\s*(\d+)\b/;
+// Маркер: рядок починається з `###`, далі число, опційно `— <id>`.
+// Парсимо обидва — index (1-based позиція) і id (m_messageId/enumName), щоб
+// при імпорті спершу мапити за стабільним ID, а лише потім — за позицією.
+const BLOCK_RE = /^\s*###\s*(\d+)\s*(?:[—–-]\s*([^\n]+?))?\s*$/;
 
 export interface ParsedBlock {
   index: number;       // 1-based номер з маркера
+  id?: string;         // ID запису з заголовка (vo_C040_m_0001 тощо)
   speaker?: string;    // те, що до двокрапки у першому рядку (опційно)
   text: string;        // багаторядковий текст з реальними \n
 }
@@ -112,7 +114,11 @@ export function parseTxt(raw: string): ParsedBlock[] {
     const m = ln.match(BLOCK_RE);
     if (m) {
       flushBlock();
-      cur = { index: parseInt(m[1], 10), text: "" };
+      cur = {
+        index: parseInt(m[1], 10),
+        id: m[2] ? m[2].trim() : undefined,
+        text: "",
+      };
       curTextLines = [];
       phase = "header";
       continue;

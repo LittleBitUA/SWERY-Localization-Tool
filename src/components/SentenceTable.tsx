@@ -7,7 +7,7 @@ import type { StatusKind, StatusEntry } from "../lib/status";
 import type { FlatEntry } from "../types";
 import { MetricsBadge } from "./MetricsBadge";
 import { ColResizer } from "./ColResizer";
-import { WrapToggle, type WrapMode } from "./WrapToggle";
+import type { WrapMode } from "./WrapToggle";
 import { alert as showAlert } from "../lib/dialogs";
 
 // Memo-рядок: уникає пере-рендеру для всіх ~18к-сусідів, коли змінюється
@@ -124,6 +124,7 @@ export function SentenceTable() {
   const bulkTrim = useStore((s) => s.bulkTrim);
   const exportTxt = useStore((s) => s.exportTxt);
   const importTxtContent = useStore((s) => s.importTxtContent);
+  const undo = useStore((s) => s.undo);
 
   async function handleExportTxt() {
     const r = exportTxt();
@@ -135,7 +136,7 @@ export function SentenceTable() {
     });
     if (!dest) return;
     await window.dp2.writeFile(dest, r.content);
-    alert(t("txt.exported", { path: dest }));
+    await showAlert(t("dialog.exportSuccess"), t("txt.exported", { path: dest }), { tone: "success" });
   }
 
   async function handleImportTxt() {
@@ -145,15 +146,18 @@ export function SentenceTable() {
     });
     if (!src) return;
     const txt = await window.dp2.readFile(src);
-    const { applied, missing } = importTxtContent(txt);
-    alert(t("txt.imported", { applied, missing }));
+    const { applied, missing, mismatched } = importTxtContent(txt);
+    const msg = t("txt.imported", { applied, missing }) +
+      (mismatched > 0 ? "\n\n⚠ " + t("txt.mismatched", { n: mismatched }) : "");
+    const tone = mismatched > 0 ? undefined : "success" as const;
+    await showAlert(t("dialog.importResult"), msg, { tone });
   }
 
   const [selection, setSelection] = useState<Set<number>>(new Set());
   const [ctxMenu, setCtxMenu] = useState<{ x: number; y: number; index: number } | null>(null);
   const [colWidths, setColWidths] = useLocalStorage<ColWidths>("dp2.ui.tableCols", DEFAULT_COL_WIDTHS);
   const setCol = (k: keyof ColWidths) => (w: number) => setColWidths({ ...colWidths, [k]: w });
-  const [wrapMode, setWrapMode] = useLocalStorage<WrapMode>("dp2.ui.tableWrap", "default");
+  const [wrapMode] = useLocalStorage<WrapMode>("dp2.ui.tableWrap", "default");
   const wrapCls =
     wrapMode === "wrap" ? "whitespace-pre-wrap break-words"
     : wrapMode === "clip" ? "line-clamp-1 whitespace-pre-wrap break-words"
@@ -269,10 +273,16 @@ export function SentenceTable() {
         bulkSetStatus(indices, undefined);
         return;
       }
+      // Ctrl+Z — скасувати останню масову зміну (імпорт .txt тощо). Поза інпутами.
+      if (ctrl && !e.shiftKey && !e.altKey && e.key.toLowerCase() === "z") {
+        e.preventDefault();
+        undo();
+        return;
+      }
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [activeIndex, selection, toggleBookmark, bulkSetStatus]);
+  }, [activeIndex, selection, toggleBookmark, bulkSetStatus, undo]);
 
   // Стат-бар: рядки/слова/перекладено
   const stats = useMemo(() => {
@@ -345,15 +355,12 @@ export function SentenceTable() {
           {t("txt.export")}
         </button>
         <button className="dp-btn dp-btn--ghost" onClick={handleImportTxt} title={t("txt.import")}>
-          {/* документ зі стрілкою всередину — імпорт */}
           <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
             <path strokeLinecap="round" strokeLinejoin="round" d="M15 5h3a2 2 0 012 2v12a2 2 0 01-2 2H6a2 2 0 01-2-2V7a2 2 0 012-2h3" />
             <path strokeLinecap="round" strokeLinejoin="round" d="M12 3v12m0 0l-4-4m4 4l4-4" />
           </svg>
           {t("txt.import")}
         </button>
-
-        <WrapToggle value={wrapMode} onChange={setWrapMode} />
       </div>
 
       {/* Grid */}

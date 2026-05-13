@@ -139,7 +139,17 @@ export function applyEdit(
   return false;
 }
 
+const HAS_CYR_RE = /[Ѐ-ӿ]/;
+
+/**
+ * "Перекладеним" вважаємо запис, у якому EN-слот:
+ *   1. відрізняється від оригіналу з .bak.json;
+ *   2. реально містить кириличні символи.
+ * Друга умова прибирає false-positives через невидимі різниці у бекапі
+ * (пробіли, регістр, escape-послідовності) — інакше рахунок задирається.
+ */
 export function isTranslated(s: FlatEntry): boolean {
   if (!s.originalEn) return false;
-  return s.en !== s.originalEn;
+  if (s.en === s.originalEn) return false;
+  return HAS_CYR_RE.test(s.en);
 }

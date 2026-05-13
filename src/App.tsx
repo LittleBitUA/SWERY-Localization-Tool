@@ -15,6 +15,7 @@ import { Dp1SettingsModal } from "./games/dp1/Dp1SettingsModal";
 import { readGlossary, type GlossaryEntry } from "./lib/glossary";
 import { useLocalStorage } from "./lib/useLocalStorage";
 import { useStore } from "./lib/store";
+import { useAutosave } from "./lib/useAutosave";
 import type { SetupStatus } from "./lib/ipc";
 import { DialogHost } from "./lib/dialogs";
 
@@ -39,6 +40,9 @@ export default function App() {
 
   const init = useStore((s) => s.init);
   const folder = useStore((s) => s.folder);
+  const dp2Dirty = useStore((s) => s.dirty);
+  const dp2Autosave = useStore((s) => s.autosave);
+  useAutosave(stage === "editor-dp2" && dp2Dirty, dp2Autosave);
 
   // ── Bootstrap: вирішуємо що показувати ─────────────────────────
   // 1) onboarding — якщо ще не пройдено

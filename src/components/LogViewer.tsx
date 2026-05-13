@@ -32,18 +32,21 @@ export function LogViewer({ open, onClose, log, logPath }: Props) {
         style={{ maxHeight: "85vh" }}
         onClick={(e) => e.stopPropagation()}
       >
-        <div className="flex items-center justify-between px-5 py-3 border-b border-[var(--border-soft)]">
-          <div>
+        <div className="flex items-center justify-between gap-3 px-5 py-3 border-b border-[var(--border-soft)]">
+          <div className="min-w-0 flex-1">
             <h2 className="text-[15px] font-semibold text-[var(--text-strong)]">
               {t("log.title")}
             </h2>
             {logPath && (
-              <p className="text-[11px] font-mono text-[var(--text-faint)] mt-0.5 truncate max-w-[600px]">
+              <p
+                className="text-[11px] font-mono text-[var(--text-faint)] mt-0.5 truncate"
+                title={logPath}
+              >
                 {logPath}
               </p>
             )}
           </div>
-          <div className="flex items-center gap-2">
+          <div className="flex items-center gap-2 shrink-0">
             <button onClick={copyAll} className="dp-btn">
               {copied ? t("log.copied") : t("log.copy")}
             </button>

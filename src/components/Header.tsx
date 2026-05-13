@@ -2,8 +2,8 @@ import { useState } from "react";
 import { useStore } from "../lib/store";
 import { SettingsModal } from "./SettingsModal";
 import { LogViewer } from "./LogViewer";
-import { PreflightModal } from "./PreflightModal";
-import { LangToggle } from "./LangToggle";
+import { CorpusStatsModal } from "./CorpusStatsModal";
+import { GlossaryConsistencyModal } from "./GlossaryConsistencyModal";
 import { useT } from "../lib/i18n";
 
 interface HeaderProps {
@@ -29,14 +29,15 @@ export function Header({
 }: HeaderProps = {}) {
   const t = useT();
   const folder = useStore((s) => s.folder);
-  const pickFolder = useStore((s) => s.pickFolder);
   const dirty = useStore((s) => s.dirty);
   const saveFile = useStore((s) => s.saveFile);
   const selectedFilePath = useStore((s) => s.selectedFilePath);
+  const lastAutosaveAt = useStore((s) => s.lastAutosaveAt);
 
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [statsOpen, setStatsOpen] = useState(false);
+  const [gcOpen, setGcOpen] = useState(false);
   const [logOpen, setLogOpen] = useState(false);
-  const [preflightOpen, setPreflightOpen] = useState(false);
   const [lastLog, setLastLog] = useState("");
   const [lastLogPath, setLastLogPath] = useState<string | undefined>(undefined);
   const [buildState, setBuildState] = useState<"idle" | "building" | "done" | "error">("idle");
@@ -44,7 +45,7 @@ export function Header({
 
   const folderShort = folder ? folder.split(/[\\/]/).slice(-2).join("/") : "—";
 
-  async function actuallyBuild() {
+  async function saveAndBuild() {
     setBuildState("building");
     setBuildMsg("Зберігаю JSON-и...");
     try {
@@ -68,20 +69,6 @@ export function Header({
     setBuildState("done");
     setBuildMsg(`Готово → ${res.outputPath}`);
     setTimeout(() => setBuildState("idle"), 12000);
-  }
-
-  async function saveAndBuild() {
-    // Спершу зберегти поточний файл, потім показати preflight, який сам
-    // викличе actuallyBuild() або дасть юзеру повернутися й виправити.
-    try {
-      if (dirty) await saveFile();
-    } catch (e) {
-      setBuildState("error");
-      setBuildMsg("Не вдалося зберегти JSON: " + String(e));
-      setTimeout(() => setBuildState("idle"), 5000);
-      return;
-    }
-    setPreflightOpen(true);
   }
 
   return (
@@ -137,7 +124,16 @@ export function Header({
           </button>
         )}
 
-        <LangToggle compact />
+        <button
+          className="dp-btn dp-btn--ghost"
+          onClick={() => setStatsOpen(true)}
+          title={t("stats.btn")}
+          disabled={!folder}
+        >
+          <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+            <path strokeLinecap="round" strokeLinejoin="round" d="M9 19V9m4 10V5m4 14v-6M5 19h14" />
+          </svg>
+        </button>
 
         <button className="dp-btn dp-btn--ghost" onClick={() => setSettingsOpen(true)} title={t("header.settings")}>
           <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
@@ -167,6 +163,17 @@ export function Header({
           </button>
         )}
 
+        <button
+          className="dp-btn dp-btn--ghost"
+          onClick={() => setGcOpen(true)}
+          title={t("gc.btn")}
+          disabled={!folder}
+        >
+          <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+            <path strokeLinecap="round" strokeLinejoin="round" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" />
+          </svg>
+        </button>
+
         {onToggleTm && (
           <button
             className={`dp-btn ${tmVisible ? "dp-btn--primary" : ""}`}
@@ -190,9 +197,16 @@ export function Header({
           </button>
         )}
 
-        <button className="dp-btn" onClick={() => pickFolder()}>
-          {t("header.folder")}
-        </button>
+        {dirty && lastAutosaveAt && (
+          <span
+            className="text-[10.5px] text-[var(--text-faint)] tabular-nums whitespace-nowrap"
+            title={t("autosave.savedAt", {
+              time: new Date(lastAutosaveAt).toLocaleTimeString(),
+            })}
+          >
+            ● {t("autosave.saved")}
+          </span>
+        )}
 
         <button
           className="dp-btn"
@@ -214,16 +228,18 @@ export function Header({
       </header>
 
       <SettingsModal open={settingsOpen} onClose={() => setSettingsOpen(false)} />
+      <CorpusStatsModal
+        open={statsOpen}
+        onClose={() => setStatsOpen(false)}
+        mode="dp2"
+        folder={folder}
+      />
+      <GlossaryConsistencyModal open={gcOpen} onClose={() => setGcOpen(false)} />
       <LogViewer
         open={logOpen}
         onClose={() => setLogOpen(false)}
         log={lastLog}
         logPath={lastLogPath}
-      />
-      <PreflightModal
-        open={preflightOpen}
-        onClose={() => setPreflightOpen(false)}
-        onProceed={actuallyBuild}
       />
     </>
   );
