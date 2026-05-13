@@ -1,0 +1,617 @@
+// Простий self-contained i18n без зовнішніх залежностей.
+// Активна мова зберігається в localStorage, зміна тригерить ре-рендер
+// через listeners → useT() підписується.
+
+import { useEffect, useState } from "react";
+
+export type Lang = "uk" | "en";
+
+const STORAGE_KEY = "dp2.ui.lang";
+const DEFAULT_LANG: Lang = "uk";
+
+type Dict = Record<string, string>;
+
+const UK: Dict = {
+  // App brand
+  "app.name": "Deadly Premonition Localization Tool",
+  "app.shortBrand": "DP",
+  "app.loading": "Завантаження…",
+
+  // Home
+  "home.tagline": "Хаб локалізації серії",
+  "home.title": "Українська локалізація серії Deadly Premonition",
+  "home.subtitle": "Обери гру, з якою працюватимеш. Інструменти, шляхи і налаштування вже готові.",
+  "home.dp1.title": "Deadly Premonition",
+  "home.dp1.subtitle": "The Director's Cut",
+  "home.dp1.blurb": "Редактор .mes-діалогів через DPMsgTool by MrIkso. Підстановка гліфів і запаковка одним кліком.",
+  "home.dp2.title": "Deadly Premonition 2",
+  "home.dp2.subtitle": "A Blessing in Disguise",
+  "home.dp2.blurb": "Редактор JSON-дампів sharedassets, TM, глосарій, запаковка .assets.",
+  "home.badge.ready": "Готово",
+  "home.badge.soon": "Скоро",
+  "home.open": "Відкрити",
+  "home.recent": "Нещодавно відкриті",
+  "home.setup.prompt": "Потрібно перенастроїти інструменти?",
+  "home.setup.button": "Запустити майстер налаштування",
+
+  // Onboarding
+  "onb.tagline": "Перший запуск",
+  "onb.title": "Налаштування Deadly Premonition Localization Tool",
+  "onb.subtitle": "Заповни шляхи й натисни «Підготувати середовище». Інструменти завантажаться автоматично.",
+  "onb.step1.title": "Тека для інструментів",
+  "onb.step1.hint": "Сюди завантажиться UABEA Next та (за потреби) PowerShell 7. Створиться автоматично.",
+  "onb.step2.title": "Файл гри: sharedassets0.assets",
+  "onb.step2.hint": "Стандартно лежить у …\\Deadly Premonition 2\\DeadlyPremonition2_Data\\.",
+  "onb.step3.title": "Тека з JSON-дампами (опційно)",
+  "onb.step3.hint": "Куди ти зберіг розпаковані JSON. Можна пропустити й вибрати пізніше.",
+  "onb.step4.title": "Інструменти",
+  "onb.tool.uabea.desc": "Завантажиться автоматично з github.com/nesrak1/UABEA. Потрібен для запакування .assets.",
+  "onb.tool.pwsh.desc": "Завантажиться з github.com/PowerShell/PowerShell. Скрипт-пакувальник потребує саме PS 7, бо Windows PS 5.1 не вміє .NET 8 DLL.",
+  "onb.tool.alreadyConfigured": "✓ Уже налаштовано:",
+  "onb.tool.pickCustom": "або вказати власний {file}…",
+  "onb.btn.pickFolder": "Вибрати...",
+  "onb.btn.pickFile": "Вибрати...",
+  "onb.btn.run": "Підготувати середовище",
+  "onb.btn.running": "Готую...",
+  "onb.btn.skip": "Пропустити (зробити пізніше)",
+  "onb.progress.ready": "Готую...",
+
+  // Common
+  "btn.cancel": "Скасувати",
+  "btn.save": "Зберегти",
+  "btn.close": "Закрити",
+  "btn.open": "Відкрити...",
+  "btn.back": "Назад",
+  "btn.proceed": "Зібрати все одно",
+  "btn.proceedClean": "Зібрати",
+  "btn.fix": "Виправити",
+  "btn.copy": "копіювати",
+  "btn.apply": "Використати →",
+  "btn.jump": "Перейти →",
+
+  // Header (DP2)
+  "header.dp2.product": "Deadly Premonition 2 · Localization Editor",
+  "header.home": "На головну (вибір гри)",
+  "header.find": "Знайти",
+  "header.replace": "Замінити",
+  "header.glossary": "Глосарій",
+  "header.tm": "TM",
+  "header.focus": "Фокус",
+  "header.folder": "Тека",
+  "header.save": "Зберегти",
+  "header.saved": "Збережено",
+  "header.buildAndSave": "Зберегти та зібрати",
+  "header.log": "Лог",
+  "header.settings": "Налаштування",
+  "header.lang": "Мова",
+
+  // Header DP1
+  "dp1.brand": "Deadly Premonition · Director's Cut · MES Editor",
+  "dp1.empty.title": "Завантаж eng.json",
+  "dp1.empty.hint": "Це JSON-дамп з DPMsgTool.exe to-json mes_all.mes.",
+  "dp1.empty.pickBtn": "Вибрати eng.json…",
+  "dp1.pack": "Запакувати .mes",
+  "dp1.search.placeholder": "Пошук за оригіналом / перекладом / id…",
+  "dp1.col.id": "ID",
+  "dp1.col.num": "№",
+  "dp1.col.original": "Original",
+  "dp1.col.ua": "Українська",
+  "dp1.record": "Запис #{n}",
+  "dp1.flags": "flags",
+  "dp1.en.label": "EN — оригінал",
+  "dp1.insertToken": "Вставити токен:",
+  "dp1.bracesWarn": "⚠ незбалансовані {...}",
+  "dp1.ua.label": "Український переклад",
+  "dp1.chars": "симв.",
+
+  // DP1 settings modal
+  "dp1.set.title": "Налаштування DP1",
+  "dp1.set.toolLabel": "DPMsgTool.exe",
+  "dp1.set.toolHint": "CLI від MrIkso. Стандартно лежить у E:\\Localization\\DP1\\DPMsgTool\\DPMsgTool.exe.",
+  "dp1.set.gameLabel": "Тека гри: …\\updata_eu\\_us\\message\\output",
+  "dp1.set.gameHint": "Туди буде покладено готовий mes_all.mes після запакування.",
+  "dp1.set.engLabel": "Стандартний eng.json (опційно)",
+  "dp1.set.engHint": "Запам'ятовуємо для автозавантаження при відкритті DP1.",
+
+  // Editor / Table
+  "table.filter.all": "Усі {n}",
+  "table.filter.translated": "Перекладені",
+  "table.filter.untranslated": "Не перекладені",
+  "table.search.placeholder": "Пошук за ID / оригіналом / перекладом / ім'ям...",
+  "table.col.num": "№",
+  "table.col.id": "ID",
+  "table.col.original": "Оригінал",
+  "table.col.ua": "Переклад",
+  "table.empty": "Нічого не знайдено за цим запитом.",
+  "table.stat.rows": "Рядків",
+  "table.stat.words": "Слів",
+  "table.stat.translatedRows": "Перекладено рядків",
+  "table.stat.translatedWords": "Слів",
+  "table.stat.position": "Позиція",
+  "table.stat.shown": "показано",
+
+  // Editor panel
+  "editor.kind.sentence": "Репліка",
+  "editor.kind.item": "Об'єкт",
+  "editor.voiceOnly": "Voice only",
+  "editor.unknown": "Невідомий",
+  "editor.jp.label": "JP — оригінал",
+  "editor.en.label": "EN — оригінал з .bak",
+  "editor.name.label": "Ім'я персонажа (UA)",
+  "editor.ua.sentence": "Український переклад",
+  "editor.ua.item": "Назва українською",
+  "editor.context.prev": "↑ попередня",
+  "editor.context.next": "↓ наступна",
+  "editor.kbd.saveNext": "Зберегти + наступний",
+  "editor.kbd.nextUntranslated": "Наступний неперекладений",
+  "editor.kbd.between": "Між рядками",
+  "editor.kbd.copyOriginal": "Копіювати оригінал",
+  "editor.kbd.save": "Зберегти",
+  "editor.kbd.focus": "Фокус",
+
+  // TM panel
+  "tm.title": "TM + Глосарій",
+  "tm.glossaryBtn": "Глосарій",
+  "tm.terms": "Терміни глосарія в рядку",
+  "tm.matches": "Збіги пам'яті перекладів",
+  "tm.loading": "Будую TM…",
+  "tm.empty.pick": "Обери рядок у таблиці.",
+  "tm.empty.none": "Збігів не знайдено.",
+
+  // Preflight
+  "pre.title": "Перевірка перед запаковкою",
+  "pre.scanning": "Сканую всі файли…",
+  "pre.records": "Записів",
+  "pre.translated": "Перекладено",
+  "pre.issues": "Знайдено проблем",
+  "pre.clean": "Чисто. Можна сміливо паковати.",
+  "pre.emptyFilter": "Нічого не знайдено за цим фільтром.",
+  "pre.kind.empty": "Порожній переклад",
+  "pre.kind.newline": "Невідповідність \\n",
+  "pre.kind.tag": "Зміна inline-тегів",
+  "pre.col.kind": "Тип",
+  "pre.col.file": "Файл",
+  "pre.col.id": "ID / деталі",
+
+  // Find/Replace, Glossary
+  "fr.title": "Знайти й замінити",
+  "gl.title": "Глосарій",
+  "gl.savedAt": "Зберігається у .dp2-glossary.json у корені теки",
+  "gl.filter": "Фільтр…",
+  "gl.add": "+ Додати",
+  "gl.empty": "Глосарій порожній. Додай перший термін.",
+  "gl.emptyFilter": "Нічого не знайдено.",
+  "gl.col.src": "Оригінал",
+  "gl.col.tgt": "Переклад",
+  "gl.col.note": "Нотатка",
+  "gl.loading": "Завантажую…",
+
+  // Global search
+  "gs.title": "Пошук по всьому корпусу",
+  "gs.hint": "Esc — закрити, Enter — перейти до першого",
+  "gs.placeholder": "пошуковий запит…",
+  "gs.placeholderRegex": "регекс: foo|bar",
+  "gs.field.all": "Усі поля",
+  "gs.field.jp": "JP",
+  "gs.field.en": "UA / EN-слот",
+  "gs.field.originalEn": "EN оригінал (.bak)",
+  "gs.field.charaName": "Ім'я персонажа",
+  "gs.invalidRegex": "Невалідний регулярний вираз.",
+  "gs.prompt.pickFolder": "Спершу обери теку з JSON-дампами.",
+  "gs.prompt.type": "Почни вводити запит. Шукаю по JP, EN-оригіналу, перекладу та іменах персонажів.",
+  "gs.prompt.searching": "Шукаю по всіх файлах…",
+  "gs.prompt.none": "Нічого не знайдено.",
+  "gs.found": "Знайдено",
+  "gs.in": "у",
+  "gs.files": "файлах",
+  "gs.truncated": "· показано перші 1000 — уточни запит",
+
+  // Statuses & bookmarks
+  "status.colTitle": "Стан",
+  "status.draft": "Чернетка",
+  "status.review": "Перевірка",
+  "status.approved": "Затверджено",
+  "status.bookmarks": "🔖 Закладки",
+  "status.bookmark": "Закладка",
+  "status.translated": "Перекладено",
+  "status.untranslated": "Не перекладено",
+  "status.markDraft": "Позначити як чернетку",
+  "status.markReview": "Позначити на перевірку",
+  "status.markApproved": "Затвердити",
+  "status.clear": "Зняти стан",
+  "status.toggleBookmark": "🔖 Закладка (Ctrl+B)",
+  "status.selected": "Виділено",
+  "bulk.copyOriginal": "Скопіювати оригінал у переклад",
+  "bulk.trim": "Trim пробілів",
+
+  // Tags / placeholders
+  "editor.tags.label": "Теги в оригіналі",
+  "editor.tags.missing": "втрачено {n}",
+  "editor.tags.extra": "зайвих {n}",
+
+  "metrics.session": "Сесія",
+  "metrics.today": "Сьогодні",
+  "metrics.tooltip": "Лічильник перекладених рядків і слів цієї сесії; «Сьогодні» — за весь день у localStorage.",
+
+  // FileList sidebar
+  "files.title": "Дерево файлів",
+  "files.loading": "Завантаження…",
+  "files.empty": "Тека порожня.",
+  "files.pickPrompt": "Натисни «{btn}» у хедері й вибери кореневу теку з JSON-дампами (Common, Daily, Display, Episode, SideQuest, Talk).",
+
+  // Settings modal (DP2)
+  "set.title": "Налаштування",
+  "set.browse": "Огляд",
+  "set.uabea.label": "UABEANext4.Desktop.exe",
+  "set.uabea.hint": "Шлях до GUI-програми UABEA Next, яка імпортує JSON-дампи назад у .assets.",
+  "set.assets.label": "sharedassets0.assets (з гри)",
+  "set.assets.hint": "Файл даних гри, який UABEA відкриватиме і оновлюватиме.",
+  "set.pwsh.label": "pwsh.exe (необов'язково, якщо в PATH)",
+  "set.pwsh.hint": "Шлях до PowerShell 7+. Якщо лишити порожнім — пошук через PATH. Portable ZIP-версія: розпакуй з github.com/PowerShell/PowerShell і вкажи .exe тут.",
+  "set.saving": "Зберігаю...",
+
+  // Find & replace
+  "fr.findLabel": "Знайти",
+  "fr.replaceLabel": "Замінити на",
+  "fr.findPlaceholder": "P.J. Clarkson",
+  "fr.replacePlaceholder": "П.Дж. Кларксон",
+  "fr.caseSensitive": "Регістр",
+  "fr.wholeWord": "Цілі слова",
+  "fr.hint": "Заміна відбувається в усіх записах поточного файла — як у тексті репліки, так і в полі імені персонажа.",
+  "fr.replaceAll": "Замінити все",
+  "fr.noMatches": "Жодного збігу не знайдено.",
+  "fr.replaced": "Замінено {n} збігів у {entries} записах.",
+
+  // Log viewer
+  "log.title": "Лог останнього прогону",
+  "log.copy": "Копіювати",
+  "log.copied": "Скопійовано!",
+  "log.empty": "<порожньо>",
+
+  // Misc tooltips / placeholders
+  "editor.context.tooltip": "Перейти до цієї репліки",
+  "gs.toggle.regex": "Регулярний вираз",
+  "gs.toggle.case": "З урахуванням регістру",
+  "gl.placeholder.tgt": "Френсіс Йорк Морган",
+  "gl.delete": "Видалити",
+
+  // Visual text wrap (only display, file unchanged)
+  "wrap.label": "Перенесення тексту",
+  "wrap.clip": "Один рядок",
+  "wrap.default": "Дві рядки",
+  "wrap.wrap": "Перенести",
+
+  // TXT round-trip
+  "txt.export": "Експорт .txt",
+  "txt.import": "Імпорт .txt",
+  "txt.exportTitle": "Зберегти переклад як .txt",
+  "txt.importTitle": "Імпорт перекладу з .txt",
+  "txt.imported": "Імпортовано {applied} записів (пропущено {missing}).",
+  "txt.exported": "Експортовано у:\n{path}",
+
+  // File context menu / restore
+  "files.restoreOriginal": "Відновити оригінальний файл",
+  "files.confirmRestore": "Точно хочете відновити оригінальний файл «{name}»?\nУсі переклади у цьому файлі будуть втрачені.",
+  "files.confirmRestoreTitle": "Відновити оригінал?",
+  "files.noBackup": "Не знайдено .bak.json — нема з чого відновлювати.",
+  "files.restored": "Файл відновлено з оригіналу.",
+
+  "dialog.ok": "OK",
+  "dialog.yes": "Так",
+  "dialog.no": "Ні",
+  "dialog.exportSuccess": "Експортовано",
+  "dialog.importResult": "Результат імпорту",
+  "dialog.error": "Помилка",
+};
+
+const EN: Dict = {
+  "app.name": "Deadly Premonition Localization Tool",
+  "app.shortBrand": "DP",
+  "app.loading": "Loading…",
+
+  "home.tagline": "Series localization hub",
+  "home.title": "Ukrainian localization for the Deadly Premonition series",
+  "home.subtitle": "Pick a game to work on. Tools, paths and settings are ready.",
+  "home.dp1.title": "Deadly Premonition",
+  "home.dp1.subtitle": "The Director's Cut",
+  "home.dp1.blurb": ".mes dialogue editor via DPMsgTool by MrIkso. One-click glyph substitution and packing.",
+  "home.dp2.title": "Deadly Premonition 2",
+  "home.dp2.subtitle": "A Blessing in Disguise",
+  "home.dp2.blurb": "Editor for sharedassets JSON dumps, translation memory, glossary, .assets packing.",
+  "home.badge.ready": "Ready",
+  "home.badge.soon": "Soon",
+  "home.open": "Open",
+  "home.recent": "Recently opened",
+  "home.setup.prompt": "Need to reconfigure the tools?",
+  "home.setup.button": "Launch setup wizard",
+
+  "onb.tagline": "First launch",
+  "onb.title": "Deadly Premonition Localization Tool setup",
+  "onb.subtitle": "Fill in the paths and click \"Prepare environment\". Tools will be downloaded automatically.",
+  "onb.step1.title": "Tools directory",
+  "onb.step1.hint": "UABEA Next and (optionally) PowerShell 7 will be downloaded here. The folder is created automatically.",
+  "onb.step2.title": "Game file: sharedassets0.assets",
+  "onb.step2.hint": "Usually located at …\\Deadly Premonition 2\\DeadlyPremonition2_Data\\.",
+  "onb.step3.title": "JSON dumps folder (optional)",
+  "onb.step3.hint": "Where you put the unpacked JSONs. You can skip this and choose later.",
+  "onb.step4.title": "Tools",
+  "onb.tool.uabea.desc": "Auto-downloaded from github.com/nesrak1/UABEA. Required for .assets packing.",
+  "onb.tool.pwsh.desc": "Auto-downloaded from github.com/PowerShell/PowerShell. The pack script needs PS 7 (Windows PS 5.1 cannot load .NET 8 DLLs).",
+  "onb.tool.alreadyConfigured": "✓ Already configured:",
+  "onb.tool.pickCustom": "or pick your own {file}…",
+  "onb.btn.pickFolder": "Pick...",
+  "onb.btn.pickFile": "Pick...",
+  "onb.btn.run": "Prepare environment",
+  "onb.btn.running": "Working...",
+  "onb.btn.skip": "Skip (do it later)",
+  "onb.progress.ready": "Working...",
+
+  "btn.cancel": "Cancel",
+  "btn.save": "Save",
+  "btn.close": "Close",
+  "btn.open": "Open...",
+  "btn.back": "Back",
+  "btn.proceed": "Build anyway",
+  "btn.proceedClean": "Build",
+  "btn.fix": "Fix issues",
+  "btn.copy": "copy",
+  "btn.apply": "Use →",
+  "btn.jump": "Go →",
+
+  "header.dp2.product": "Deadly Premonition 2 · Localization Editor",
+  "header.home": "Home (game picker)",
+  "header.find": "Find",
+  "header.replace": "Replace",
+  "header.glossary": "Glossary",
+  "header.tm": "TM",
+  "header.focus": "Focus",
+  "header.folder": "Folder",
+  "header.save": "Save",
+  "header.saved": "Saved",
+  "header.buildAndSave": "Save & build",
+  "header.log": "Log",
+  "header.settings": "Settings",
+  "header.lang": "Language",
+
+  "dp1.brand": "Deadly Premonition · Director's Cut · MES Editor",
+  "dp1.empty.title": "Load eng.json",
+  "dp1.empty.hint": "This is a JSON dump from DPMsgTool.exe to-json mes_all.mes.",
+  "dp1.empty.pickBtn": "Pick eng.json…",
+  "dp1.pack": "Build .mes",
+  "dp1.search.placeholder": "Search by original / translation / id…",
+  "dp1.col.id": "ID",
+  "dp1.col.num": "#",
+  "dp1.col.original": "Original",
+  "dp1.col.ua": "Ukrainian",
+  "dp1.record": "Record #{n}",
+  "dp1.flags": "flags",
+  "dp1.en.label": "EN — original",
+  "dp1.insertToken": "Insert token:",
+  "dp1.bracesWarn": "⚠ unbalanced {...}",
+  "dp1.ua.label": "Ukrainian translation",
+  "dp1.chars": "chars",
+
+  "dp1.set.title": "DP1 settings",
+  "dp1.set.toolLabel": "DPMsgTool.exe",
+  "dp1.set.toolHint": "CLI by MrIkso. Usually at E:\\Localization\\DP1\\DPMsgTool\\DPMsgTool.exe.",
+  "dp1.set.gameLabel": "Game directory: …\\updata_eu\\_us\\message\\output",
+  "dp1.set.gameHint": "The packed mes_all.mes will be placed here.",
+  "dp1.set.engLabel": "Default eng.json (optional)",
+  "dp1.set.engHint": "Remembered to auto-load when opening DP1.",
+
+  "table.filter.all": "All {n}",
+  "table.filter.translated": "Translated",
+  "table.filter.untranslated": "Untranslated",
+  "table.search.placeholder": "Search by ID / original / translation / speaker...",
+  "table.col.num": "#",
+  "table.col.id": "ID",
+  "table.col.original": "Original",
+  "table.col.ua": "Translation",
+  "table.empty": "No results for this query.",
+  "table.stat.rows": "Rows",
+  "table.stat.words": "Words",
+  "table.stat.translatedRows": "Translated rows",
+  "table.stat.translatedWords": "Words",
+  "table.stat.position": "Position",
+  "table.stat.shown": "shown",
+
+  "editor.kind.sentence": "Line",
+  "editor.kind.item": "Item",
+  "editor.voiceOnly": "Voice only",
+  "editor.unknown": "Unknown",
+  "editor.jp.label": "JP — original",
+  "editor.en.label": "EN — original from .bak",
+  "editor.name.label": "Speaker name (UA)",
+  "editor.ua.sentence": "Ukrainian translation",
+  "editor.ua.item": "Ukrainian name",
+  "editor.context.prev": "↑ previous",
+  "editor.context.next": "↓ next",
+  "editor.kbd.saveNext": "Save + next",
+  "editor.kbd.nextUntranslated": "Next untranslated",
+  "editor.kbd.between": "Between rows",
+  "editor.kbd.copyOriginal": "Copy original",
+  "editor.kbd.save": "Save",
+  "editor.kbd.focus": "Focus",
+
+  "tm.title": "TM + Glossary",
+  "tm.glossaryBtn": "Glossary",
+  "tm.terms": "Glossary terms in this row",
+  "tm.matches": "Translation memory matches",
+  "tm.loading": "Building TM…",
+  "tm.empty.pick": "Select a row in the table.",
+  "tm.empty.none": "No matches found.",
+
+  "pre.title": "Pre-flight check",
+  "pre.scanning": "Scanning all files…",
+  "pre.records": "Records",
+  "pre.translated": "Translated",
+  "pre.issues": "Issues found",
+  "pre.clean": "All clean. Safe to build.",
+  "pre.emptyFilter": "No issues for this filter.",
+  "pre.kind.empty": "Empty translation",
+  "pre.kind.newline": "Newline mismatch",
+  "pre.kind.tag": "Inline tag change",
+  "pre.col.kind": "Kind",
+  "pre.col.file": "File",
+  "pre.col.id": "ID / details",
+
+  "fr.title": "Find & replace",
+  "gl.title": "Glossary",
+  "gl.savedAt": "Stored in .dp2-glossary.json at the folder root",
+  "gl.filter": "Filter…",
+  "gl.add": "+ Add",
+  "gl.empty": "Glossary is empty. Add your first term.",
+  "gl.emptyFilter": "No matches.",
+  "gl.col.src": "Source",
+  "gl.col.tgt": "Translation",
+  "gl.col.note": "Note",
+  "gl.loading": "Loading…",
+
+  "gs.title": "Search across the corpus",
+  "gs.hint": "Esc — close, Enter — go to first result",
+  "gs.placeholder": "search query…",
+  "gs.placeholderRegex": "regex: foo|bar",
+  "gs.field.all": "All fields",
+  "gs.field.jp": "JP",
+  "gs.field.en": "UA / EN slot",
+  "gs.field.originalEn": "EN original (.bak)",
+  "gs.field.charaName": "Speaker name",
+  "gs.invalidRegex": "Invalid regular expression.",
+  "gs.prompt.pickFolder": "Pick a JSON dumps folder first.",
+  "gs.prompt.type": "Start typing. I search JP, EN original, translation and speaker names.",
+  "gs.prompt.searching": "Searching all files…",
+  "gs.prompt.none": "No results.",
+  "gs.found": "Found",
+  "gs.in": "in",
+  "gs.files": "files",
+  "gs.truncated": "· first 1000 shown — refine your query",
+
+  "status.colTitle": "Status",
+  "status.draft": "Draft",
+  "status.review": "Review",
+  "status.approved": "Approved",
+  "status.bookmarks": "🔖 Bookmarks",
+  "status.bookmark": "Bookmark",
+  "status.translated": "Translated",
+  "status.untranslated": "Untranslated",
+  "status.markDraft": "Mark as draft",
+  "status.markReview": "Mark for review",
+  "status.markApproved": "Approve",
+  "status.clear": "Clear status",
+  "status.toggleBookmark": "🔖 Bookmark (Ctrl+B)",
+  "status.selected": "Selected",
+  "bulk.copyOriginal": "Copy original into translation",
+  "bulk.trim": "Trim whitespace",
+
+  "editor.tags.label": "Tags in original",
+  "editor.tags.missing": "{n} missing",
+  "editor.tags.extra": "{n} extra",
+
+  "metrics.session": "Session",
+  "metrics.today": "Today",
+  "metrics.tooltip": "Translated rows and words counter for this session; \"Today\" is the full-day count from localStorage.",
+
+  "files.title": "File tree",
+  "files.loading": "Loading…",
+  "files.empty": "Folder is empty.",
+  "files.pickPrompt": "Click «{btn}» in the header and pick the root folder with JSON dumps (Common, Daily, Display, Episode, SideQuest, Talk).",
+
+  "set.title": "Settings",
+  "set.browse": "Browse",
+  "set.uabea.label": "UABEANext4.Desktop.exe",
+  "set.uabea.hint": "Path to the UABEA Next GUI app that re-imports JSON dumps into .assets.",
+  "set.assets.label": "sharedassets0.assets (from the game)",
+  "set.assets.hint": "Game data file that UABEA opens and updates.",
+  "set.pwsh.label": "pwsh.exe (optional if in PATH)",
+  "set.pwsh.hint": "Path to PowerShell 7+. Leave empty to fall back to PATH. Portable ZIP from github.com/PowerShell/PowerShell works — unpack and point here.",
+  "set.saving": "Saving...",
+
+  "fr.findLabel": "Find",
+  "fr.replaceLabel": "Replace with",
+  "fr.findPlaceholder": "P.J. Clarkson",
+  "fr.replacePlaceholder": "Replacement",
+  "fr.caseSensitive": "Match case",
+  "fr.wholeWord": "Whole words",
+  "fr.hint": "Replacement is applied to all entries in the current file — both line text and speaker name fields.",
+  "fr.replaceAll": "Replace all",
+  "fr.noMatches": "No matches found.",
+  "fr.replaced": "Replaced {n} matches in {entries} entries.",
+
+  "log.title": "Last run log",
+  "log.copy": "Copy",
+  "log.copied": "Copied!",
+  "log.empty": "<empty>",
+
+  "editor.context.tooltip": "Jump to this line",
+  "gs.toggle.regex": "Regular expression",
+  "gs.toggle.case": "Match case",
+  "gl.placeholder.tgt": "Translation term",
+  "gl.delete": "Delete",
+
+  "wrap.label": "Text wrap",
+  "wrap.clip": "Clip",
+  "wrap.default": "Two lines",
+  "wrap.wrap": "Wrap",
+
+  "txt.export": "Export .txt",
+  "txt.import": "Import .txt",
+  "txt.exportTitle": "Save translation as .txt",
+  "txt.importTitle": "Import translation from .txt",
+  "txt.imported": "Imported {applied} entries (skipped {missing}).",
+  "txt.exported": "Exported to:\n{path}",
+
+  "files.restoreOriginal": "Restore original file",
+  "files.confirmRestore": "Really restore original file «{name}»?\nAll translations in this file will be lost.",
+  "files.confirmRestoreTitle": "Restore original?",
+  "files.noBackup": "No .bak.json found — nothing to restore from.",
+  "files.restored": "File restored from original.",
+
+  "dialog.ok": "OK",
+  "dialog.yes": "Yes",
+  "dialog.no": "No",
+  "dialog.exportSuccess": "Exported",
+  "dialog.importResult": "Import result",
+  "dialog.error": "Error",
+};
+
+const dictionaries: Record<Lang, Dict> = { uk: UK, en: EN };
+
+let currentLang: Lang = DEFAULT_LANG;
+try {
+  const stored = localStorage.getItem(STORAGE_KEY);
+  if (stored === "uk" || stored === "en") currentLang = stored;
+} catch {}
+
+const listeners = new Set<() => void>();
+
+export function getLang(): Lang {
+  return currentLang;
+}
+
+export function setLang(l: Lang) {
+  currentLang = l;
+  try { localStorage.setItem(STORAGE_KEY, l); } catch {}
+  listeners.forEach((fn) => fn());
+}
+
+export function t(key: string, params?: Record<string, string | number>): string {
+  const d = dictionaries[currentLang] || UK;
+  let s = d[key] ?? UK[key] ?? key;
+  if (params) {
+    for (const k in params) {
+      s = s.replace(new RegExp(`\\{${k}\\}`, "g"), String(params[k]));
+    }
+  }
+  return s;
+}
+
+/** React hook: повертає актуальну `t` і ре-рендерить компонент при зміні мови. */
+export function useT(): typeof t {
+  const [, force] = useState(0);
+  useEffect(() => {
+    const cb = () => force((x) => x + 1);
+    listeners.add(cb);
+    return () => { listeners.delete(cb); };
+  }, []);
+  return t;
+}

@@ -1,0 +1,213 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* ──────────────────────────────────────────────────────────────
+   Professional dark theme — GitHub / VS Code inspired.
+   Нейтральні слейтові тони, не б'є по очах, для довгих сесій.
+   Inter скрізь, JetBrains Mono лише в редакторі.
+   ────────────────────────────────────────────────────────────── */
+
+:root {
+  --bg:           #0d1117;
+  --bg-surface:   #161b22;
+  --bg-elevated:  #1c2128;
+  --bg-input:     #0d1117;
+  --border:       #30363d;
+  --border-soft:  #21262d;
+  --border-focus: #58a6ff;
+
+  --text:        #c9d1d9;
+  --text-strong: #f0f6fc;
+  --text-muted:  #8b949e;
+  --text-faint:  #6e7681;
+
+  --accent:        #58a6ff;
+  --accent-soft:   rgba(56, 139, 253, 0.15);
+  --accent-strong: #1f6feb;
+
+  --success: #3fb950;
+  --warning: #d29922;
+  --danger:  #f85149;
+
+  --row-hover:  rgba(177, 186, 196, 0.08);
+  --row-active: rgba(56, 139, 253, 0.12);
+}
+
+html, body, #root {
+  height: 100%;
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+  font-family: "Inter", system-ui, -apple-system, sans-serif;
+  font-size: 13px;
+  line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
+  overflow: hidden;
+}
+
+h1, h2, h3, h4 {
+  font-family: "Inter", system-ui, sans-serif;
+  font-weight: 700;
+  color: var(--text-strong);
+  letter-spacing: -0.01em;
+}
+
+::-webkit-scrollbar { width: 12px; height: 12px; }
+::-webkit-scrollbar-track { background: var(--bg); }
+::-webkit-scrollbar-thumb {
+  background: #2d333b;
+  border-radius: 6px;
+  border: 3px solid var(--bg);
+  background-clip: padding-box;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: #444c56;
+  background-clip: padding-box;
+}
+
+::selection { background: var(--accent-soft); color: var(--text-strong); }
+
+button:focus-visible, input:focus-visible, [tabindex]:focus-visible {
+  outline: 2px solid var(--border-focus);
+  outline-offset: 1px;
+  border-radius: 4px;
+}
+
+a { color: var(--accent); text-decoration: none; }
+a:hover { text-decoration: underline; }
+
+/* ── Buttons ─────────────────────────────────────────────────── */
+.dp-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 12px;
+  font-size: 12px;
+  font-weight: 500;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  background: var(--bg-elevated);
+  color: var(--text);
+  cursor: pointer;
+  transition: background 0.12s, border-color 0.12s, color 0.12s;
+  white-space: nowrap;
+  font-family: inherit;
+  height: 28px;
+}
+.dp-btn:hover {
+  background: #21262d;
+  border-color: #444c56;
+}
+.dp-btn:active { background: #161b22; }
+
+.dp-btn--primary {
+  background: var(--accent-strong);
+  border-color: rgba(240, 246, 252, 0.10);
+  color: #fff;
+}
+.dp-btn--primary:hover {
+  background: #388bfd;
+  border-color: rgba(240, 246, 252, 0.10);
+}
+.dp-btn--primary:active { background: var(--accent-strong); }
+
+.dp-btn--ghost {
+  background: transparent;
+  border-color: transparent;
+}
+.dp-btn--ghost:hover {
+  background: var(--bg-elevated);
+  border-color: var(--border);
+}
+
+.dp-btn--success {
+  background: #238636;
+  border-color: rgba(240, 246, 252, 0.10);
+  color: #fff;
+}
+.dp-btn--success:hover { background: #2ea043; }
+
+.dp-btn:disabled,
+.dp-btn[disabled] {
+  opacity: 0.45;
+  cursor: not-allowed;
+  pointer-events: none;
+}
+
+/* ── Inputs ──────────────────────────────────────────────────── */
+.dp-input {
+  background: var(--bg-input);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 6px 10px;
+  color: var(--text);
+  font-family: inherit;
+  font-size: 13px;
+  width: 100%;
+  height: 32px;
+  transition: border-color 0.12s, box-shadow 0.12s;
+}
+.dp-input:focus {
+  outline: none;
+  border-color: var(--border-focus);
+  box-shadow: 0 0 0 3px rgba(56, 139, 253, 0.25);
+}
+.dp-input::placeholder { color: var(--text-faint); }
+
+/* ── Card surface ────────────────────────────────────────────── */
+.dp-card {
+  background: var(--bg-surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+
+/* ── Status pill ─────────────────────────────────────────────── */
+.dp-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 1px 7px;
+  font-size: 11px;
+  font-weight: 600;
+  border-radius: 999px;
+  background: var(--bg-elevated);
+  border: 1px solid var(--border);
+  color: var(--text-muted);
+}
+.dp-pill--success {
+  background: rgba(46, 160, 67, 0.15);
+  border-color: rgba(46, 160, 67, 0.40);
+  color: #56d364;
+}
+.dp-pill--info {
+  background: rgba(56, 139, 253, 0.15);
+  border-color: rgba(56, 139, 253, 0.40);
+  color: #79c0ff;
+}
+.dp-pill--warn {
+  background: rgba(210, 153, 34, 0.15);
+  border-color: rgba(210, 153, 34, 0.40);
+  color: #e3b341;
+}
+.dp-pill--danger {
+  background: rgba(248, 81, 73, 0.15);
+  border-color: rgba(248, 81, 73, 0.40);
+  color: #ff7b72;
+}
+
+/* ── Tag (kbd-like badge) ────────────────────────────────────── */
+.dp-kbd {
+  display: inline-flex;
+  align-items: center;
+  padding: 1px 6px;
+  font-family: "JetBrains Mono", ui-monospace, monospace;
+  font-size: 10px;
+  font-weight: 600;
+  color: var(--text-muted);
+  background: var(--bg-elevated);
+  border: 1px solid var(--border);
+  border-bottom-width: 2px;
+  border-radius: 4px;
+  line-height: 1.5;
+}
