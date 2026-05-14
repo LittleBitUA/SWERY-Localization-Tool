@@ -21,41 +21,58 @@ function FileNode({
   const total = node.totalEntries ?? 0;
   const translated = node.translatedCount ?? 0;
   const pct = total > 0 ? Math.round((translated / total) * 100) : 0;
+  const isComplete = total > 0 && translated >= total;
   const padLeft = 8 + depth * 14;
+
+  // Якщо файл повністю перекладено — назва і лічильник у success-кольорі,
+  // прогрес-бар теж зелений. Active state перекриває success (білий текст
+  // на акцент-фоні залишається читабельним).
+  const baseColor = isActive
+    ? "text-[var(--text-strong)]"
+    : isComplete
+    ? "text-[var(--success)] hover:text-[var(--success)]"
+    : "text-[var(--text-muted)] hover:text-[var(--text)]";
 
   return (
     <button
       onClick={() => loadFile(node.path)}
       onContextMenu={(e) => onContext(e, node)}
       className={`group w-full text-left py-1 transition-colors ${
-        isActive
-          ? "bg-[var(--row-active)] text-[var(--text-strong)]"
-          : "hover:bg-[var(--row-hover)] text-[var(--text-muted)] hover:text-[var(--text)]"
-      }`}
+        isActive ? "bg-[var(--row-active)]" : "hover:bg-[var(--row-hover)]"
+      } ${baseColor}`}
       style={{ paddingLeft: padLeft, paddingRight: 8 }}
     >
       <div className="flex items-center gap-1.5">
         <svg
-          className="w-3.5 h-3.5 shrink-0 text-[var(--text-faint)]"
+          className={`w-3.5 h-3.5 shrink-0 ${isComplete ? "text-[var(--success)]" : "text-[var(--text-faint)]"}`}
           fill="none"
           viewBox="0 0 24 24"
           stroke="currentColor"
           strokeWidth={2}
         >
-          <path strokeLinecap="round" strokeLinejoin="round" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+          {isComplete ? (
+            <path strokeLinecap="round" strokeLinejoin="round" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" />
+          ) : (
+            <path strokeLinecap="round" strokeLinejoin="round" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+          )}
         </svg>
         <span className="font-mono text-[11.5px] truncate flex-1" title={node.name}>
           {node.name}
         </span>
         {total > 0 && (
-          <span className="text-[10px] tabular-nums text-[var(--text-faint)] shrink-0">
+          <span className={`text-[10px] tabular-nums shrink-0 ${
+            isComplete ? "text-[var(--success)] font-semibold" : "text-[var(--text-faint)]"
+          }`}>
             {translated}/{total}
           </span>
         )}
       </div>
       {total > 0 && (
         <div className="mt-1 h-[2px] rounded-full bg-[var(--border-soft)] overflow-hidden" style={{ marginLeft: 18 }}>
-          <div className="h-full bg-[var(--accent)] transition-all" style={{ width: `${pct}%` }} />
+          <div
+            className={`h-full transition-all ${isComplete ? "bg-[var(--success)]" : "bg-[var(--accent)]"}`}
+            style={{ width: `${pct}%` }}
+          />
         </div>
       )}
     </button>

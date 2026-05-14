@@ -41,19 +41,91 @@ async function collectJsonFiles(dir) {
   return out;
 }
 
+// ── In-memory cache ─────────────────────────────────────────────────────
+// Ключ — абсолютний шлях. Значення містить mtime для валідації, raw content,
+// плюс lazy-parsed tree і entries. Між тасками всі read-only операції
+// (search, stats, glossary-check, name-check) тепер 0 disk-read і 0 parse,
+// якщо файл не змінювався. Write-таски оновлюють кеш після запису.
+const fileCache = new Map();
+const CACHE_MAX = 300; // максимум файлів у кеші (LRU-eviction)
+
+function touchLRU(fp) {
+  // переміщаємо ключ у кінець — простий LRU через перевставлення
+  const v = fileCache.get(fp);
+  if (v) { fileCache.delete(fp); fileCache.set(fp, v); }
+}
+
+function evictIfNeeded() {
+  while (fileCache.size > CACHE_MAX) {
+    const oldest = fileCache.keys().next().value;
+    if (!oldest) break;
+    fileCache.delete(oldest);
+  }
+}
+
+async function getCached(fp) {
+  let stat;
+  try { stat = await fs.stat(fp); } catch { return null; }
+  const cur = fileCache.get(fp);
+  if (cur && cur.mtime === stat.mtimeMs) {
+    touchLRU(fp);
+    return cur;
+  }
+  let content;
+  try { content = await fs.readFile(fp, 'utf8'); } catch { return null; }
+  const bakPath = fp.replace(/\.json$/i, '.bak.json');
+  let bakContent = null;
+  try { bakContent = await fs.readFile(bakPath, 'utf8'); } catch {}
+  const entry = {
+    path: fp,
+    mtime: stat.mtimeMs,
+    content,
+    bakContent,
+    // Лазі-парс — обчислюється на першому запиті, далі переюзаємо.
+    tree: null,
+    bakTree: null,
+    entries: null,
+  };
+  fileCache.set(fp, entry);
+  evictIfNeeded();
+  return entry;
+}
+
+function getEntries(cached) {
+  if (!cached) return null;
+  if (cached.entries) return cached.entries;
+  if (!cached.tree) {
+    try { cached.tree = JSON.parse(cached.content); } catch { return null; }
+  }
+  if (cached.bakContent && !cached.bakTree) {
+    try { cached.bakTree = JSON.parse(cached.bakContent); } catch {}
+  }
+  cached.entries = flattenDp2(cached.path, cached.tree, cached.bakTree);
+  return cached.entries;
+}
+
+// Після того як task сам ЗАПИСАВ файл, оновлюємо кеш: новий content + invalidate tree/entries.
+async function updateCacheAfterWrite(fp, newContent) {
+  let stat;
+  try { stat = await fs.stat(fp); } catch { return; }
+  const existing = fileCache.get(fp);
+  fileCache.set(fp, {
+    path: fp,
+    mtime: stat.mtimeMs,
+    content: newContent,
+    bakContent: existing ? existing.bakContent : null,
+    tree: null,
+    bakTree: null,
+    entries: null,
+  });
+  touchLRU(fp);
+}
+
+// Зворотньо-сумісний рід: викликалось як readAllFromFolder, тепер через кеш.
 async function readAllFromFolder(folder) {
   if (!folder) return [];
   const files = await collectJsonFiles(folder);
-  // Паралельне читання — fs IO зазвичай повільніший за CPU-парсинг.
-  const result = await Promise.all(files.map(async (fp) => {
-    try {
-      const content = await fs.readFile(fp, 'utf8');
-      let bakContent = null;
-      const bakPath = fp.replace(/\.json$/i, '.bak.json');
-      try { bakContent = await fs.readFile(bakPath, 'utf8'); } catch {}
-      return { path: fp, content, bakContent };
-    } catch { return null; }
-  }));
+  const result = await Promise.all(files.map(getCached));
   return result.filter(Boolean);
 }
 
@@ -144,13 +216,8 @@ async function taskBuildTm(dp2Folder, dp1EngPath) {
   if (dp2Folder) {
     const all = await readAllFromFolder(dp2Folder);
     for (const f of all) {
-      let tree = null;
-      let bakTree = null;
-      try { tree = JSON.parse(f.content); } catch { continue; }
-      if (f.bakContent) {
-        try { bakTree = JSON.parse(f.bakContent); } catch {}
-      }
-      const entries = flattenDp2(f.path, tree, bakTree);
+      const entries = getEntries(f);
+      if (!entries) continue;
       const fileName = (f.path.split(/[\\/]/).pop() || f.path).replace(/\.json$/i, '');
       for (const e of entries) {
         if (!isTranslated(e)) continue;
@@ -228,13 +295,8 @@ async function taskCorpusStats(folder) {
   const all = await readAllFromFolder(folder);
   const perFile = [];
   for (const f of all) {
-    let tree = null;
-    let bakTree = null;
-    try { tree = JSON.parse(f.content); } catch { continue; }
-    if (f.bakContent) {
-      try { bakTree = JSON.parse(f.bakContent); } catch {}
-    }
-    const entries = flattenDp2(f.path, tree, bakTree);
+    const entries = getEntries(f);
+    if (!entries) continue;
     let fileTotal = 0;
     let fileTrans = 0;
     for (const e of entries) {
@@ -293,7 +355,7 @@ async function taskGlossaryConsistency(folder, glossary) {
     const src = String((g && g.src) || '').trim();
     const tgt = String((g && g.tgt) || '').trim();
     if (!src || !tgt) continue;
-    const key = src.toLowerCase() + ' ' + tgt.toLowerCase();
+    const key = src.toLowerCase() + '' + tgt.toLowerCase();
     if (seen.has(key)) continue;
     seen.add(key);
     terms.push({ src, tgt, srcLc: src.toLowerCase(), tgtLc: tgt.toLowerCase() });
@@ -310,13 +372,8 @@ async function taskGlossaryConsistency(folder, glossary) {
 
   const all = await readAllFromFolder(folder);
   for (const f of all) {
-    let tree = null;
-    let bakTree = null;
-    try { tree = JSON.parse(f.content); } catch { continue; }
-    if (f.bakContent) {
-      try { bakTree = JSON.parse(f.bakContent); } catch {}
-    }
-    const entries = flattenDp2(f.path, tree, bakTree);
+    const entries = getEntries(f);
+    if (!entries) continue;
     const fileName = (f.path.split(/[\\/]/).pop() || f.path).replace(/\.json$/i, '');
     for (let i = 0; i < entries.length; i++) {
       const e = entries[i];
@@ -359,6 +416,401 @@ async function taskGlossaryConsistency(folder, glossary) {
   return result;
 }
 
+// ── Smart subtitle break (CJS-порт src/lib/subtitleFormat.ts) ──────────
+const SB_SHORT_LEADING = new Set([
+  'і','й','а','в','у','з','на','до','по','за','при','від','для','без','та',
+  'як','що','не','чи','бо','is','to','of','in','on','at','a','an','the','or','if',
+]);
+const SB_PUNCT_END = new Set(['.', ',', '!', '?', ';', ':', '—', '–']);
+function sbIsShortLeading(w) {
+  const c = w.replace(/[.,!?:;—–-]+$/u, '').toLowerCase();
+  return SB_SHORT_LEADING.has(c);
+}
+function sbEndsWithPunct(w) {
+  return !!w && SB_PUNCT_END.has(w[w.length - 1]);
+}
+function smartBreakLine(line, maxLine) {
+  const flat = String(line || '').replace(/[ \t]+/g, ' ').trim();
+  if (!flat || flat.length <= maxLine) return flat;
+  const words = flat.split(' ');
+  if (words.length < 2) return flat;
+  const n = words.length;
+  const cum = [0];
+  for (let k = 0; k < n; k++) cum.push(cum[k] + words[k].length);
+  const total = cum[n];
+  let bestI = -1, bestScore = Infinity;
+  for (let i = 0; i < n - 1; i++) {
+    const l1 = cum[i+1] + i;
+    const l2 = (total - cum[i+1]) + (n - i - 2);
+    if (l1 > maxLine || l2 > maxLine) continue;
+    let s = Math.abs(l1 - l2);
+    if (sbEndsWithPunct(words[i])) s -= 12;
+    if (sbIsShortLeading(words[i])) s += 15;
+    if (s < bestScore) { bestScore = s; bestI = i; }
+  }
+  if (bestI >= 0) {
+    return words.slice(0, bestI+1).join(' ') + '\n' + words.slice(bestI+1).join(' ');
+  }
+  const lines = [];
+  let cur = '';
+  for (const w of words) {
+    const nx = cur ? cur + ' ' + w : w;
+    if (nx.length > maxLine && cur) { lines.push(cur); cur = w; }
+    else cur = nx;
+  }
+  if (cur) lines.push(cur);
+  return lines.join('\n');
+}
+
+function smartBreak(text, maxLine) {
+  maxLine = maxLine || 38;
+  if (!text) return text;
+  // Зберігаємо leading/trailing \n.
+  let leading = 0;
+  let middle = String(text);
+  while (middle.startsWith('\n')) { leading++; middle = middle.slice(1); }
+  let trailing = 0;
+  while (middle.endsWith('\n')) { trailing++; middle = middle.slice(0, -1); }
+  if (!middle) return text;
+  // Параграфи відокремлені порожніми рядками — обробляються незалежно.
+  // Якщо параграф уже має свій \n — це навмисний поділ юзера, не чіпаємо.
+  const paragraphs = middle.split(/\n{2,}/);
+  const rebuilt = paragraphs.map((p) =>
+    p.includes('\n') ? p : smartBreakLine(p, maxLine)
+  );
+  return '\n'.repeat(leading) + rebuilt.join('\n\n') + '\n'.repeat(trailing);
+}
+
+// ── Task: smart-break-all ─────────────────────────────────────────────
+// Драбинка для всіх перекладених рядків у корпусі. Dry-run / apply.
+async function taskSmartBreakAll(folder, opts) {
+  const result = { files: [], totalEntries: 0, totalChanges: 0 };
+  if (!folder) return result;
+  const maxLine = (opts && opts.maxLine) || 38;
+  const dryRun = !(opts && opts.dryRun === false);
+  const fs2 = require('node:fs/promises');
+  const all = await readAllFromFolder(folder);
+  for (const f of all) {
+    let tree;
+    try { tree = JSON.parse(f.content); } catch { continue; }
+    let bakTree = null;
+    if (f.bakContent) { try { bakTree = JSON.parse(f.bakContent); } catch {} }
+    const entries = flattenDp2(f.path, tree, bakTree);
+    let changed = 0;
+    for (const e of entries) {
+      if (!isTranslated(e)) continue;
+      const next = smartBreak(e.en, maxLine);
+      if (next === e.en) continue;
+      // write into tree (in-memory)
+      applyToTree(tree, e, 'en', next);
+      changed++;
+    }
+    result.totalEntries += entries.length;
+    result.totalChanges += changed;
+    if (changed > 0) {
+      const fileName = (f.path.split(/[\\/]/).pop() || f.path).replace(/\.json$/i, '');
+      result.files.push({ path: f.path, fileName, changed });
+      if (!dryRun) {
+        const json = JSON.stringify(tree, null, 2);
+        const bakPath = f.path.replace(/\.json$/i, '.bak.json');
+        try { await fs2.access(bakPath); }
+        catch { try { await fs2.writeFile(bakPath, f.content, 'utf8'); } catch {} }
+        await fs2.writeFile(f.path, json, 'utf8');
+        await updateCacheAfterWrite(f.path, json);
+      }
+    }
+  }
+  return result;
+}
+
+// ── Task: file-counts ──────────────────────────────────────────────────
+// Швидке сканування всіх файлів теки: повертає total/translated на файл.
+// Викликається при заході в DP2-редактор, щоб одразу показати прогрес у дереві
+// без потреби клікати по кожному файлу.
+async function taskFileCounts(folder) {
+  const out = [];
+  if (!folder) return out;
+  const all = await readAllFromFolder(folder);
+  for (const f of all) {
+    const entries = getEntries(f);
+    if (!entries) continue;
+    let translated = 0;
+    for (const e of entries) if (isTranslated(e)) translated++;
+    out.push({ path: f.path, total: entries.length, translated });
+  }
+  return out;
+}
+
+// ── Task: name-consistency ─────────────────────────────────────────────
+// Збирає всі унікальні `charaName` у корпусі DP2 і групує "схожі" варіанти:
+//   case-only різниця (`Йорк` / `йорк`), друкарські помилки (`Йорк` / `Йорг`).
+// Допомагає знайти варіанти імені, які треба об'єднати під одне канонічне.
+function levenshtein(a, b) {
+  if (a.length === 0) return b.length;
+  if (b.length === 0) return a.length;
+  let prev = new Array(b.length + 1);
+  let cur = new Array(b.length + 1);
+  for (let j = 0; j <= b.length; j++) prev[j] = j;
+  for (let i = 1; i <= a.length; i++) {
+    cur[0] = i;
+    for (let j = 1; j <= b.length; j++) {
+      const cost = a[i - 1] === b[j - 1] ? 0 : 1;
+      cur[j] = Math.min(cur[j - 1] + 1, prev[j] + 1, prev[j - 1] + cost);
+    }
+    [prev, cur] = [cur, prev];
+  }
+  return prev[b.length];
+}
+
+function looksLikeNameTypo(a, b) {
+  if (a === b) return false;
+  const A = a.toLowerCase().trim();
+  const B = b.toLowerCase().trim();
+  if (A === B) return true; // різниця лише у регістрі / пробілах
+  const len = Math.max(A.length, B.length);
+  // Дуже короткі назви (≤3 симв) — нічого не групуємо (false-positives).
+  if (len < 4) return false;
+  const d = levenshtein(A, B);
+  if (len <= 6) return d === 1;
+  if (len <= 12) return d <= 2;
+  return d <= Math.floor(len / 5); // ~1 typo на 5 симв
+}
+
+async function taskNameConsistency(folder) {
+  const result = { groups: [], totalNames: 0, totalEntries: 0 };
+  if (!folder) return result;
+
+  const map = new Map(); // name -> { count, samples: [{...}] }
+  const all = await readAllFromFolder(folder);
+  for (const f of all) {
+    const entries = getEntries(f);
+    if (!entries) continue;
+    const fileName = (f.path.split(/[\\/]/).pop() || f.path).replace(/\.json$/i, '');
+    for (const e of entries) {
+      if (e.kind !== 'sentence') continue;
+      const name = String(e.charaName || '').trim();
+      if (!name) continue;
+      result.totalEntries++;
+      let v = map.get(name);
+      if (!v) { v = { count: 0, samples: [] }; map.set(name, v); }
+      v.count++;
+      if (v.samples.length < 5) {
+        v.samples.push({
+          filePath: f.path, fileName,
+          entryIndex: entries.indexOf(e),
+          entryId: e.id || '',
+          en: (e.en || '').slice(0, 140),
+        });
+      }
+    }
+  }
+
+  result.totalNames = map.size;
+  const names = Array.from(map.entries())
+    .map(([name, v]) => ({ name, count: v.count, samples: v.samples }))
+    .sort((a, b) => b.count - a.count);
+
+  // Жадібне групування: беремо найчастіший варіант як канонічний, шукаємо
+  // схожі серед менш частих.
+  const assigned = new Set();
+  for (let i = 0; i < names.length; i++) {
+    if (assigned.has(i)) continue;
+    const variants = [names[i]];
+    assigned.add(i);
+    for (let j = i + 1; j < names.length; j++) {
+      if (assigned.has(j)) continue;
+      if (looksLikeNameTypo(names[i].name, names[j].name)) {
+        variants.push(names[j]);
+        assigned.add(j);
+      }
+    }
+    if (variants.length > 1) {
+      result.groups.push({
+        canonical: variants[0].name,
+        variants,
+      });
+    }
+  }
+
+  return result;
+}
+
+// ── Task: rename-chara (exact equality, безпечно для cross-file replace) ──
+async function taskRenameChara(folder, oldName, newName) {
+  const result = { files: [], totalEntries: 0 };
+  if (!folder || !oldName || oldName === newName) return result;
+  const fs2 = require('node:fs/promises');
+  const all = await readAllFromFolder(folder);
+  for (const f of all) {
+    let tree;
+    try { tree = JSON.parse(f.content); } catch { continue; }
+    let changed = 0;
+    const sheets = tree && tree.m_sheets && tree.m_sheets.Array || [];
+    for (const sheet of sheets) {
+      const list = sheet && sheet.m_list && sheet.m_list.Array || [];
+      for (const item of list) {
+        if (!item || !item.m_scenarioList) continue;
+        const scenarios = item.m_scenarioList.Array || [];
+        for (const scen of scenarios) {
+          const sents = scen && scen.m_sentences && scen.m_sentences.Array || [];
+          // Тільки EN-слот (LANG_EN = 1)
+          const en = sents[LANG_EN];
+          if (!en) continue;
+          if (en.m_charaName === oldName) {
+            en.m_charaName = newName;
+            changed++;
+          }
+        }
+      }
+    }
+    if (changed > 0) {
+      result.totalEntries += changed;
+      result.files.push({
+        path: f.path,
+        fileName: (f.path.split(/[\\/]/).pop() || f.path).replace(/\.json$/i, ''),
+        changed,
+      });
+      const json = JSON.stringify(tree, null, 2);
+      const bakPath = f.path.replace(/\.json$/i, '.bak.json');
+      try { await fs2.access(bakPath); }
+      catch { try { await fs2.writeFile(bakPath, f.content, 'utf8'); } catch {} }
+      await fs2.writeFile(f.path, json, 'utf8');
+      await updateCacheAfterWrite(f.path, json);
+    }
+  }
+  return result;
+}
+
+// ── Task: batch-replace ────────────────────────────────────────────────
+// Find & Replace по всьому DP2-корпусу одразу. Два режими:
+//   • dryRun=true  — нічого не пише, повертає preview: { matches per file }
+//   • dryRun=false — застосовує і пише файли (з .bak.json як у звичайному save)
+async function taskBatchReplace(folder, opts) {
+  const result = {
+    files: [],         // {path, fileName, entriesChanged, replacements, hits}
+    totalEntries: 0,
+    totalReplacements: 0,
+    truncated: false,
+  };
+  if (!folder || !opts || !opts.find) return result;
+
+  let re;
+  if (opts.regex) {
+    try {
+      re = new RegExp(opts.find, opts.caseSensitive ? 'g' : 'gi');
+    } catch { return result; }
+  } else {
+    const esc = opts.find.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const pat = opts.wholeWord ? `\\b${esc}\\b` : esc;
+    re = new RegExp(pat, opts.caseSensitive ? 'g' : 'gi');
+  }
+  const fields = opts.field === 'all' ? ['en'] : [opts.field];
+  // Безпека: дозволяємо тільки 'en' / 'charaName'. JP/originalEn — read-only.
+  const writable = fields.filter((f) => f === 'en' || f === 'charaName');
+  if (writable.length === 0) return result;
+
+  const all = await readAllFromFolder(folder);
+  const MAX_HITS_PER_FILE = 200;
+
+  for (const f of all) {
+    let tree;
+    try { tree = JSON.parse(f.content); } catch { continue; }
+    const bakTree = f.bakContent ? safeJson(f.bakContent) : null;
+    const entries = flattenDp2(f.path, tree, bakTree);
+    const fileName = (f.path.split(/[\\/]/).pop() || f.path).replace(/\.json$/i, '');
+
+    let fileEntriesChanged = 0;
+    let fileReps = 0;
+    const hits = [];
+
+    for (let i = 0; i < entries.length; i++) {
+      const e = entries[i];
+      let touched = false;
+
+      for (const fld of writable) {
+        const cur = String(e[fld] ?? '');
+        if (!cur) continue;
+        re.lastIndex = 0;
+        if (!re.test(cur)) continue;
+        re.lastIndex = 0;
+        const next = cur.replace(re, opts.replace);
+        // Лічильник саме застосувань — рахуємо їх через regex
+        re.lastIndex = 0;
+        const matches = cur.match(re) || [];
+        if (matches.length === 0 || next === cur) continue;
+        fileReps += matches.length;
+        touched = true;
+
+        if (hits.length < MAX_HITS_PER_FILE) {
+          hits.push({
+            entryIndex: i,
+            entryId: e.id || '',
+            field: fld,
+            before: cur,
+            after: next,
+          });
+        }
+        // Записуємо у tree
+        applyToTree(tree, e, fld, next);
+      }
+
+      if (touched) fileEntriesChanged++;
+    }
+
+    result.totalEntries += fileEntriesChanged;
+    result.totalReplacements += fileReps;
+
+    if (fileEntriesChanged > 0) {
+      result.files.push({
+        path: f.path, fileName,
+        entriesChanged: fileEntriesChanged,
+        replacements: fileReps,
+        hits,
+      });
+
+      if (!opts.dryRun) {
+        const fs2 = require('node:fs/promises');
+        const json = JSON.stringify(tree, null, 2);
+        // створити .bak якщо нема
+        const bakPath = f.path.replace(/\.json$/i, '.bak.json');
+        try { await fs2.access(bakPath); }
+        catch {
+          try { await fs2.writeFile(bakPath, f.content, 'utf8'); } catch {}
+        }
+        await fs2.writeFile(f.path, json, 'utf8');
+        await updateCacheAfterWrite(f.path, json);
+      }
+    }
+  }
+  return result;
+}
+
+function safeJson(s) { try { return JSON.parse(s); } catch { return null; } }
+
+// Записує `value` у дерево JSON у те саме місце, звідки entry читався.
+function applyToTree(tree, entry, field, value) {
+  const sheets = tree && tree.m_sheets && tree.m_sheets.Array;
+  if (!sheets) return false;
+  const sheet = sheets[entry.sheetIndex];
+  const item = sheet && sheet.m_list && sheet.m_list.Array && sheet.m_list.Array[entry.listIndex];
+  if (!item) return false;
+  if (entry.kind === 'sentence') {
+    const scen = item.m_scenarioList && item.m_scenarioList.Array && item.m_scenarioList.Array[entry.scenarioIndex];
+    const sent = scen && scen.m_sentences && scen.m_sentences.Array && scen.m_sentences.Array[LANG_EN];
+    if (!sent) return false;
+    if (field === 'en') sent.m_serif = value;
+    else if (field === 'charaName') sent.m_charaName = value;
+    return true;
+  }
+  if (entry.kind === 'item') {
+    const arr = item.m_text && item.m_text.Array;
+    if (!arr) return false;
+    if (field === 'en') arr[LANG_EN] = value;
+    return true;
+  }
+  return false;
+}
+
 // ── Task: search-all ────────────────────────────────────────────────────
 async function taskSearchAll(folder, opts) {
   const result = { hits: [], byFile: [], truncated: false };
@@ -384,13 +836,8 @@ async function taskSearchAll(folder, opts) {
 
   const all = await readAllFromFolder(folder);
   outer: for (const f of all) {
-    let tree = null;
-    let bakTree = null;
-    try { tree = JSON.parse(f.content); } catch { continue; }
-    if (f.bakContent) {
-      try { bakTree = JSON.parse(f.bakContent); } catch {}
-    }
-    const entries = flattenDp2(f.path, tree, bakTree);
+    const entries = getEntries(f);
+    if (!entries) continue;
     const fileName = (f.path.split(/[\\/]/).pop() || f.path).replace(/\.json$/i, '');
 
     for (let i = 0; i < entries.length; i++) {
@@ -433,6 +880,16 @@ parentPort.on('message', async (msg) => {
       result = await taskCorpusStats(payload.folder);
     } else if (type === 'glossary-consistency') {
       result = await taskGlossaryConsistency(payload.folder, payload.glossary);
+    } else if (type === 'batch-replace') {
+      result = await taskBatchReplace(payload.folder, payload.opts);
+    } else if (type === 'file-counts') {
+      result = await taskFileCounts(payload.folder);
+    } else if (type === 'smart-break-all') {
+      result = await taskSmartBreakAll(payload.folder, payload.opts || {});
+    } else if (type === 'name-consistency') {
+      result = await taskNameConsistency(payload.folder);
+    } else if (type === 'rename-chara') {
+      result = await taskRenameChara(payload.folder, payload.oldName, payload.newName);
     } else {
       throw new Error('Unknown task type: ' + type);
     }

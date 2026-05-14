@@ -316,25 +316,23 @@ export function SentenceTable() {
 
   return (
     <section className="h-full flex flex-col min-w-0 min-h-0 bg-[var(--bg)]">
-      {/* Toolbar: search + filters */}
+      {/* Toolbar: search + filters. Статусні фільтри — кнопки-крапки з tooltip,
+          щоб у вузькому вікні все вміщалося в один рядок. */}
       <div className="h-12 border-b border-[var(--border-soft)] flex items-center gap-2 px-3">
         <input
           type="search"
           value={search}
           onChange={(e) => setSearch(e.target.value)}
           placeholder={t("table.search.placeholder")}
-          className="dp-input flex-1 max-w-md"
+          className="dp-input flex-1 max-w-md min-w-[100px]"
         />
 
-        <div className="flex gap-1 ml-2 flex-wrap">
+        <div className="flex items-center gap-1 ml-2 shrink-0">
+          {/* Основні: All / Untranslated / Translated — текст */}
           {[
             { v: "all", label: t("table.filter.all", { n: entries.length }) },
             { v: "untranslated", label: t("table.filter.untranslated") },
             { v: "translated", label: t("table.filter.translated") },
-            { v: "draft", label: t("status.draft") },
-            { v: "review", label: t("status.review") },
-            { v: "approved", label: t("status.approved") },
-            { v: "bookmarks", label: t("status.bookmarks") },
           ].map((opt) => (
             <button
               key={opt.v}
@@ -344,22 +342,66 @@ export function SentenceTable() {
               {opt.label}
             </button>
           ))}
+
+          {/* Розділювач */}
+          <span className="w-px h-5 bg-[var(--border-soft)] mx-1" />
+
+          {/* Статусні — крапки з tooltip */}
+          {[
+            { v: "draft", label: t("status.draft"), color: "var(--accent)" },
+            { v: "review", label: t("status.review"), color: "var(--warning)" },
+            { v: "approved", label: t("status.approved"), color: "var(--success)" },
+          ].map((opt) => (
+            <button
+              key={opt.v}
+              onClick={() => setFilter(opt.v as any)}
+              title={opt.label}
+              className={`dp-btn dp-btn--ghost !w-7 !p-0 flex items-center justify-center ${
+                filter === opt.v ? "border-[var(--accent)] bg-[var(--accent-soft)]" : ""
+              }`}
+            >
+              <span
+                className="inline-block w-2.5 h-2.5 rounded-full"
+                style={{ background: opt.color }}
+              />
+            </button>
+          ))}
+
+          {/* Bookmarks — окрема icon-кнопка */}
+          <button
+            onClick={() => setFilter("bookmarks" as any)}
+            title={t("status.bookmarks")}
+            className={`dp-btn dp-btn--ghost !w-7 !p-0 flex items-center justify-center ${
+              filter === "bookmarks" ? "border-[var(--accent)] bg-[var(--accent-soft)]" : ""
+            }`}
+          >
+            <svg className="w-3.5 h-3.5" fill="currentColor" viewBox="0 0 24 24">
+              <path d="M5 5a2 2 0 012-2h10a2 2 0 012 2v16l-7-3.5L5 21V5z" />
+            </svg>
+          </button>
         </div>
 
-        <button className="dp-btn dp-btn--ghost" onClick={handleExportTxt} title={t("txt.export")}>
-          {/* документ з виходячою стрілкою — експорт */}
+        <button
+          className="dp-btn dp-btn--ghost shrink-0"
+          onClick={handleExportTxt}
+          title={t("txt.export")}
+        >
           <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
             <path strokeLinecap="round" strokeLinejoin="round" d="M9 5h-3a2 2 0 00-2 2v12a2 2 0 002 2h12a2 2 0 002-2v-3" />
             <path strokeLinecap="round" strokeLinejoin="round" d="M16 3l5 5m0 0v-5m0 5h-5M9 14l11-11" />
           </svg>
-          {t("txt.export")}
+          <span className="hidden 2xl:inline">{t("txt.export")}</span>
         </button>
-        <button className="dp-btn dp-btn--ghost" onClick={handleImportTxt} title={t("txt.import")}>
+        <button
+          className="dp-btn dp-btn--ghost shrink-0"
+          onClick={handleImportTxt}
+          title={t("txt.import")}
+        >
           <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
             <path strokeLinecap="round" strokeLinejoin="round" d="M15 5h3a2 2 0 012 2v12a2 2 0 01-2 2H6a2 2 0 01-2-2V7a2 2 0 012-2h3" />
             <path strokeLinecap="round" strokeLinejoin="round" d="M12 3v12m0 0l-4-4m4 4l4-4" />
           </svg>
-          {t("txt.import")}
+          <span className="hidden 2xl:inline">{t("txt.import")}</span>
         </button>
       </div>
 

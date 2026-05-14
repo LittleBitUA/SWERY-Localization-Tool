@@ -28,20 +28,35 @@
 
 ### ✨ Можливості
 
-- 🎮 **Дві гри в одному**: Deadly Premonition (DPMsgTool by MrIkso) і Deadly Premonition 2 (UABEA-формат). Загальний хаб з вибором гри на старті.
-- 💾 **Запаковка одним кліком**: для DP1 — підстановка кириличних гліфів і виклик `DPMsgTool.exe from-json`; для DP2 — `import-to-assets.ps1` через PowerShell 7 + UABEA. Готовий файл переноситься у директорію гри автоматично.
-- 🧠 **Пам'ять перекладів (TM)** з обох корпусів одночасно — DP1↔DP2 cross-search, fuzzy-збіги через Jaccard.
-- 📖 **Спільний глосарій** + автопідсвічування термінів у активному рядку.
-- 🔍 **Глобальний пошук** по всьому корпусу: regex, case-sensitive, фільтр по полю (JP / EN / UA / ім'я). `Ctrl+Shift+F`.
-- ✅ **Pre-flight перевірки** перед запаковкою: порожні переклади, невідповідність `\n`, втрачені inline-теги.
-- 🏷️ **Статуси і закладки**: `draft / review / approved` + 🔖. Зберігаються у sidecar-файлах, JSON гри не зачіпається.
-- 🎨 **Підсвічування плейсхолдерів** (`{NEXT_SEGMENT}`, `<color=red>`, `\n` тощо) у Monaco з live-діагностикою втрачених тегів.
-- 📤 **Експорт у `.txt`** з round-trip safe форматом — переклад зовнішньому перекладачу і назад без втрат.
-- 📊 **Метрики продуктивності**: рядки/слова за сесію + щоденний акумулятор.
-- 🔧 **Bulk-операції**: масово копіювати оригінал, trim, позначити як approved.
+**Робота з текстом**
+- 🎮 **Дві гри в одному хабі**: Deadly Premonition (DPMsgTool by MrIkso) і Deadly Premonition 2 (UABEA-формат). Тематичний головний екран у стилі FBI-дозьє з лічильниками прогресу.
+- 💾 **Запаковка одним кліком**: для DP1 — підстановка кириличних гліфів і `DPMsgTool.exe from-json`; для DP2 — `import-to-assets.ps1` через PowerShell 7 + UABEA. Готовий файл одразу у директорії гри.
+- 🧠 **Пам'ять перекладів (TM)** з обох корпусів — cross-search DP1↔DP2, Jaccard fuzzy. **Bulk TM auto-fill (1:1)** — авто-заповнення неперекладених рядків з exact-match source (без substring-замін).
+- 📖 **Спільний глосарій** + **перевірка термінологічної консистентності** — всюди де `src` зустрічається, `tgt` має бути присутній.
+- 👤 **Перевірка консистентності імен героїв** (DP2): шукає типос-варіанти (`Йорк / Йорг`), one-click exact-equality перейменування по всіх файлах.
+- 🔍 **Глобальний пошук** по корпусу: regex, case-sensitive, фільтр по полю. `Ctrl+Shift+F`.
+- ♻️ **Cross-file Find & Replace** (DP2): pre-flight з прев'ю кожної заміни → confirm → execute по всіх файлах із автоматичним `.bak`.
+
+**Якість і навігація**
+- 🏷️ **Статуси і закладки**: `draft / review / approved` + 🔖. Sidecar-файли, JSON гри не чіпається.
+- 📐 **Smart subtitle break ("Драбинка")**: балансує переклад у симетричні рядки без розривів слів і сирітських прийменників — per-entry та **cross-file batch** для всього корпусу.
+- 🎨 **Підсвічування плейсхолдерів** (`{NEXT_SEGMENT}`, `<color=red>`, `\n`) у Monaco + live-діагностика втрачених/зайвих тегів.
+- 🔤 **DP1 glyph audit**: позначає символи поза мапою підміни (74 гліфи) у редакторі + загальний аудит — production-баги до запаковки.
+- 📺 **In-game preview**: рендерить активний рядок у стилі реальних субтитрів DP2 — використовується **справжній шрифт гри** (`FOT-NewCinemaAStd-D`), з курсивом `[i]…[/i]`, плейсхолдер-чіпами і ▽-маркером.
+- 📊 **Огляд готовності корпусу**: підсумок % завершеності, UA/EN слова й символи, топ-15 файлів за обсягом.
+
+**Робота зі шрифтами (DP2)**
+- 🔠 **Font workshop**: окрема вкладка "Шрифти" на DP2-картці — експорт 4 ассетних шрифтів (`FOT-NewRodinProN-DB`, `FOT-NewCezannePro-DB`, `FOT-NewCezannePro-M`, `FOT-NewCinemaAStd-D`) як TTF/OTF, заміна на свій + repack `sharedassets0.assets` із `.bak`.
+- 🔬 **Live preview**: щойно експортовано — шрифт реєструється через FontFace API, видно текст саме цим шрифтом.
+
+**Workflow і безпека**
+- 💼 **Auto-save + crash recovery**: незбережені правки скидаються у `.autosave.json` через 30с; при наступному відкритті — пропонує відновити.
+- 📤 **`.txt` round-trip** для зовнішніх перекладачів (ID-based mapping, preserve-translated).
+- 🔧 **Bulk-операції**: copy-original, trim, mark-approved — масово.
+- 🍞 **Toast-сповіщення** у правому нижньому куті — статус-меседжі не ламають layout.
 - 🌐 **Інтерфейс UK / EN** з миттєвим перемиканням.
-- ⚙️ **Майстер першого запуску**: автозавантажує UABEA Next з [github.com/nesrak1/UABEA](https://github.com/nesrak1/UABEA) і PowerShell 7 з [github.com/PowerShell/PowerShell](https://github.com/PowerShell/PowerShell) одним кліком.
-- 🚀 **Worker-threads** для важких операцій (пошук, TM, валідація) — UI ніколи не блокується.
+- ⚙️ **Майстер першого запуску**: автозавантажує UABEA Next і PowerShell 7.
+- 🚀 **Worker-threads + JSON cache** (LRU 300 файлів, mtime-валідація) — повторні cross-file операції миттєві.
 
 ### 📦 Швидкий старт
 
@@ -89,20 +104,35 @@ npm run build:exe    # Portable .exe → release/
 
 ### ✨ Features
 
-- 🎮 **Two games in one hub**: Deadly Premonition (via [DPMsgTool by MrIkso](https://github.com/MrIkso/DPMsgTool)) and Deadly Premonition 2 (UABEA format). Pick a game on launch.
-- 💾 **One-click packing**: DP1 — cyrillic glyph substitution + `DPMsgTool.exe from-json`; DP2 — `import-to-assets.ps1` via PowerShell 7 + UABEA. Output is dropped into the game directory automatically.
-- 🧠 **Translation Memory (TM)** across both corpora — DP1↔DP2 cross-search with Jaccard fuzzy match.
-- 📖 **Shared glossary** with live highlighting in the active row.
-- 🔍 **Global search** across the whole corpus: regex, case sensitive, field filter (JP / EN / UA / speaker). `Ctrl+Shift+F`.
-- ✅ **Pre-flight checks** before packing: empty translations, `\n` mismatches, missing inline tags.
+**Text workflow**
+- 🎮 **Two games in one hub**: Deadly Premonition (via [DPMsgTool by MrIkso](https://github.com/MrIkso/DPMsgTool)) and Deadly Premonition 2 (UABEA format). Themed FBI-dossier home screen with progress counters.
+- 💾 **One-click packing**: DP1 — cyrillic glyph substitution + `DPMsgTool.exe from-json`; DP2 — `import-to-assets.ps1` via PowerShell 7 + UABEA. Output goes straight into the game directory.
+- 🧠 **Translation Memory (TM)** across both corpora — DP1↔DP2 cross-search with Jaccard fuzzy match. **Bulk TM auto-fill (1:1)** — auto-applies exact source matches (no substring guesswork).
+- 📖 **Shared glossary** + **terminology consistency check**: where `src` appears, `tgt` must be present.
+- 👤 **Character name consistency** (DP2): detects typo variants (`Йорк / Йорг`), one-click exact-equality rename across all files.
+- 🔍 **Global search** across the corpus: regex, case sensitive, field filter (JP / EN / UA / speaker). `Ctrl+Shift+F`.
+- ♻️ **Cross-file Find & Replace** (DP2): preview each change → confirm → batch-apply across all files with automatic `.bak`.
+
+**Quality & navigation**
 - 🏷️ **Statuses & bookmarks**: `draft / review / approved` + 🔖. Stored in sidecar files — game JSON stays untouched.
-- 🎨 **Placeholder highlighting** (`{NEXT_SEGMENT}`, `<color=red>`, `\n` etc.) in Monaco with live diagnostics for missing/extra tags.
-- 📤 **`.txt` round-trip export/import** — send to an external translator and get it back losslessly.
-- 📊 **Session metrics**: rows/words per session + per-day accumulator.
-- 🔧 **Bulk operations**: copy original into translation, trim, mark as approved — all multi-row.
-- 🌐 **UK / EN interface** with instant switching.
-- ⚙️ **First-run wizard**: auto-downloads UABEA Next from [github.com/nesrak1/UABEA](https://github.com/nesrak1/UABEA) and PowerShell 7 from [github.com/PowerShell/PowerShell](https://github.com/PowerShell/PowerShell).
-- 🚀 **Worker threads** for heavy operations (search, TM, validation) — the UI never blocks.
+- 📐 **Smart subtitle break ("Драбинка")**: balances translation into symmetric lines — no word splits, no orphan prepositions. Per-entry button + cross-file batch.
+- 🎨 **Placeholder highlighting** (`{NEXT_SEGMENT}`, `<color=red>`, `\n` etc.) in Monaco + live diagnostics for missing/extra tags.
+- 🔤 **DP1 glyph audit**: flags characters outside the 74-glyph substitution map in the editor + corpus-wide audit — catches production bugs before packing.
+- 📺 **In-game preview**: renders the active row in DP2 subtitle style — uses the **real game font** (`FOT-NewCinemaAStd-D`) with italic `[i]…[/i]`, placeholder chips and ▽ marker.
+- 📊 **Corpus readiness overview**: % completion, UA/EN word & char counts, top-15 files by volume.
+
+**Font workshop (DP2)**
+- 🔠 **Font workshop**: dedicated "Fonts" tab on the DP2 card — export the 4 asset fonts (`FOT-NewRodinProN-DB`, `FOT-NewCezannePro-DB`, `FOT-NewCezannePro-M`, `FOT-NewCinemaAStd-D`) as TTF/OTF, replace with your own + repack `sharedassets0.assets` with `.bak`.
+- 🔬 **Live preview**: as soon as exported, fonts are registered via FontFace API so you see your sample text rendered with the actual game font.
+
+**Workflow & safety**
+- 💼 **Auto-save + crash recovery**: unsaved edits flush to `.autosave.json` every 30s; on reload, the app offers to restore.
+- 📤 **`.txt` round-trip** for external translators (ID-based mapping, preserve-translated).
+- 🔧 **Bulk operations**: copy-original, trim, mark-approved — across selection.
+- 🍞 **Toast notifications** in the bottom-right corner — status messages never break header layout.
+- 🌐 **UK / EN UI** with instant switching.
+- ⚙️ **First-run wizard**: auto-downloads UABEA Next and PowerShell 7.
+- 🚀 **Worker threads + JSON cache** (LRU 300 files, mtime validation) — repeated cross-file ops are instant.
 
 ### 📦 Quick start
 

@@ -72,10 +72,15 @@ export function buildTxt(header: string, entries: ExportEntry[]): string {
     );
     out.push("");
   }
+  // Safety-net: hint і speaker мусять бути одно-рядковими, інакше їх \n зливаються
+  // у body наступного рядка .txt і парсер бере JP-частину як початок тексту.
+  const oneLine = (s: string) => s.replace(/[\r\n]+/g, " ").replace(/\s+/g, " ").trim();
   for (const e of entries) {
-    out.push(`### ${e.index}${e.hint ? "  — " + e.hint : ""}`);
-    if (e.speaker !== undefined && e.speaker !== null && e.speaker !== "") {
-      out.push(`${e.speaker}:`);
+    const hint = e.hint ? oneLine(e.hint) : "";
+    out.push(`### ${e.index}${hint ? "  — " + hint : ""}`);
+    if (e.speaker) {
+      const sp = oneLine(e.speaker);
+      if (sp) out.push(`${sp}:`);
     }
     out.push(escapeForTxt(e.text || ""));
     out.push("");
@@ -114,9 +119,21 @@ export function parseTxt(raw: string): ParsedBlock[] {
     const m = ln.match(BLOCK_RE);
     if (m) {
       flushBlock();
+      // Hint у заголовку може мати кілька секцій через " · " (для item-form
+      // це "id_FOO · Назва товару"). ID — лише перший токен; інше — підказка
+      // для людини, парсити її не треба.
+      let id: string | undefined = undefined;
+      if (m[2]) {
+        const hint = m[2].trim();
+        // Все до першого `·` — це ID. ID-формати DP2 (m_messageId / m_enumName)
+        // ніколи не містять `·`, тож сплітимо саме по ньому, а не по " · "
+        // (роздільник міг втратити пробіл, якщо itemName був whitespace-only).
+        const sep = hint.indexOf("·");
+        id = sep > 0 ? hint.slice(0, sep).trim() : hint;
+      }
       cur = {
         index: parseInt(m[1], 10),
-        id: m[2] ? m[2].trim() : undefined,
+        id,
         text: "",
       };
       curTextLines = [];

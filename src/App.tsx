@@ -4,26 +4,31 @@ import { FileList } from "./components/FileList";
 import { SentenceTable } from "./components/SentenceTable";
 import { EditorPanel } from "./components/EditorPanel";
 import { FindReplaceModal } from "./components/FindReplaceModal";
+import { BatchReplaceModal } from "./components/BatchReplaceModal";
 import { TmPanel } from "./components/TmPanel";
 import { GlossaryModal } from "./components/GlossaryModal";
 import { GlobalSearchModal } from "./components/GlobalSearchModal";
 import { Resizer } from "./components/Resizer";
-import { HomeScreen } from "./components/HomeScreen";
+import { HomeV2 as HomeScreen } from "./ui-v2/HomeV2";
 import { OnboardingScreen } from "./components/OnboardingScreen";
 import { Dp1Editor } from "./games/dp1/Dp1Editor";
 import { Dp1SettingsModal } from "./games/dp1/Dp1SettingsModal";
+import { Dp2FontsEditor } from "./games/dp2/Dp2FontsEditor";
+import { SettingsModal } from "./components/SettingsModal";
 import { readGlossary, type GlossaryEntry } from "./lib/glossary";
 import { useLocalStorage } from "./lib/useLocalStorage";
 import { useStore } from "./lib/store";
 import { useAutosave } from "./lib/useAutosave";
 import type { SetupStatus } from "./lib/ipc";
 import { DialogHost } from "./lib/dialogs";
+import { ToastProvider } from "./components/ToastProvider";
 
-type Stage = "loading" | "onboarding" | "home" | "editor-dp2" | "editor-dp1";
+type Stage = "loading" | "onboarding" | "home" | "editor-dp2" | "editor-dp1" | "fonts-dp2";
 type ActiveGame = "dp1" | "dp2" | null;
 
 export default function App() {
   const [findOpen, setFindOpen] = useState(false);
+  const [batchOpen, setBatchOpen] = useState(false);
   const [glossaryOpen, setGlossaryOpen] = useState(false);
   const [globalSearchOpen, setGlobalSearchOpen] = useState(false);
   const [tmVisible, setTmVisible] = useLocalStorage<boolean>("dp2.ui.tmVisible", true);
@@ -33,6 +38,7 @@ export default function App() {
   const [tmW, setTmW] = useLocalStorage<number>("dp2.ui.tmW", 300);
   const [activeGame, setActiveGame] = useLocalStorage<ActiveGame>("dp2.ui.activeGame", null);
   const [dp1SettingsOpen, setDp1SettingsOpen] = useState(false);
+  const [fontsSettingsOpen, setFontsSettingsOpen] = useState(false);
   const [glossary, setGlossary] = useState<GlossaryEntry[]>([]);
 
   const [stage, setStage] = useState<Stage>("loading");
@@ -130,7 +136,7 @@ export default function App() {
         <div className="h-screen flex items-center justify-center bg-[var(--bg)] text-[var(--text-muted)] text-[13px]">
           Завантаження…
         </div>
-        <DialogHost />
+        <DialogHost /><ToastProvider />
       </>
     );
   }
@@ -148,34 +154,41 @@ export default function App() {
             }}
           />
         </div>
-        <DialogHost />
+        <DialogHost /><ToastProvider />
       </>
     );
   }
 
   if (stage === "home") {
     const recents = setupStatus?.settings.recentFolders ?? [];
+    const homeProps = {
+      recentFolders: recents,
+      onPickGame: (id: "dp1" | "dp2", mode?: "text" | "fonts") => {
+        setActiveGame(id);
+        if (id === "dp1") {
+          setStage("editor-dp1");
+        } else if (mode === "fonts") {
+          setStage("fonts-dp2");
+        } else {
+          setStage("editor-dp2");
+        }
+      },
+      onOpenSetup: async () => {
+        await window.dp2.setupReset();
+        await refreshStatusAndRoute();
+      },
+      onOpenFolder: async (p: string) => {
+        await window.dp2.saveSettings({ lastFolder: p });
+        setActiveGame("dp2");
+        setStage("editor-dp2");
+      },
+    };
     return (
       <>
         <div className="h-screen flex flex-col">
-          <HomeScreen
-            recentFolders={recents}
-            onPickGame={(id) => {
-              setActiveGame(id);
-              setStage(id === "dp1" ? "editor-dp1" : "editor-dp2");
-            }}
-            onOpenSetup={async () => {
-              await window.dp2.setupReset();
-              await refreshStatusAndRoute();
-            }}
-            onOpenFolder={async (p) => {
-              await window.dp2.saveSettings({ lastFolder: p });
-              setActiveGame("dp2");
-              setStage("editor-dp2");
-            }}
-          />
+          <HomeScreen {...homeProps} />
         </div>
-        <DialogHost />
+        <DialogHost /><ToastProvider />
       </>
     );
   }
@@ -196,7 +209,26 @@ export default function App() {
           />
           <Dp1SettingsModal open={dp1SettingsOpen} onClose={() => setDp1SettingsOpen(false)} />
         </div>
-        <DialogHost />
+        <DialogHost /><ToastProvider />
+      </>
+    );
+  }
+
+  if (stage === "fonts-dp2") {
+    return (
+      <>
+        <div className="h-screen flex flex-col">
+          <Dp2FontsEditor
+            onHome={() => {
+              setActiveGame(null);
+              setStage("home");
+              window.dp2.setupStatus().then(setSetupStatus);
+            }}
+            onOpenSettings={() => setFontsSettingsOpen(true)}
+          />
+          <SettingsModal open={fontsSettingsOpen} onClose={() => setFontsSettingsOpen(false)} />
+        </div>
+        <DialogHost /><ToastProvider />
       </>
     );
   }
@@ -208,6 +240,7 @@ export default function App() {
     <div className="h-screen flex flex-col">
       <Header
         onFindReplace={() => setFindOpen(true)}
+        onBatchReplace={() => setBatchOpen(true)}
         onGlobalSearch={() => setGlobalSearchOpen(true)}
         onOpenGlossary={() => setGlossaryOpen(true)}
         onToggleTm={() => setTmVisible((v) => !v)}
@@ -249,6 +282,7 @@ export default function App() {
         )}
       </div>
       <FindReplaceModal open={findOpen} onClose={() => setFindOpen(false)} />
+      <BatchReplaceModal open={batchOpen} onClose={() => setBatchOpen(false)} />
       <GlobalSearchModal open={globalSearchOpen} onClose={() => setGlobalSearchOpen(false)} />
       <GlossaryModal
         open={glossaryOpen}
@@ -258,7 +292,7 @@ export default function App() {
           if (saved) setGlossary(saved);
         }}
       />
-      <DialogHost />
+      <DialogHost /><ToastProvider />
     </div>
   );
 }

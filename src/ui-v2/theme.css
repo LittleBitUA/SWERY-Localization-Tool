@@ -1,0 +1,437 @@
+/* UI v2 — FBI Case Files естетика. Натхнення: York Morgan як агент ФБР,
+   слідча дошка, манільські теки з друкованими нотатками і червоними штампами.
+   Не використовуємо: золото-градієнти, watermark-серця, diagonal-ribbon. */
+
+.dp-v2 {
+  /* Темне підкладдя — стара слідча кімната. Дерево + тінь. */
+  --v2-bg: #14110d;
+  --v2-bg-surface: #1c1812;
+  --v2-bg-elevated: #251f17;
+  --v2-border-soft: #2d2620;
+  --v2-border: #3a322a;
+
+  /* Тексти на темному. */
+  --v2-text: #d8cbb5;
+  --v2-text-strong: #f0e4cc;
+  --v2-text-muted: #a8997f;
+  --v2-text-faint: #6e6354;
+
+  /* "Манілла" — папір теки. */
+  --v2-paper: #d8c89a;          /* основний відтінок паперу */
+  --v2-paper-edge: #b8a578;      /* край теки, темніший */
+  --v2-paper-shadow: #8b7a4d;
+  --v2-paper-ink: #2a1f12;       /* колір тексту на папері */
+  --v2-paper-ink-soft: #5a4a32;
+
+  /* Червоний штамп / annotation. */
+  --v2-stamp: #a82a25;
+  --v2-stamp-soft: rgba(168, 42, 37, 0.85);
+
+  /* Зелений штамп для CLOSED/DONE. */
+  --v2-stamp-green: #2d6b3a;
+
+  /* Шрифти — Constantia/Cambria дають характернішу серіфну форму ніж Georgia;
+     Consolas — сучасніший і чистіший монотонний ніж Courier New. */
+  --v2-font-typed: "Consolas", "Cascadia Mono", "JetBrains Mono", ui-monospace, monospace;
+  --v2-font-serif: "Constantia", "Cambria", "Charter", "Source Serif Pro", "Georgia", serif;
+  --v2-font-display: "Constantia", "Cambria", "Charter", "Source Serif Pro", "Georgia", serif;
+}
+
+/* ── Background: розмитий DP2-boxart (Le Carré) під теплим dark-overlay ── */
+.v2-board-wrapper {
+  position: relative;
+  isolation: isolate;
+  background: #0a0806; /* fallback поки image не завантажилось */
+}
+.v2-board-bg-image {
+  /* fixed — щоб картинка не "втікала" при скролі, як справжній фон. */
+  position: fixed;
+  inset: 0;
+  z-index: 0;
+  background-size: cover;
+  background-position: center 30%;
+  background-repeat: no-repeat;
+  /* Помірний blur — щоб картинку було видно, але деталі не відволікали. */
+  filter: blur(10px) saturate(0.95) brightness(0.85);
+  transform: scale(1.06);
+  transform-origin: center;
+}
+.v2-board-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 0;
+  pointer-events: none;
+  background:
+    /* лише vignette по краях — щоб центр був добре видно */
+    radial-gradient(ellipse 100% 90% at 50% 45%, rgba(0,0,0, 0) 40%, rgba(8, 4, 2, 0.7) 100%),
+    /* тонкий film-grain поверх */
+    repeating-linear-gradient(
+      115deg,
+      rgba(255,255,255, 0.015) 0px,
+      rgba(255,255,255, 0.015) 1px,
+      transparent 1px,
+      transparent 4px
+    ),
+    /* легкий теплий tint, не закриває картинку */
+    linear-gradient(180deg, rgba(20, 8, 4, 0.25) 0%, rgba(8, 4, 2, 0.45) 100%);
+}
+
+/* ── Header: "Federal Bureau of Localization" ──────────────────────── */
+.v2-bureau-mark {
+  font-family: var(--v2-font-typed);
+  font-size: 10.5px;
+  letter-spacing: 0.35em;
+  text-transform: uppercase;
+  color: var(--v2-text-strong);
+  border-top: 1px solid var(--v2-text-muted);
+  border-bottom: 1px solid var(--v2-text-muted);
+  padding: 4px 14px;
+  display: inline-block;
+  opacity: 0.85;
+  text-shadow: 0 1px 2px rgba(0,0,0, 0.85);
+}
+.v2-hub-title {
+  font-family: var(--v2-font-display);
+  font-size: 44px;
+  font-weight: 700;
+  font-style: italic;
+  letter-spacing: -0.01em;
+  line-height: 1;
+  color: var(--v2-text-strong);
+  margin: 16px 0 8px;
+  text-shadow:
+    0 1px 0 rgba(0,0,0, 0.6),
+    0 0 24px rgba(168, 42, 37, 0.35);
+}
+.v2-hub-subtitle {
+  font-family: var(--v2-font-typed);
+  font-size: 11.5px;
+  color: var(--v2-text-muted);
+  letter-spacing: 0.08em;
+}
+
+/* ── Картка-тека ──────────────────────────────────────────────────── */
+.v2-folder {
+  position: relative;
+  display: block;
+  padding-top: 18px;        /* місце для tab-вушка */
+  text-align: left;
+  cursor: pointer;
+  width: 100%;
+  background: transparent;
+  border: none;
+  /* Hover лежить на всьому контейнері — таба і папір рухаються разом. */
+  transition: transform 200ms ease-out;
+  will-change: transform;
+}
+.v2-folder:hover {
+  transform: translateY(-4px);
+}
+
+/* Вушко-таб теки */
+.v2-folder__tab {
+  position: absolute;
+  top: 0;
+  left: 28px;
+  background: var(--v2-paper-edge);
+  color: var(--v2-paper-ink);
+  font-family: var(--v2-font-typed);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  padding: 5px 14px 7px;
+  border-radius: 4px 4px 0 0;
+  box-shadow: 0 -1px 0 rgba(0,0,0, 0.2) inset;
+}
+.v2-folder__tab::before {
+  /* "перфорація" — два кружки як на справжній теці */
+  content: "";
+  position: absolute;
+  left: 6px;
+  top: 50%;
+  width: 4px;
+  height: 4px;
+  background: var(--v2-bg);
+  border-radius: 50%;
+  transform: translateY(-50%);
+  box-shadow: 0 -7px 0 var(--v2-bg);
+}
+
+/* Лист паперу */
+.v2-folder__paper {
+  position: relative;
+  background:
+    /* линійки як на лінованому папері */
+    repeating-linear-gradient(
+      transparent 0px,
+      transparent 21px,
+      rgba(42, 31, 18, 0.06) 21px,
+      rgba(42, 31, 18, 0.06) 22px
+    ),
+    /* пляма "кави" вгорі справа */
+    radial-gradient(ellipse 80px 50px at 88% 18%, rgba(120, 80, 30, 0.12), transparent 70%),
+    var(--v2-paper);
+  border: 1px solid var(--v2-paper-shadow);
+  border-radius: 2px 8px 8px 8px;
+  padding: 22px 26px 22px;
+  box-shadow:
+    0 1px 0 rgba(0,0,0, 0.4) inset,
+    0 14px 28px rgba(0,0,0, 0.45),
+    0 4px 0 rgba(0,0,0, 0.25);
+  /* Підйом виконується на батьківському .v2-folder (разом з табою),
+     тут лишаємо тільки зміну тіні для глибини на hover. */
+  transition: box-shadow 200ms ease-out;
+  /* Фіксований font-smoothing — щоб ClearType не змінювало рендер на hover. */
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  text-rendering: geometricPrecision;
+}
+.v2-folder:hover .v2-folder__paper {
+  box-shadow:
+    0 1px 0 rgba(0,0,0, 0.4) inset,
+    0 22px 40px rgba(0,0,0, 0.6),
+    0 6px 0 rgba(0,0,0, 0.3);
+}
+
+/* Заголовок картки — назва справи */
+.v2-folder__case {
+  font-family: var(--v2-font-typed);
+  font-size: 10px;
+  letter-spacing: 0.25em;
+  text-transform: uppercase;
+  color: var(--v2-paper-ink-soft);
+  margin-bottom: 4px;
+}
+.v2-folder__subject {
+  font-family: var(--v2-font-serif);
+  font-size: 21px;
+  font-weight: 700;
+  color: var(--v2-paper-ink);
+  line-height: 1.15;
+  margin-bottom: 2px;
+}
+.v2-folder__altname {
+  font-family: var(--v2-font-typed);
+  font-size: 11px;
+  color: var(--v2-paper-ink-soft);
+  letter-spacing: 0.08em;
+  margin-bottom: 18px;
+}
+
+/* Друковані рядки даних */
+.v2-folder__field {
+  display: flex;
+  gap: 12px;
+  font-family: var(--v2-font-typed);
+  font-size: 12px;
+  color: var(--v2-paper-ink);
+  line-height: 1.8;
+}
+.v2-folder__field-label {
+  flex-shrink: 0;
+  width: 92px;
+  color: var(--v2-paper-ink-soft);
+  text-transform: uppercase;
+  font-size: 10.5px;
+  letter-spacing: 0.12em;
+  padding-top: 2px;
+}
+.v2-folder__field-value {
+  flex: 1;
+  min-width: 0;
+  /* лінія, як після крапки в формулярі: лінія від тексту до краю */
+  border-bottom: 1px dotted var(--v2-paper-ink-soft);
+  padding-bottom: 2px;
+}
+
+/* Штамп: ROUNDED RED RECTANGLE з обведенням і легким нахилом */
+.v2-stamp {
+  position: absolute;
+  bottom: 22px;
+  right: 24px;
+  transform: rotate(-7deg);
+  border: 3px double var(--v2-stamp-soft);
+  color: var(--v2-stamp-soft);
+  font-family: var(--v2-font-typed);
+  font-weight: 900;
+  font-size: 16px;
+  letter-spacing: 0.15em;
+  padding: 6px 14px 5px;
+  text-transform: uppercase;
+  opacity: 0.92;
+}
+.v2-stamp--green {
+  border-color: rgba(45, 107, 58, 0.85);
+  color: rgba(45, 107, 58, 0.92);
+}
+
+/* Прогрес-смуга у "стилі teletype" — квадратні комірки */
+.v2-progress {
+  margin-top: 8px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-family: var(--v2-font-typed);
+  font-size: 11px;
+  color: var(--v2-paper-ink-soft);
+}
+.v2-progress__cells {
+  display: flex;
+  gap: 2px;
+  flex: 1;
+  max-width: 220px;
+}
+.v2-progress__cell {
+  flex: 1;
+  height: 8px;
+  background: rgba(42, 31, 18, 0.12);
+  border: 1px solid var(--v2-paper-ink-soft);
+}
+.v2-progress__cell.is-filled {
+  background: var(--v2-paper-ink);
+}
+
+/* DP2 actions: дві action-pills внизу картки (Текст / Шрифти) */
+.v2-folder__actions {
+  margin-top: 22px;
+  padding-top: 14px;
+  border-top: 1px dashed var(--v2-paper-shadow);
+  display: flex;
+  gap: 10px;
+}
+.v2-folder__action {
+  flex: 1;
+  background: var(--v2-paper-ink);
+  color: var(--v2-paper);
+  border: 1px solid var(--v2-paper-ink);
+  border-radius: 4px;
+  padding: 8px 12px;
+  font-family: var(--v2-font-typed);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  cursor: pointer;
+  transition: background 140ms, color 140ms, transform 100ms;
+}
+.v2-folder__action:hover {
+  background: transparent;
+  color: var(--v2-paper-ink);
+  transform: translateY(-1px);
+}
+.v2-folder__action--alt {
+  background: transparent;
+  color: var(--v2-paper-ink);
+}
+.v2-folder__action--alt:hover {
+  background: var(--v2-stamp);
+  color: var(--v2-paper);
+  border-color: var(--v2-stamp);
+}
+
+/* Червона анотація на полі — "handwritten" */
+.v2-margin-note {
+  position: absolute;
+  top: 14px;
+  right: 18px;
+  color: var(--v2-stamp);
+  font-family: var(--v2-font-serif);
+  font-style: italic;
+  font-size: 12px;
+  transform: rotate(-3deg);
+  opacity: 0.85;
+  pointer-events: none;
+}
+
+/* ── Recent folders: "log entries" типу telex ─────────────────────── */
+.v2-recent-title {
+  font-family: var(--v2-font-typed);
+  font-size: 10px;
+  letter-spacing: 0.3em;
+  text-transform: uppercase;
+  color: var(--v2-text-faint);
+  margin-bottom: 10px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.v2-recent-title::before,
+.v2-recent-title::after {
+  content: "";
+  flex: 1;
+  height: 1px;
+  background: var(--v2-border-soft);
+}
+.v2-recent-item {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  width: 100%;
+  padding: 7px 12px;
+  background: var(--v2-bg-surface);
+  border: 1px solid var(--v2-border-soft);
+  border-left: 3px solid var(--v2-stamp);
+  border-radius: 2px;
+  font-family: var(--v2-font-typed);
+  font-size: 11.5px;
+  color: var(--v2-text);
+  letter-spacing: 0.02em;
+  transition: border-left-color 160ms, background 160ms;
+  text-align: left;
+}
+.v2-recent-item:hover {
+  background: var(--v2-bg-elevated);
+  border-left-color: var(--v2-text-strong);
+}
+.v2-recent-item__marker {
+  flex-shrink: 0;
+  color: var(--v2-stamp);
+  font-weight: 700;
+}
+.v2-recent-item__name {
+  flex: 1;
+  min-width: 0;
+  color: var(--v2-text-strong);
+  font-weight: 700;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.v2-recent-item__path {
+  color: var(--v2-text-faint);
+  font-size: 10.5px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 320px;
+}
+
+/* ── Footer — підпис справи ───────────────────────────────────────── */
+.v2-footer {
+  margin-top: 28px;
+  padding-top: 16px;
+  border-top: 1px dashed var(--v2-border);
+  text-align: center;
+  font-family: var(--v2-font-typed);
+  font-size: 10.5px;
+  color: var(--v2-text-faint);
+  letter-spacing: 0.08em;
+}
+.v2-footer a, .v2-footer button {
+  color: var(--v2-text-strong);
+  text-decoration: none;
+  cursor: pointer;
+  background: none;
+  border: none;
+  border-bottom: 1px dashed rgba(168, 42, 37, 0.65);
+  padding-bottom: 1px;
+  font-family: inherit;
+  font-size: inherit;
+  letter-spacing: inherit;
+  transition: color 160ms, border-color 160ms;
+}
+.v2-footer a:hover, .v2-footer button:hover {
+  color: #ffd9a8;
+  border-bottom-color: var(--v2-text-strong);
+}

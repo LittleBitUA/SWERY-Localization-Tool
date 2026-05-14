@@ -119,10 +119,20 @@ async function createWindow() {
       preload: path.join(__dirname, "preload.cjs"),
       contextIsolation: true,
       nodeIntegration: false,
+      // Optimizations: відключаємо background-throttling (повна швидкість
+      // навіть коли вікно не у фокусі), стандартний spellcheck (у нас свої
+      // діагностики через Monaco), WebSQL (не використовуємо).
+      backgroundThrottling: false,
+      spellcheck: false,
+      enableWebSQL: false,
     },
   });
 
-  win.once("ready-to-show", () => win.show());
+  win.once("ready-to-show", () => {
+    win.show();
+    // У dev-режимі одразу відкриваємо DevTools — щоб юзер міг інспектувати UI.
+    if (isDev) win.webContents.openDevTools({ mode: "right" });
+  });
   mainWindow = win;
 
   if (isDev) {
@@ -328,6 +338,11 @@ ipcMain.handle("dp2:build-tm-worker", async (_event, payload) => callHeavy("buil
 ipcMain.handle("dp2:search-all-worker", async (_event, payload) => callHeavy("search-all", payload));
 ipcMain.handle("dp2:corpus-stats-worker", async (_event, payload) => callHeavy("corpus-stats", payload));
 ipcMain.handle("dp2:glossary-consistency-worker", async (_event, payload) => callHeavy("glossary-consistency", payload));
+ipcMain.handle("dp2:batch-replace-worker", async (_event, payload) => callHeavy("batch-replace", payload));
+ipcMain.handle("dp2:name-consistency-worker", async (_event, payload) => callHeavy("name-consistency", payload));
+ipcMain.handle("dp2:file-counts-worker", async (_event, payload) => callHeavy("file-counts", payload));
+ipcMain.handle("dp2:smart-break-all-worker", async (_event, payload) => callHeavy("smart-break-all", payload));
+ipcMain.handle("dp2:rename-chara-worker", async (_event, payload) => callHeavy("rename-chara", payload));
 
 // ── IPC: settings ────────────────────────────────────────────────
 ipcMain.handle("dp2:get-settings", async () => readSettings());
@@ -537,6 +552,177 @@ ipcMain.handle("dp2:setup-run", async (_e, payload) => {
       toolsDir: next.toolsDir,
     },
   };
+});
+
+// Спільний helper: знаходить pwsh.exe (settings → where.exe → null).
+async function findPwsh(settings) {
+  let p = settings.pwshPath || null;
+  if (p) { try { await fs.access(p); } catch { p = null; } }
+  if (!p) {
+    p = await new Promise((resolve) => {
+      const w = spawn("where.exe", ["pwsh.exe"], { windowsHide: true });
+      let out = "";
+      w.stdout.on("data", (d) => { out += d.toString(); });
+      w.on("error", () => resolve(null));
+      w.on("exit", (code) => {
+        if (code === 0) {
+          const first = out.split(/\r?\n/).map((s) => s.trim()).find((s) => s.length > 0);
+          resolve(first || null);
+        } else resolve(null);
+      });
+    });
+  }
+  return p;
+}
+
+// Helper: stream child stdout/stderr to renderer as progress events.
+function streamChildOutput(child, channel) {
+  function emit(line) {
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      try { mainWindow.webContents.send(channel, line); } catch {}
+    }
+  }
+  let outBuf = "", errBuf = "";
+  child.stdout.on("data", (d) => {
+    outBuf += d.toString();
+    let i;
+    while ((i = outBuf.indexOf("\n")) !== -1) {
+      const line = outBuf.slice(0, i).replace(/\r$/, "");
+      outBuf = outBuf.slice(i + 1);
+      if (line) emit(line);
+    }
+  });
+  child.stderr.on("data", (d) => {
+    errBuf += d.toString();
+    let i;
+    while ((i = errBuf.indexOf("\n")) !== -1) {
+      const line = errBuf.slice(0, i).replace(/\r$/, "");
+      errBuf = errBuf.slice(i + 1);
+      if (line) emit("[err] " + line);
+    }
+  });
+  child.on("exit", () => {
+    if (outBuf) emit(outBuf);
+    if (errBuf) emit("[err] " + errBuf);
+  });
+}
+
+// ── IPC: export 4 fonts з sharedassets0.assets у toolsDir/dp2-fonts/ ─────
+ipcMain.handle("dp2:fonts-export", async () => {
+  const settings = await readSettings();
+  const { uabeaPath, assetsPath } = settings;
+  if (!assetsPath) return { success: false, error: "Не задано шлях до .assets файла (Налаштування)" };
+  if (!uabeaPath)  return { success: false, error: "Не задано шлях до UABEA" };
+
+  // Auto-fallback: якщо toolsDir не заданий, беремо дефолт (Documents/DP2-...).
+  let toolsDir = settings.toolsDir;
+  if (!toolsDir) {
+    toolsDir = path.join(app.getPath("documents"), "DP2-Localization-Tools");
+    await writeSettings({ ...settings, toolsDir });
+  }
+
+  const pwshLookup = await findPwsh(settings);
+  if (!pwshLookup) return { success: false, error: "PowerShell 7 (pwsh.exe) не знайдено" };
+
+  const uabeaDir = path.dirname(uabeaPath);
+  const scriptPath = resolveResource("scripts/fonts-export.ps1");
+  const outDir = path.join(toolsDir, "dp2-fonts");
+  await fs.mkdir(outDir, { recursive: true });
+
+  return await new Promise((resolve) => {
+    const args = [
+      "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass",
+      "-File", scriptPath,
+      "-AssetsPath", assetsPath,
+      "-OutDir", outDir,
+      "-UabeaDir", uabeaDir,
+    ];
+    const child = spawn(pwshLookup, args, { windowsHide: true });
+    let allStdout = "";
+    // Buffer everything for final parse but ALSO stream line-by-line to UI.
+    child.stdout.on("data", (d) => { allStdout += d.toString(); });
+    streamChildOutput(child, "dp2:fonts-export-progress");
+    child.on("error", (err) => resolve({ success: false, error: err.message }));
+    child.on("exit", (code) => {
+      if (code !== 0) {
+        const tail = allStdout.split("\n").slice(-15).join("\n").trim();
+        resolve({ success: false, error: (tail || `Exit ${code}`).trim(), log: allStdout });
+        return;
+      }
+      let exported = [];
+      const m = allStdout.match(/RESULT_JSON:\s*(.+)$/m);
+      if (m) {
+        try { exported = JSON.parse(m[1]); } catch {}
+      }
+      resolve({ success: true, outDir, exported, log: allStdout });
+    });
+  });
+});
+
+// ── IPC: replace single font in sharedassets0.assets ────────────────────
+ipcMain.handle("dp2:fonts-replace", async (_e, payload) => {
+  const { pathId, newFontPath } = payload || {};
+  if (!pathId || !newFontPath) return { success: false, error: "Не задано pathId або шлях до нового шрифту" };
+  const settings = await readSettings();
+  const { uabeaPath, assetsPath } = settings;
+  if (!assetsPath) return { success: false, error: "Не задано шлях до .assets файла" };
+  if (!uabeaPath)  return { success: false, error: "Не задано шлях до UABEA" };
+
+  const pwshLookup = await findPwsh(settings);
+  if (!pwshLookup) return { success: false, error: "PowerShell 7 не знайдено" };
+
+  const uabeaDir = path.dirname(uabeaPath);
+  const scriptPath = resolveResource("scripts/fonts-replace.ps1");
+
+  return await new Promise((resolve) => {
+    const args = [
+      "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass",
+      "-File", scriptPath,
+      "-AssetsPath", assetsPath,
+      "-PathId", String(pathId),
+      "-NewFontFile", newFontPath,
+      "-OutputPath", assetsPath,
+      "-UabeaDir", uabeaDir,
+    ];
+    const child = spawn(pwshLookup, args, { windowsHide: true });
+    let allStdout = "";
+    child.stdout.on("data", (d) => { allStdout += d.toString(); });
+    streamChildOutput(child, "dp2:fonts-replace-progress");
+    child.on("error", (err) => resolve({ success: false, error: err.message }));
+    child.on("exit", (code) => {
+      if (code !== 0) {
+        const tail = allStdout.split("\n").slice(-15).join("\n").trim();
+        resolve({ success: false, error: (tail || `Exit ${code}`).trim(), log: allStdout });
+        return;
+      }
+      resolve({ success: true, outputPath: assetsPath, log: allStdout });
+    });
+  });
+});
+
+// ── IPC: list уже-експортованих TTF у toolsDir/dp2-fonts/ + читати байти ─
+ipcMain.handle("dp2:fonts-list", async () => {
+  const settings = await readSettings();
+  if (!settings.toolsDir) return { dir: null, files: [] };
+  const dir = path.join(settings.toolsDir, "dp2-fonts");
+  try {
+    const items = await fs.readdir(dir, { withFileTypes: true });
+    const files = items
+      .filter((d) => d.isFile() && /\.(ttf|otf)$/i.test(d.name))
+      .map((d) => ({ name: d.name, path: path.join(dir, d.name) }));
+    return { dir, files };
+  } catch {
+    return { dir, files: [] };
+  }
+});
+
+ipcMain.handle("dp2:fonts-read-base64", async (_e, filePath) => {
+  try {
+    const buf = await fs.readFile(filePath);
+    return buf.toString("base64");
+  } catch (e) {
+    return null;
+  }
 });
 
 // ── IPC: build .assets via PowerShell + AssetsTools.NET ─────────
@@ -777,7 +963,12 @@ ipcMain.handle("dp2:open-folder", async (_event, folder) => {
   if (folder) await shell.openPath(folder);
 });
 
-app.whenReady().then(createWindow);
+app.whenReady().then(async () => {
+  // Pre-warm heavy worker одразу при старті — щоб перший таск не платив
+  // ~200ms cold-start lag.
+  try { getHeavyWorker(); } catch {}
+  await createWindow();
+});
 
 app.on("window-all-closed", () => {
   if (process.platform !== "darwin") app.quit();

@@ -13,6 +13,9 @@ import type { WrapMode } from "../../components/WrapToggle";
 import { useLocalStorage } from "../../lib/useLocalStorage";
 import { readGlossary, type GlossaryEntry } from "../../lib/glossary";
 import { alert as showAlert } from "../../lib/dialogs";
+import { setGlyphDiagnostics } from "./cyrillicMap";
+import { Dp1GlyphAuditModal } from "./Dp1GlyphAuditModal";
+import { smartSubtitleBreak } from "../../lib/subtitleFormat";
 
 interface Dp1ColWidths {
   num: number;
@@ -116,6 +119,7 @@ export function Dp1Editor({ onHome, onOpenSettings }: Dp1EditorProps) {
   const [packState, setPackState] = useState<"idle" | "packing" | "done" | "error">("idle");
   const [packMsg, setPackMsg] = useState("");
   const [statsOpen, setStatsOpen] = useState(false);
+  const [glyphAuditOpen, setGlyphAuditOpen] = useState(false);
   const [selection, setSelection] = useState<Set<number>>(new Set());
   const [ctxMenu, setCtxMenu] = useState<{ x: number; y: number; index: number } | null>(null);
   const [colWidths, setColWidths] = useLocalStorage<Dp1ColWidths>("dp1.ui.tableCols", DP1_DEFAULT_COL_WIDTHS);
@@ -298,9 +302,16 @@ export function Dp1Editor({ onHome, onOpenSettings }: Dp1EditorProps) {
     });
     monaco.editor.setTheme("dp2-dark");
     editor.focus();
-    if (active) setTagDiagnostics(monaco, editor, active.original, active.ua);
+    if (active) {
+      setTagDiagnostics(monaco, editor, active.original, active.ua);
+      setGlyphDiagnostics(monaco, editor, active.ua);
+    }
     editor.onDidChangeModelContent(() => {
-      if (active) setTagDiagnostics(monaco, editor, active.original, editor.getValue());
+      if (active) {
+        const cur = editor.getValue();
+        setTagDiagnostics(monaco, editor, active.original, cur);
+        setGlyphDiagnostics(monaco, editor, cur);
+      }
     });
   };
 
@@ -366,23 +377,23 @@ export function Dp1Editor({ onHome, onOpenSettings }: Dp1EditorProps) {
   return (
     <div className="flex-1 flex flex-col bg-[var(--bg)] min-w-0">
       {/* Header */}
-      <header className="h-12 px-4 border-b border-[var(--border-soft)] bg-[var(--bg-surface)] flex items-center gap-3">
-        <button className="dp-btn dp-btn--ghost" onClick={onHome} title={t("header.home")}>
+      <header className="min-h-12 px-3 py-1.5 border-b border-[var(--border-soft)] bg-[var(--bg-surface)] flex flex-wrap items-center gap-2">
+        <button className="dp-btn dp-btn--ghost shrink-0" onClick={onHome} title={t("header.home")}>
           <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
             <path strokeLinecap="round" strokeLinejoin="round" d="M10 19l-7-7m0 0l7-7m-7 7h18" />
           </svg>
         </button>
-        <span className="text-[13px] text-[var(--text-muted)]">{t("dp1.brand")}</span>
+        <span className="hidden xl:inline text-[13px] text-[var(--text-muted)] shrink-0">{t("dp1.brand")}</span>
 
-        <div className="flex items-center gap-2 text-[12px] text-[var(--text-faint)] ml-3 min-w-0">
+        <div className="hidden md:flex items-center gap-2 text-[12px] text-[var(--text-faint)] ml-1 min-w-0 max-w-[240px]">
           <span className="font-mono truncate" title={engPath}>{shortPath(engPath)}</span>
         </div>
 
-        <div className="flex-1" />
+        <div className="flex-1 min-w-0" />
 
         {packState !== "idle" && (
           <span
-            className={`text-[11px] font-mono px-2.5 py-1 rounded ${
+            className={`text-[11px] font-mono px-2.5 py-1 rounded shrink-0 ${
               packState === "error" ? "dp-pill--danger"
               : packState === "done" ? "dp-pill--success"
               : "dp-pill"
@@ -393,7 +404,16 @@ export function Dp1Editor({ onHome, onOpenSettings }: Dp1EditorProps) {
         )}
 
         <button
-          className="dp-btn dp-btn--ghost"
+          className="dp-btn dp-btn--ghost shrink-0"
+          onClick={() => setGlyphAuditOpen(true)}
+          title={t("dp1.glyph.btn")}
+        >
+          <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+            <path strokeLinecap="round" strokeLinejoin="round" d="M12 9v3.75m-9.303 3.376c-.866 1.5.217 3.374 1.948 3.374h14.71c1.73 0 2.813-1.874 1.948-3.374L13.949 3.378c-.866-1.5-3.032-1.5-3.898 0L2.697 16.126zM12 15.75h.007v.008H12v-.008z" />
+          </svg>
+        </button>
+        <button
+          className="dp-btn dp-btn--ghost shrink-0"
           onClick={() => setStatsOpen(true)}
           title={t("stats.btn")}
         >
@@ -401,13 +421,13 @@ export function Dp1Editor({ onHome, onOpenSettings }: Dp1EditorProps) {
             <path strokeLinecap="round" strokeLinejoin="round" d="M9 19V9m4 10V5m4 14v-6M5 19h14" />
           </svg>
         </button>
-        <button className="dp-btn dp-btn--ghost" onClick={onOpenSettings} title={t("dp1.set.title")}>
+        <button className="dp-btn dp-btn--ghost shrink-0" onClick={onOpenSettings} title={t("dp1.set.title")}>
           <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
             <path strokeLinecap="round" strokeLinejoin="round" d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z" />
             <path strokeLinecap="round" strokeLinejoin="round" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
           </svg>
         </button>
-        <button className="dp-btn" onClick={pickEng}>{t("btn.open")}</button>
+        <button className="dp-btn shrink-0" onClick={pickEng}>{t("btn.open")}</button>
         {dirty && lastAutosaveAt && (
           <span
             className="text-[10.5px] text-[var(--text-faint)] tabular-nums whitespace-nowrap"
@@ -419,7 +439,7 @@ export function Dp1Editor({ onHome, onOpenSettings }: Dp1EditorProps) {
           </span>
         )}
         <button
-          className="dp-btn"
+          className="dp-btn shrink-0"
           disabled={!dirty}
           onClick={() => saveWorkfile()}
           title="Ctrl+S"
@@ -427,7 +447,7 @@ export function Dp1Editor({ onHome, onOpenSettings }: Dp1EditorProps) {
           {dirty ? t("header.save") : t("header.saved")}
         </button>
         <button
-          className="dp-btn dp-btn--success"
+          className="dp-btn dp-btn--success shrink-0"
           disabled={packState === "packing"}
           onClick={runPack}
           title={t("dp1.pack")}
@@ -773,13 +793,25 @@ export function Dp1Editor({ onHome, onOpenSettings }: Dp1EditorProps) {
               </div>
 
               <div className="flex-1 flex flex-col min-h-0">
-                <div className="px-4 pt-2 pb-1 flex items-center justify-between shrink-0">
+                <div className="px-4 pt-2 pb-1 flex items-center justify-between shrink-0 gap-2">
                   <label className="text-[10px] font-semibold uppercase tracking-wider text-[var(--text-muted)]">
                     {t("dp1.ua.label")}
                   </label>
-                  <span className="text-[10px] text-[var(--text-faint)] tabular-nums">
-                    {active.ua.length} {t("dp1.chars")}
-                  </span>
+                  <div className="flex items-center gap-2">
+                    <button
+                      className="text-[10px] uppercase tracking-wider text-[var(--accent)] hover:underline"
+                      onClick={() => {
+                        const next = smartSubtitleBreak(active.ua);
+                        if (next !== active.ua) updateActive(next);
+                      }}
+                      title={t("editor.smartBreak.title")}
+                    >
+                      {t("editor.smartBreak.btn")}
+                    </button>
+                    <span className="text-[10px] text-[var(--text-faint)] tabular-nums">
+                      {active.ua.length} {t("dp1.chars")}
+                    </span>
+                  </div>
                 </div>
                 <div className="flex-1 min-h-0 mx-3 mb-3 border border-[var(--border)] rounded-md overflow-hidden">
                   <Editor
@@ -849,6 +881,10 @@ export function Dp1Editor({ onHome, onOpenSettings }: Dp1EditorProps) {
         open={statsOpen}
         onClose={() => setStatsOpen(false)}
         mode="dp1"
+      />
+      <Dp1GlyphAuditModal
+        open={glyphAuditOpen}
+        onClose={() => setGlyphAuditOpen(false)}
       />
     </div>
   );

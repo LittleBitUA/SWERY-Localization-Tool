@@ -19,10 +19,29 @@ contextBridge.exposeInMainWorld("dp2", {
   searchAllWorker: (payload) => ipcRenderer.invoke("dp2:search-all-worker", payload),
   corpusStatsWorker: (payload) => ipcRenderer.invoke("dp2:corpus-stats-worker", payload),
   glossaryConsistencyWorker: (payload) => ipcRenderer.invoke("dp2:glossary-consistency-worker", payload),
+  batchReplaceWorker: (payload) => ipcRenderer.invoke("dp2:batch-replace-worker", payload),
+  nameConsistencyWorker: (payload) => ipcRenderer.invoke("dp2:name-consistency-worker", payload),
+  fileCountsWorker: (payload) => ipcRenderer.invoke("dp2:file-counts-worker", payload),
+  smartBreakAllWorker: (payload) => ipcRenderer.invoke("dp2:smart-break-all-worker", payload),
+  renameCharaWorker: (payload) => ipcRenderer.invoke("dp2:rename-chara-worker", payload),
   getSettings: () => ipcRenderer.invoke("dp2:get-settings"),
   saveSettings: (partial) => ipcRenderer.invoke("dp2:save-settings", partial),
   launchUabea: () => ipcRenderer.invoke("dp2:launch-uabea"),
   buildAssets: () => ipcRenderer.invoke("dp2:build-assets"),
+  fontsExport: () => ipcRenderer.invoke("dp2:fonts-export"),
+  fontsReplace: (payload) => ipcRenderer.invoke("dp2:fonts-replace", payload),
+  fontsList: () => ipcRenderer.invoke("dp2:fonts-list"),
+  fontsReadBase64: (filePath) => ipcRenderer.invoke("dp2:fonts-read-base64", filePath),
+  onFontsExportProgress: (cb) => {
+    const h = (_e, line) => cb(line);
+    ipcRenderer.on("dp2:fonts-export-progress", h);
+    return () => ipcRenderer.removeListener("dp2:fonts-export-progress", h);
+  },
+  onFontsReplaceProgress: (cb) => {
+    const h = (_e, line) => cb(line);
+    ipcRenderer.on("dp2:fonts-replace-progress", h);
+    return () => ipcRenderer.removeListener("dp2:fonts-replace-progress", h);
+  },
   openFolder: (folder) => ipcRenderer.invoke("dp2:open-folder", folder),
 
   // Setup / onboarding

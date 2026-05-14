@@ -112,6 +112,36 @@ interface State {
   /** Find/Replace по всіх записах поточного файла (charaName + текст). */
   findReplaceAll: (find: string, replace: string, opts: { caseSensitive: boolean; wholeWord: boolean }) =>
     { entries: number; replacements: number };
+  /**
+   * Прев'ю TM auto-fill (1:1): рахує неперекладені записи поточного файла,
+   * чий source ТОЧНО збігається з якимось TM-source. Жодних substring-замін.
+   */
+  previewTmExact: (tm: Array<{ src: string; tgt: string }>) =>
+    { matches: Array<{ entryIndex: number; src: string; tgt: string }> };
+  /** Застосувати TM auto-fill 1:1: пише tgt у entry.en для exact-збігів. */
+  applyTmExact: (tm: Array<{ src: string; tgt: string }>) => number;
+}
+
+/** Перший .json-файл у дереві (DFS), або null. */
+function findFirstFile(node: TreeNode | null): string | null {
+  if (!node) return null;
+  if (node.type === "file") return node.path;
+  for (const c of node.children ?? []) {
+    const hit = findFirstFile(c);
+    if (hit) return hit;
+  }
+  return null;
+}
+
+/** Перевіряє, чи `path` існує серед файлів дерева. Повертає сам path або null. */
+function findFileInTree(node: TreeNode | null, path: string | undefined): string | null {
+  if (!path || !node) return null;
+  if (node.type === "file") return node.path === path ? node.path : null;
+  for (const c of node.children ?? []) {
+    const hit = findFileInTree(c, path);
+    if (hit) return hit;
+  }
+  return null;
 }
 
 /** Walk дерева й оновити одне file-нодою stats (immutable update). */
@@ -159,6 +189,30 @@ export const useStore = create<State>((set, get) => ({
       if (!tree) return;
       const statuses = await readStatusFile(statusFilePath(last));
       set({ folder: last, tree, statuses });
+
+      // Авто-відкриття: пам'ять про останній файл живе у settings.dp2LastFile.
+      // Якщо він валідний у поточному дереві — відкриваємо його. Інакше — перший
+      // файл у дереві, щоб юзер не дивився на пусту праву панель.
+      const candidate = findFileInTree(tree, (settings as any).dp2LastFile as string | undefined)
+        ?? findFirstFile(tree);
+      if (candidate) {
+        try { await get().loadFile(candidate); } catch {}
+      }
+
+      // Фоновий перерахунок прогресу для всіх файлів — щоб у дереві одразу
+      // бачити translated/total без потреби клікати кожен. Виконується після
+      // первинного init, не блокує UI.
+      window.dp2.fileCountsWorker({ folder: last })
+        .then((counts) => {
+          const curTree = get().tree;
+          if (!curTree) return;
+          let nextTree: TreeNode | null = curTree;
+          for (const c of counts) {
+            nextTree = updateFileStats(nextTree, c.path, c.total, c.translated);
+          }
+          set({ tree: nextTree });
+        })
+        .catch(() => {});
     } catch {
       // Тека вже не існує — мовчки ігноруємо.
     }
@@ -236,6 +290,8 @@ export const useStore = create<State>((set, get) => ({
         loading: false,
       });
       get().refreshFileMeta(fullPath);
+      // Запам'ятовуємо для авто-відкриття наступного запуску.
+      try { await window.dp2.saveSettings({ dp2LastFile: fullPath }); } catch {}
     } catch (e: any) {
       set({ loading: false, error: String(e) });
     }
@@ -353,12 +409,21 @@ export const useStore = create<State>((set, get) => ({
     if (!entries.length || !selectedFilePath) return null;
     const fileName = (selectedFilePath.split(/[\\/]/).pop() ?? "export").replace(/\.json$/i, "");
     const HAS_CYR = /[Ѐ-ӿ]/;
+    // Заголовок/speaker мусять бути одно-рядковими. У DP2 поля `m_name`
+    // та `m_charaName` іноді містять справжні `\n` (мультирядкові підказки
+    // або кілька імен) — якщо їх віддати у .txt як є, наступний рядок
+    // стане частиною body і imports підмішає JP до EN-перекладу.
+    const oneLine = (s: string) => s.replace(/[\r\n]+/g, " ").replace(/\s+/g, " ").trim();
     const exportEntries: ExportEntry[] = entries.map((e, i) => {
       const isSentence = e.kind === "sentence";
-      const speaker = isSentence ? (e.charaName || e.charaNameJp || undefined) : undefined;
+      const rawSpeaker = isSentence ? (e.charaName || e.charaNameJp || "") : "";
+      const speaker = rawSpeaker ? oneLine(rawSpeaker) || undefined : undefined;
       const hintParts: string[] = [];
       if (e.id) hintParts.push(e.id);
-      if (!isSentence && e.itemName) hintParts.push(e.itemName);
+      if (!isSentence && e.itemName) {
+        const nm = oneLine(e.itemName);
+        if (nm) hintParts.push(nm);
+      }
       // Якщо рядок уже перекладений (en має кирилицю і відрізняється від .bak)
       // — експортуємо ПЕРЕКЛАД, щоб людина продовжила. Інакше — англ-оригінал.
       const isAlreadyTranslated =
@@ -595,6 +660,58 @@ export const useStore = create<State>((set, get) => ({
     const translated = entries.filter((e) => isTranslated(e)).length;
     const nextTree = updateFileStats(tree, fullPath, total, translated);
     set({ tree: nextTree });
+  },
+
+  previewTmExact(tm) {
+    const { entries } = get();
+    // Будуємо мапу: normalized(src) → tgt. Якщо для одного src є кілька різних
+    // tgt — беремо найдовший (зазвичай повніший переклад). На однакових tgt
+    // дублі ігноруються.
+    const map = new Map<string, string>();
+    for (const t of tm) {
+      const k = (t.src ?? "").trim().toLowerCase();
+      const v = (t.tgt ?? "").trim();
+      if (!k || !v) continue;
+      const cur = map.get(k);
+      if (!cur || v.length > cur.length) map.set(k, v);
+    }
+    const matches: Array<{ entryIndex: number; src: string; tgt: string }> = [];
+    for (let i = 0; i < entries.length; i++) {
+      const e = entries[i];
+      if (isTranslated(e)) continue;
+      const src = (e.originalEn ?? "").trim();
+      if (!src) continue;
+      const tgt = map.get(src.toLowerCase());
+      if (!tgt) continue;
+      // Уникаємо застосовувати tgt, який дорівнює src (це не переклад).
+      if (tgt.toLowerCase() === src.toLowerCase()) continue;
+      matches.push({ entryIndex: i, src, tgt });
+    }
+    return { matches };
+  },
+
+  applyTmExact(tm) {
+    const { entries, currentTree, selectedFilePath } = get();
+    if (!currentTree) return 0;
+    const { matches } = get().previewTmExact(tm);
+    if (matches.length === 0) return 0;
+    get().pushUndo("apply-tm-exact");
+    const next = entries.slice();
+    let applied = 0;
+    for (const m of matches) {
+      const e = next[m.entryIndex];
+      if (!e) continue;
+      const ok = applyEdit(currentTree, e.locator, e.charaName ?? "", m.tgt);
+      if (!ok) continue;
+      next[m.entryIndex] = { ...e, en: m.tgt };
+      applied++;
+    }
+    if (applied > 0) {
+      invalidateTm();
+      set({ entries: next, dirty: true });
+      if (selectedFilePath) get().refreshFileMeta(selectedFilePath);
+    }
+    return applied;
   },
 
   findReplaceAll(find, replace, opts) {

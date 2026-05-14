@@ -10,6 +10,9 @@ import {
   registerDpTextLanguage,
   setTagDiagnostics,
 } from "../lib/monacoLang";
+import { DialoguePreview } from "./DialoguePreview";
+import { useLocalStorage } from "../lib/useLocalStorage";
+import { smartSubtitleBreak } from "../lib/subtitleFormat";
 
 /** Сусідня репліка з тієї ж сцени (file+sheet+list). null — якщо її нема. */
 function neighbor(entries: FlatEntry[], idx: number, delta: number): FlatEntry | null {
@@ -70,6 +73,7 @@ export function EditorPanel() {
   const prevNeighbor = idx !== null ? neighbor(entries, idx, -1) : null;
   const nextNeighbor = idx !== null ? neighbor(entries, idx, 1) : null;
   const editorRef = useRef<any>(null);
+  const [previewOpen, setPreviewOpen] = useLocalStorage<boolean>("dp2.ui.previewOpen", true);
 
   // Глобальні шорткати редактора. Capture=true, щоб перехоплювати раніше
   // за Monaco/інпути (інакше Monaco з'їсть Ctrl+Enter, Alt+стрілки тощо).
@@ -312,13 +316,25 @@ export function EditorPanel() {
 
       {/* Monaco editor — main translation field */}
       <div className="flex-1 flex flex-col min-h-0">
-        <div className="px-4 pt-2 pb-1 flex items-center justify-between shrink-0">
+        <div className="px-4 pt-2 pb-1 flex items-center justify-between shrink-0 gap-2">
           <label className="text-[10px] font-semibold uppercase tracking-wider text-[var(--text-muted)]">
             {isSentence ? t("editor.ua.sentence") : t("editor.ua.item")}
           </label>
-          <span className="text-[10px] text-[var(--text-faint)] tabular-nums">
-            {active.en.length} {t("dp1.chars")}
-          </span>
+          <div className="flex items-center gap-2">
+            <button
+              className="text-[10px] uppercase tracking-wider text-[var(--accent)] hover:underline"
+              onClick={() => {
+                const next = smartSubtitleBreak(active.en);
+                if (next !== active.en) updateActive(active.charaName ?? "", next);
+              }}
+              title={t("editor.smartBreak.title")}
+            >
+              {t("editor.smartBreak.btn")}
+            </button>
+            <span className="text-[10px] text-[var(--text-faint)] tabular-nums">
+              {active.en.length} {t("dp1.chars")}
+            </span>
+          </div>
         </div>
         <div className="flex-1 min-h-0 mx-3 mb-3 border border-[var(--border)] rounded-md overflow-hidden">
           <Editor
@@ -354,6 +370,30 @@ export function EditorPanel() {
             }}
           />
         </div>
+      </div>
+
+      {/* In-game preview */}
+      <div className="border-t border-[var(--border-soft)] bg-[var(--bg)]">
+        <button
+          className="w-full px-4 py-1.5 flex items-center gap-2 text-left hover:bg-[var(--row-hover)]"
+          onClick={() => setPreviewOpen((v) => !v)}
+        >
+          <svg
+            className={`w-3 h-3 text-[var(--text-faint)] transition-transform ${previewOpen ? "rotate-90" : ""}`}
+            fill="currentColor"
+            viewBox="0 0 16 16"
+          >
+            <path d="M5 4l5 4-5 4V4z" />
+          </svg>
+          <span className="text-[10px] font-semibold uppercase tracking-wider text-[var(--text-muted)]">
+            {t("preview.title")}
+          </span>
+        </button>
+        {previewOpen && (
+          <div className="px-3 pb-3">
+            <DialoguePreview entry={active} />
+          </div>
+        )}
       </div>
 
       {/* Footer with shortcuts */}

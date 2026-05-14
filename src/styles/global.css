@@ -128,6 +128,48 @@ a:hover { text-decoration: underline; }
 }
 .dp-btn--success:hover { background: #2ea043; }
 
+.dp-btn--danger {
+  background: var(--danger);
+  border-color: rgba(240, 246, 252, 0.10);
+  color: #fff;
+}
+.dp-btn--danger:hover { background: #d62920; }
+
+/* Toast in animation */
+@keyframes toast-in {
+  0% { opacity: 0; transform: translateX(20px) translateY(8px); }
+  100% { opacity: 1; transform: translateX(0) translateY(0); }
+}
+.animate-toast-in {
+  animation: toast-in 220ms cubic-bezier(.2,.7,.3,1) both;
+}
+
+/* Spinner */
+@keyframes dp-spin {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
+
+/* Indeterminate progress bar — біжить туди-сюди */
+@keyframes progress-bar {
+  0% { transform: translateX(-100%); width: 30%; }
+  50% { transform: translateX(100%); width: 60%; }
+  100% { transform: translateX(300%); width: 30%; }
+}
+.animate-progress-bar {
+  animation: progress-bar 1.6s ease-in-out infinite;
+}
+
+/* Шрифт із самої гри DP2 — `FOT-NewCinemaAStd-D` (витягнуто з sharedassets-725).
+   Використовується у DialoguePreview, щоб preview відповідав реальному рендеру. */
+@font-face {
+  font-family: "DP2-Cinema";
+  src: url("../ui-v2/assets/dp2-cinema.ttf") format("truetype");
+  font-weight: normal;
+  font-style: normal;
+  font-display: swap;
+}
+
 .dp-btn:disabled,
 .dp-btn[disabled] {
   opacity: 0.45;

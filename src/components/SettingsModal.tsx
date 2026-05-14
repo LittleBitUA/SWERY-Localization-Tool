@@ -18,6 +18,7 @@ export function SettingsModal({ open, onClose }: Props) {
   const [uabeaPath, setUabeaPath] = useState("");
   const [assetsPath, setAssetsPath] = useState("");
   const [pwshPath, setPwshPath] = useState("");
+  const [toolsDir, setToolsDir] = useState("");
   const [saving, setSaving] = useState(false);
 
   // Display
@@ -30,6 +31,7 @@ export function SettingsModal({ open, onClose }: Props) {
       setUabeaPath(s.uabeaPath ?? "");
       setAssetsPath(s.assetsPath ?? "");
       setPwshPath(s.pwshPath ?? "");
+      setToolsDir(s.toolsDir ?? "");
     });
     setLangState(getLang());
   }, [open]);
@@ -57,10 +59,14 @@ export function SettingsModal({ open, onClose }: Props) {
     });
     if (p) setPwshPath(p);
   }
+  async function pickToolsDir() {
+    const p = await window.dp2.pickFolder();
+    if (p) setToolsDir(p);
+  }
 
   async function save() {
     setSaving(true);
-    await window.dp2.saveSettings({ uabeaPath, assetsPath, pwshPath });
+    await window.dp2.saveSettings({ uabeaPath, assetsPath, pwshPath, toolsDir });
     setSaving(false);
     onClose();
   }
@@ -157,6 +163,22 @@ export function SettingsModal({ open, onClose }: Props) {
                 </div>
                 <p className="text-[11px] text-[var(--text-faint)] mt-1.5 leading-relaxed">{t("set.pwsh.hint")}</p>
               </div>
+
+              <div>
+                <label className="text-[11px] font-semibold uppercase tracking-wider text-[var(--text-muted)] block mb-1.5">
+                  {t("set.toolsDir.label")}
+                </label>
+                <div className="flex gap-2">
+                  <input
+                    className="dp-input flex-1"
+                    value={toolsDir}
+                    onChange={(e) => setToolsDir(e.target.value)}
+                    placeholder="C:\Users\you\Documents\DP2-Localization-Tools"
+                  />
+                  <button onClick={pickToolsDir} className="dp-btn">{t("set.browse")}</button>
+                </div>
+                <p className="text-[11px] text-[var(--text-faint)] mt-1.5 leading-relaxed">{t("set.toolsDir.hint")}</p>
+              </div>
             </>
           )}
 
@@ -202,6 +224,7 @@ export function SettingsModal({ open, onClose }: Props) {
                   {t("set.display.wrapHint")}
                 </p>
               </div>
+
             </>
           )}
         </div>
