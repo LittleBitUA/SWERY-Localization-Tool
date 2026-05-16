@@ -318,11 +318,11 @@ export function Dp1Editor({ onHome, onOpenSettings }: Dp1EditorProps) {
   async function runPack() {
     if (!engPath) return;
     setPackState("packing");
-    setPackMsg("Зберігаю прогрес і експортую _ua_done.json...");
+    setPackMsg(t("dp1.pack.savingProgress"));
     try {
       const donePath = await saveDone();
-      if (!donePath) throw new Error("Не вдалося зберегти _ua_done.json");
-      setPackMsg("Підставляю гліфи і викликаю DPMsgTool...");
+      if (!donePath) throw new Error(t("dp1.pack.saveFail"));
+      setPackMsg(t("dp1.pack.invokingDpmsg"));
       const res = await window.dp2.dp1Pack({ donePath });
       if (res.error) throw new Error(res.error);
       setPackState("done");

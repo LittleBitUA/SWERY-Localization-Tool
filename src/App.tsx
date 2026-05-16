@@ -14,6 +14,9 @@ import { OnboardingScreen } from "./components/OnboardingScreen";
 import { Dp1Editor } from "./games/dp1/Dp1Editor";
 import { Dp1SettingsModal } from "./games/dp1/Dp1SettingsModal";
 import { Dp2FontsEditor } from "./games/dp2/Dp2FontsEditor";
+import { Dp2TexturesEditor } from "./games/dp2/Dp2TexturesEditor";
+import { TglEditor } from "./games/tgl/TglEditor";
+import { TglFontsEditor } from "./games/tgl/fonts/TglFontsEditor";
 import { SettingsModal } from "./components/SettingsModal";
 import { readGlossary, type GlossaryEntry } from "./lib/glossary";
 import { useLocalStorage } from "./lib/useLocalStorage";
@@ -23,8 +26,8 @@ import type { SetupStatus } from "./lib/ipc";
 import { DialogHost } from "./lib/dialogs";
 import { ToastProvider } from "./components/ToastProvider";
 
-type Stage = "loading" | "onboarding" | "home" | "editor-dp2" | "editor-dp1" | "fonts-dp2";
-type ActiveGame = "dp1" | "dp2" | null;
+type Stage = "loading" | "onboarding" | "home" | "editor-dp2" | "editor-dp1" | "editor-tgl" | "fonts-dp2" | "textures-dp2" | "fonts-tgl";
+type ActiveGame = "dp1" | "dp2" | "tgl" | null;
 
 export default function App() {
   const [findOpen, setFindOpen] = useState(false);
@@ -37,6 +40,10 @@ export default function App() {
   const [editorW, setEditorW] = useLocalStorage<number>("dp2.ui.editorW", 520);
   const [tmW, setTmW] = useLocalStorage<number>("dp2.ui.tmW", 300);
   const [activeGame, setActiveGame] = useLocalStorage<ActiveGame>("dp2.ui.activeGame", null);
+  // Підрежим для DP2 (text|fonts|textures) і TGL (text|fonts) — щоб після
+  // перезапуску відкритися саме там, де користувач був, а не завжди в Text.
+  const [dp2Mode, setDp2Mode] = useLocalStorage<"text" | "fonts" | "textures">("dp2.ui.dp2Mode", "text");
+  const [tglMode, setTglMode] = useLocalStorage<"text" | "fonts">("dp2.ui.tglMode", "text");
   const [dp1SettingsOpen, setDp1SettingsOpen] = useState(false);
   const [fontsSettingsOpen, setFontsSettingsOpen] = useState(false);
   const [glossary, setGlossary] = useState<GlossaryEntry[]>([]);
@@ -60,9 +67,13 @@ export default function App() {
     if (!s.completed) {
       setStage("onboarding");
     } else if (activeGame === "dp2") {
-      setStage("editor-dp2");
+      if (dp2Mode === "fonts") setStage("fonts-dp2");
+      else if (dp2Mode === "textures") setStage("textures-dp2");
+      else setStage("editor-dp2");
     } else if (activeGame === "dp1") {
       setStage("editor-dp1");
+    } else if (activeGame === "tgl") {
+      setStage(tglMode === "fonts" ? "fonts-tgl" : "editor-tgl");
     } else {
       setStage("home");
     }
@@ -148,10 +159,6 @@ export default function App() {
           <OnboardingScreen
             status={setupStatus}
             onComplete={() => refreshStatusAndRoute()}
-            onSkip={async () => {
-              await window.dp2.saveSettings({ setupCompleted: true });
-              await refreshStatusAndRoute();
-            }}
           />
         </div>
         <DialogHost /><ToastProvider />
@@ -160,17 +167,19 @@ export default function App() {
   }
 
   if (stage === "home") {
-    const recents = setupStatus?.settings.recentFolders ?? [];
     const homeProps = {
-      recentFolders: recents,
-      onPickGame: (id: "dp1" | "dp2", mode?: "text" | "fonts") => {
+      onPickGame: (id: "dp1" | "dp2" | "tgl", mode?: "text" | "fonts" | "textures") => {
         setActiveGame(id);
         if (id === "dp1") {
           setStage("editor-dp1");
-        } else if (mode === "fonts") {
-          setStage("fonts-dp2");
+        } else if (id === "tgl") {
+          const m: "text" | "fonts" = mode === "fonts" ? "fonts" : "text";
+          setTglMode(m);
+          setStage(m === "fonts" ? "fonts-tgl" : "editor-tgl");
         } else {
-          setStage("editor-dp2");
+          const m: "text" | "fonts" | "textures" = mode === "fonts" ? "fonts" : mode === "textures" ? "textures" : "text";
+          setDp2Mode(m);
+          setStage(m === "fonts" ? "fonts-dp2" : m === "textures" ? "textures-dp2" : "editor-dp2");
         }
       },
       onOpenSetup: async () => {
@@ -181,6 +190,23 @@ export default function App() {
         await window.dp2.saveSettings({ lastFolder: p });
         setActiveGame("dp2");
         setStage("editor-dp2");
+      },
+      onOpenRecent: async (game: "dp1" | "dp2" | "tgl", path: string) => {
+        if (game === "dp1") {
+          await window.dp2.saveSettings({ dp1EngPath: path });
+          setActiveGame("dp1");
+          setStage("editor-dp1");
+        } else if (game === "tgl") {
+          await window.dp2.saveSettings({ tglBinPath: path });
+          setActiveGame("tgl");
+          setTglMode("text");
+          setStage("editor-tgl");
+        } else {
+          await window.dp2.saveSettings({ lastFolder: path });
+          setActiveGame("dp2");
+          setDp2Mode("text");
+          setStage("editor-dp2");
+        }
       },
     };
     return (
@@ -208,6 +234,57 @@ export default function App() {
             onOpenSettings={() => setDp1SettingsOpen(true)}
           />
           <Dp1SettingsModal open={dp1SettingsOpen} onClose={() => setDp1SettingsOpen(false)} />
+        </div>
+        <DialogHost /><ToastProvider />
+      </>
+    );
+  }
+
+  if (stage === "fonts-tgl") {
+    return (
+      <>
+        <div className="h-screen flex flex-col">
+          <TglFontsEditor
+            onHome={() => {
+              setActiveGame(null);
+              setStage("home");
+              window.dp2.setupStatus().then(setSetupStatus);
+            }}
+          />
+        </div>
+        <DialogHost /><ToastProvider />
+      </>
+    );
+  }
+
+  if (stage === "editor-tgl") {
+    return (
+      <>
+        <div className="h-screen flex flex-col">
+          <TglEditor
+            onHome={() => {
+              setActiveGame(null);
+              setStage("home");
+              window.dp2.setupStatus().then(setSetupStatus);
+            }}
+          />
+        </div>
+        <DialogHost /><ToastProvider />
+      </>
+    );
+  }
+
+  if (stage === "textures-dp2") {
+    return (
+      <>
+        <div className="h-screen flex flex-col">
+          <Dp2TexturesEditor
+            onHome={() => {
+              setActiveGame(null);
+              setStage("home");
+              window.dp2.setupStatus().then(setSetupStatus);
+            }}
+          />
         </div>
         <DialogHost /><ToastProvider />
       </>

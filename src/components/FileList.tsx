@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useStore, type TreeNode } from "../lib/store";
 import { useT } from "../lib/i18n";
 import { alert as showAlert, confirm as showConfirm } from "../lib/dialogs";
@@ -151,6 +151,17 @@ export function FileList() {
   const t = useT();
   const tree = useStore((s) => s.tree);
   const folder = useStore((s) => s.folder);
+  const pickFolder = useStore((s) => s.pickFolder);
+  // Auto-prompt при першому відкритті DP2 без папки — щоб користувач одразу
+  // вибрав теку з JSON-дампами, а не шукав, де ця кнопка у хедері.
+  const autoTriedRef = useRef(false);
+  useEffect(() => {
+    if (folder || autoTriedRef.current) return;
+    autoTriedRef.current = true;
+    // Маленька затримка — дочекатися закриття HomeV2 анімації.
+    const timer = setTimeout(() => { pickFolder(); }, 200);
+    return () => clearTimeout(timer);
+  }, [folder, pickFolder]);
   const loading = useStore((s) => s.loading);
   const restoreOriginal = useStore((s) => s.restoreOriginal);
 

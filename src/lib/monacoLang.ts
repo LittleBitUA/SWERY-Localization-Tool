@@ -13,11 +13,13 @@ export function registerDpTextLanguage(monaco: any) {
   monaco.languages.setMonarchTokensProvider("dp-text", {
     tokenizer: {
       root: [
+        // TGL: \control{08}, \something{value} — підсвічуємо як bracket-control.
+        [/\\[a-zA-Z]+\{[^}]*\}/, "dp.control"],
         // {NEXT_SEGMENT}, {NEXT_FRAME id=0, letters=0}, {NO_OP:0xFFF5}, {ICON id=0}, {0}, {color=red}
         [/\{[^{}]*\}/, "dp.curly"],
         // <i>, </i>, <color=red>, </color>, <br>, etc.
         [/<\/?[a-zA-Z][^<>]*>/, "dp.angle"],
-        // [icon], [pad] — рідше, але буває
+        // [icon], [pad], [c="..."]...[/c], [shop="..."/] тощо.
         [/\[[^\[\]\n]+\]/, "dp.bracket"],
         // \n, \r, \t, \\
         [/\\[nrt\\]/, "dp.escape"],
@@ -32,9 +34,11 @@ export const DP_TOKEN_RULES = [
   { token: "dp.angle", foreground: "ff7b72" },                       // soft red
   { token: "dp.bracket", foreground: "79c0ff" },                     // light blue
   { token: "dp.escape", foreground: "d2a8ff", fontStyle: "bold" },   // purple
+  { token: "dp.control", foreground: "7ee787", fontStyle: "bold" },  // green — для \control{NN}
 ];
 
-const TAG_RE = /\{[^{}]*\}|<\/?[a-zA-Z][^<>]*>|\[[^\[\]\n]+\]|\\[nrt\\]/g;
+// Порядок важливий: \control{...} матчиться раніше, ніж самостійні {...} та \n.
+const TAG_RE = /\\[a-zA-Z]+\{[^}]*\}|\{[^{}]*\}|<\/?[a-zA-Z][^<>]*>|\[[^\[\]\n]+\]|\\[nrt\\]/g;
 
 export function extractTags(text: string): string[] {
   if (!text) return [];

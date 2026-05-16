@@ -2,7 +2,7 @@
 
 import { create } from "zustand";
 import type { FlatEntry } from "../types";
-import { flatten, applyEdit, isTranslated } from "./parser";
+import { flatten, applyEdit, isTranslated, needsTranslation } from "./parser";
 import { invalidateTm } from "./tm";
 import { recordTranslation } from "./metrics";
 import { buildTxt, parseTxt, blockToStorage, type ExportEntry } from "./txtRoundtrip";
@@ -656,9 +656,17 @@ export const useStore = create<State>((set, get) => ({
 
   refreshFileMeta(fullPath) {
     const { entries, tree } = get();
-    const total = entries.length;
-    const translated = entries.filter((e) => isTranslated(e)).length;
-    const nextTree = updateFileStats(tree, fullPath, total, translated);
+    // Total = лише ті записи, що ПОТРЕБУЮТЬ перекладу (мають латинські літери).
+    // Інакше counter (2054/2068) не збігається з фільтром «Untranslated», який
+    // виключає числа/empty/«-» через needsTranslation.
+    let translatable = 0;
+    let translated = 0;
+    for (const e of entries) {
+      if (!needsTranslation(e)) continue;
+      translatable++;
+      if (isTranslated(e)) translated++;
+    }
+    const nextTree = updateFileStats(tree, fullPath, translatable, translated);
     set({ tree: nextTree });
   },
 

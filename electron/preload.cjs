@@ -49,9 +49,34 @@ contextBridge.exposeInMainWorld("dp2", {
   setupRun: (payload) => ipcRenderer.invoke("dp2:setup-run", payload),
   setupReset: () => ipcRenderer.invoke("dp2:setup-reset"),
   dp1Pack: (payload) => ipcRenderer.invoke("dp2:dp1-pack", payload),
+  tglLoad: (binPath) => ipcRenderer.invoke("dp2:tgl-load", binPath),
+  tglSaveWorkfile: (payload) => ipcRenderer.invoke("dp2:tgl-save-workfile", payload),
+  tglPack: (payload) => ipcRenderer.invoke("dp2:tgl-pack", payload),
+  tglFontsList: () => ipcRenderer.invoke("dp2:tgl-fonts-list"),
+  tglFontsExtract: (payload) => ipcRenderer.invoke("dp2:tgl-fonts-extract", payload),
+  tglFontsImportToCab: (payload) => ipcRenderer.invoke("dp2:tgl-fonts-import-to-cab", payload),
+  tglFontsReadJson: (p) => ipcRenderer.invoke("dp2:tgl-fonts-read-json", p),
+  tglFontsWriteJson: (payload) => ipcRenderer.invoke("dp2:tgl-fonts-write-json", payload),
+  tglFontsReadAtlasBase64: (p) => ipcRenderer.invoke("dp2:tgl-fonts-read-atlas-base64", p),
+  tglFontsWriteAtlasBase64: (payload) => ipcRenderer.invoke("dp2:tgl-fonts-write-atlas-base64", payload),
+  texturesExport: (payload) => ipcRenderer.invoke("dp2:textures-export", payload),
+  texturesReplace: (payload) => ipcRenderer.invoke("dp2:textures-replace", payload),
+  texturesList: () => ipcRenderer.invoke("dp2:textures-list"),
+  texturesReadBase64: (filePath) => ipcRenderer.invoke("dp2:textures-read-base64", filePath),
   onSetupProgress: (cb) => {
     const handler = (_e, payload) => cb(payload);
     ipcRenderer.on("dp2:setup-progress", handler);
     return () => ipcRenderer.removeListener("dp2:setup-progress", handler);
   },
+  onTexturesReplaceProgress: (cb) => {
+    const h = (_e, line) => cb(line);
+    ipcRenderer.on("dp2:textures-replace-progress", h);
+    return () => ipcRenderer.removeListener("dp2:textures-replace-progress", h);
+  },
+  onTglFontsImportProgress: (cb) => {
+    const h = (_e, line) => cb(line);
+    ipcRenderer.on("dp2:tgl-fonts-import-progress", h);
+    return () => ipcRenderer.removeListener("dp2:tgl-fonts-import-progress", h);
+  },
+  readLocaleFile: (lang) => ipcRenderer.invoke("dp2:read-locale-file", lang),
 });

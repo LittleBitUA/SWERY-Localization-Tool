@@ -1,6 +1,7 @@
 // Окремий Zustand-стор для DP1 — щоб не змішувати з DP2.
 
 import { create } from "zustand";
+import { t } from "../../lib/i18n";
 import {
   buildDoneRecords,
   flattenDp1,
@@ -13,7 +14,6 @@ import {
   pruneEntry,
   readStatusFile,
   writeStatusFile,
-  type StatusEntry,
   type StatusFile,
   type StatusKind,
 } from "../../lib/status";
@@ -113,7 +113,7 @@ export const useDp1Store = create<Dp1State>((set, get) => ({
     try {
       const raw = await window.dp2.readFile(path);
       const records: Dp1Record[] = JSON.parse(raw);
-      if (!Array.isArray(records)) throw new Error("Очікується JSON-масив записів.");
+      if (!Array.isArray(records)) throw new Error(t("dp1.err.expectArray"));
 
       // Спроба завантажити воркфайл <base>_ua_work.json — простий формат:
       //   { "version": 3, "mode": "by_index", "ua": ["...", "..."] }

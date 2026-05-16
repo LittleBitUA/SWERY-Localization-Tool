@@ -25,7 +25,7 @@ export function Dp1SettingsModal({ open, onClose }: Dp1SettingsModalProps) {
 
   async function pickTool() {
     const f = await window.dp2.pickFile({
-      title: "Виберіть DPMsgTool.exe",
+      title: t("dp1.pickDpmsg.title"),
       filters: [{ name: "Executables", extensions: ["exe"] }],
     });
     if (f) setS((p) => ({ ...p, dp1ToolPath: f }));

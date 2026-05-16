@@ -210,7 +210,7 @@ export function EditorPanel() {
 
       {/* Dialog context: previous reply (same scene) */}
       {prevNeighbor && idx !== null && (
-        <ContextRow entry={prevNeighbor} label="↑ попередня" onJump={() => setActive(idx - 1)} />
+        <ContextRow entry={prevNeighbor} label={t("editor.context.prev")} onJump={() => setActive(idx - 1)} />
       )}
 
       {/* JP reference */}
@@ -256,7 +256,7 @@ export function EditorPanel() {
 
       {/* Dialog context: next reply (same scene) */}
       {nextNeighbor && idx !== null && (
-        <ContextRow entry={nextNeighbor} label="↓ наступна" onJump={() => setActive(idx + 1)} />
+        <ContextRow entry={nextNeighbor} label={t("editor.context.next")} onJump={() => setActive(idx + 1)} />
       )}
 
       {/* Tags mirror — теги з оригіналу і diff vs поточного перекладу */}

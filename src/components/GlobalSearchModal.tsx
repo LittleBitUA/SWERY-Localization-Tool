@@ -24,12 +24,10 @@ function buildFieldLabels(t: (k: string) => string): Record<SearchField, string>
   };
 }
 
-const FIELD_BADGE: Record<Exclude<SearchField, "all">, string> = {
-  jp: "JP",
-  en: "UA",
-  originalEn: "EN",
-  charaName: "ім'я",
-};
+function fieldBadge(t: (k: string) => string, f: Exclude<SearchField, "all">): string {
+  if (f === "charaName") return t("gs.field.charaName.short");
+  return f === "jp" ? "JP" : f === "en" ? "UA" : "EN";
+}
 
 function shortName(p: string) {
   return p.split(/[\\/]/).pop() ?? p;
@@ -224,7 +222,7 @@ export function GlobalSearchModal({ open, onClose }: GlobalSearchModalProps) {
                               onClick={() => jump(h.filePath, h.entryIndex)}
                             >
                               <div className="flex items-center gap-2 mb-0.5">
-                                <span className="dp-pill text-[10px]">{FIELD_BADGE[h.matchedField]}</span>
+                                <span className="dp-pill text-[10px]">{fieldBadge(t, h.matchedField)}</span>
                                 <span className="text-[11px] font-mono text-[var(--text-muted)] truncate" title={e.id}>
                                   {e.id || `#${h.entryIndex + 1}`}
                                 </span>

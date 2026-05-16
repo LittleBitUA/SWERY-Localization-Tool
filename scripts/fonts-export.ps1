@@ -275,6 +275,7 @@ foreach ($info in $assetsInst.file.AssetInfos) {
             pathId = $info.PathId
             file = $outFile
             size = $bytes.Length
+            assetsFile = $assetBaseName
         }
     } catch {
         Write-Warning ("PathID {0}: {1}" -f $info.PathId, $_.Exception.Message)

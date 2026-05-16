@@ -1,8 +1,8 @@
 {
   "name": "deadly-premonition-localization-tool",
-  "version": "1.0.0-alpha",
+  "version": "1.0.0",
   "private": true,
-  "description": "Localization editor for the Deadly Premonition series (DP1 & DP2)",
+  "description": "Localization editor for the Deadly Premonition series and The Good Life (Swery / White Owls)",
   "main": "electron/main.cjs",
   "scripts": {
     "dev": "concurrently -k -n vite,electron -c blue,magenta \"npm:vite\" \"npm:dev:electron\"",

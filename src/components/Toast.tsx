@@ -3,6 +3,7 @@
 // не ламали layout верхньої панелі. Само-закривається, можна закрити вручну.
 
 import { useEffect } from "react";
+import { t } from "../lib/i18n";
 
 export type ToastTone = "info" | "success" | "error" | "warning";
 
@@ -68,7 +69,7 @@ function ToastItem({ toast, onDismiss }: { toast: ToastData; onDismiss: (id: num
       <button
         onClick={() => onDismiss(toast.id)}
         className="text-[var(--text-faint)] hover:text-[var(--text)] shrink-0"
-        title="Закрити"
+        title={t("toast.close")}
       >
         <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
           <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />

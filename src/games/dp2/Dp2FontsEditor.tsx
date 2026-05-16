@@ -23,10 +23,13 @@ interface DpFont {
 }
 
 const FONTS: DpFont[] = [
-  { name: "FOT-NewRodinProN-DB",  pathId: 722, fontSize: 16, lineSpacing: 32, ascent: 14.08, descent: -1.92, purpose: "UI / меню" },
-  { name: "FOT-NewCezannePro-DB", pathId: 723, fontSize: 16, lineSpacing: 32, ascent: 14.08, descent: -1.92, purpose: "Заголовки / акценти" },
-  { name: "FOT-NewCezannePro-M",  pathId: 724, fontSize: 16, lineSpacing: 32, ascent: 14.08, descent: -1.92, purpose: "Текст інтерфейсу" },
-  { name: "FOT-NewCinemaAStd-D",  pathId: 725, fontSize: 16, lineSpacing: 32, ascent: 14.08, descent: -1.92, purpose: "Діалоги / субтитри" },
+  { name: "FOT-NewRodinProN-DB",     pathId: 722,   fontSize: 16, lineSpacing: 32, ascent: 14.08, descent: -1.92, purpose: "dp2font.purpose.722" },
+  { name: "FOT-NewCezannePro-DB",    pathId: 723,   fontSize: 16, lineSpacing: 32, ascent: 14.08, descent: -1.92, purpose: "dp2font.purpose.723" },
+  { name: "FOT-NewCezannePro-M",     pathId: 724,   fontSize: 16, lineSpacing: 32, ascent: 14.08, descent: -1.92, purpose: "dp2font.purpose.724" },
+  { name: "FOT-NewCinemaAStd-D",     pathId: 725,   fontSize: 16, lineSpacing: 32, ascent: 14.08, descent: -1.92, purpose: "dp2font.purpose.725" },
+  { name: "FOT-Wentworth",           pathId: 22522, fontSize: 16, lineSpacing: 32, ascent: 14.08, descent: -1.92, purpose: "dp2font.purpose.22522" },
+  { name: "FOT-UDKakugo_LargePro-R", pathId: 22523, fontSize: 16, lineSpacing: 32, ascent: 14.08, descent: -1.92, purpose: "dp2font.purpose.22523" },
+  { name: "FOT-MatisseProN-UB",      pathId: 22524, fontSize: 16, lineSpacing: 32, ascent: 14.08, descent: -1.92, purpose: "dp2font.purpose.22524" },
 ];
 
 // Множина CSS-сімей, які вже зареєстровані через FontFace API у цій сесії.
@@ -41,8 +44,10 @@ function b64ToBytes(b64: string): Uint8Array {
   return out;
 }
 
-async function ensureFontLoaded(fontName: string, filePath: string): Promise<string> {
-  const family = "DP2Loaded-" + fontName;
+async function ensureFontLoaded(fontName: string, filePath: string, bust?: number): Promise<string> {
+  // `bust` (timestamp) генерує нову family при заміні — інакше CSS-кеш
+  // тримає старий FontFace і preview не оновлюється після Replace.
+  const family = "DP2Loaded-" + fontName + (bust ? "-v" + bust : "");
   if (loadedFamilies.has(family)) return family;
   try {
     const b64 = await window.dp2.fontsReadBase64(filePath);
@@ -63,10 +68,11 @@ async function ensureFontLoaded(fontName: string, filePath: string): Promise<str
 
 export function Dp2FontsEditor({ onHome, onOpenSettings }: Props) {
   const t = useT();
-  const [previewText, setPreviewText] = useState("Френсіс Йорк Морган");
-  const [exported, setExported] = useState<Record<number, { path: string; family: string }>>({});
+  const [previewText, setPreviewText] = useState("Your text");
+  const [exported, setExported] = useState<Record<number, { path: string; family: string; assetsFile?: string }>>({});
   const [busy, setBusy] = useState(false);
   const [progressLog, setProgressLog] = useState<string[]>([]);
+  const [showLog, setShowLog] = useState(false);
   const [elapsedSec, setElapsedSec] = useState(0);
 
   // Підписка на PowerShell stdout — рядки летять у реальному часі.
@@ -92,21 +98,22 @@ export function Dp2FontsEditor({ onHome, onOpenSettings }: Props) {
   const refreshList = useCallback(async () => {
     const res = await window.dp2.fontsList();
     if (!res.files.length) return;
-    const next: Record<number, { path: string; family: string }> = {};
+    const next: Record<number, { path: string; family: string; assetsFile?: string }> = {};
     for (const f of FONTS) {
-      // Naming convention UABEA Plugin: <name>-<asset>-<pathId>.<ext>
-      // Старий формат: <safe>.ttf — теж підтримуємо для backward-compat.
       const safe = f.name.replace(/[\\/:\*\?"<>\|]/g, "_");
       const hit = res.files.find((x) => {
         const lower = x.name.toLowerCase();
         if (!lower.endsWith(".ttf") && !lower.endsWith(".otf")) return false;
-        // Або точно <safe>.<ext> (старий), або починається з <safe>- І містить -<pathId>.<ext>
         if (x.name === `${safe}.ttf` || x.name === `${safe}.otf`) return true;
         return x.name.startsWith(`${safe}-`) && new RegExp(`-${f.pathId}\\.(ttf|otf)$`, "i").test(x.name);
       });
       if (hit) {
         const family = await ensureFontLoaded(f.name, hit.path);
-        next[f.pathId] = { path: hit.path, family };
+        // Витягуємо assetsFile із pattern <safe>-<asset>-<pathId>.<ext>.
+        // <safe> сам може містити "-" (FOT-MatisseProN-UB), тож шукаємо
+        // ОСТАННЮ "<щось без тире>.assets" перед "-<digits>.ext".
+        const m = hit.name.match(/-([^-]+\.assets)-\d+\.(ttf|otf)$/i);
+        next[f.pathId] = { path: hit.path, family, assetsFile: m?.[1] };
       }
     }
     setExported(next);
@@ -157,7 +164,11 @@ export function Dp2FontsEditor({ onHome, onOpenSettings }: Props) {
     setProgressLog([]);
     const progressId = showToast(t("fonts.toast.replacing", { name: font.name }), { tone: "info", durationMs: 0 });
     try {
-      const res = await window.dp2.fontsReplace({ pathId: font.pathId, newFontPath: pick });
+      const res = await window.dp2.fontsReplace({
+        pathId: font.pathId,
+        newFontPath: pick,
+        assetsFile: exported[font.pathId]?.assetsFile,
+      });
       dismissToast(progressId);
       if (!res.success) {
         await showAlert(t("dialog.error"), res.error ?? "replace failed");
@@ -166,8 +177,13 @@ export function Dp2FontsEditor({ onHome, onOpenSettings }: Props) {
       showToast(t("fonts.toast.replaced", { name: font.name }), {
         tone: "success", title: t("fonts.toast.replacedTitle"), durationMs: 10000,
       });
-      // Перезавантажуємо TTF, щоб preview оновився з новим шрифтом.
-      await refreshList();
+      // Перезавантажуємо TTF з вибраного нового файлу (з кеш-бастером).
+      // FontFace API кешує по family-name, тому ми завжди генеруємо нову.
+      const family = await ensureFontLoaded(font.name, pick, Date.now());
+      setExported((prev) => ({
+        ...prev,
+        [font.pathId]: { ...(prev[font.pathId] || {}), path: pick, family },
+      }));
     } catch (e: any) {
       dismissToast(progressId);
       await showAlert(t("dialog.error"), String(e?.message ?? e));
@@ -283,6 +299,45 @@ export function Dp2FontsEditor({ onHome, onOpenSettings }: Props) {
             </div>
           )}
 
+          {/* Лог після завершення: окрема панель з кнопками Show / Save */}
+          {!busy && progressLog.length > 0 && (
+            <div className="mb-6 border border-[var(--border-soft)] rounded bg-[var(--bg-surface)] p-3">
+              <div className="flex items-center gap-2 mb-2">
+                <span className="text-[10px] font-semibold uppercase tracking-wider text-[var(--text-muted)]">
+                  {t("fonts.log.title", { n: progressLog.length })}
+                </span>
+                <div className="flex-1" />
+                <button className="dp-btn dp-btn--ghost" onClick={() => setShowLog((v) => !v)}>
+                  {showLog ? t("fonts.log.hide") : t("fonts.log.show")}
+                </button>
+                <button
+                  className="dp-btn"
+                  onClick={async () => {
+                    const ts = new Date().toISOString().replace(/[:.]/g, "-");
+                    const dest = await window.dp2.pickSaveFile({
+                      title: t("fonts.log.saveTitle"),
+                      defaultPath: `dp2-fonts-log-${ts}.txt`,
+                      filters: [{ name: "Log", extensions: ["txt", "log"] }],
+                    });
+                    if (!dest) return;
+                    await window.dp2.writeFile(dest, progressLog.join("\n"));
+                    await showAlert(t("fonts.log.savedTitle"), t("fonts.log.savedBody", { path: dest }), { tone: "success" });
+                  }}
+                >
+                  {t("fonts.log.save")}
+                </button>
+                <button className="dp-btn dp-btn--ghost" onClick={() => setProgressLog([])} title={t("fonts.log.clear")}>
+                  ✕
+                </button>
+              </div>
+              {showLog && (
+                <pre className="text-[10.5px] font-mono text-[var(--text-faint)] bg-[var(--bg)] border border-[var(--border-soft)] rounded p-2 max-h-[280px] overflow-y-auto whitespace-pre-wrap break-all">
+                  {progressLog.join("\n")}
+                </pre>
+              )}
+            </div>
+          )}
+
           <div className="mb-6 border border-[var(--border-soft)] rounded bg-[var(--bg-surface)] p-4">
             <label className="text-[10px] font-semibold uppercase tracking-wider text-[var(--text-muted)] block mb-2">
               {t("fonts.previewText")}
@@ -298,7 +353,7 @@ export function Dp2FontsEditor({ onHome, onOpenSettings }: Props) {
             </p>
           </div>
 
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+          <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-4">
             {FONTS.map((font) => (
               <FontCard
                 key={font.pathId}
@@ -355,7 +410,7 @@ function FontCard({
             {font.name}
           </h3>
           <p className="text-[10.5px] text-[var(--text-faint)] mt-0.5 tabular-nums">
-            PathID {font.pathId} · {font.purpose}
+            PathID {font.pathId} · {t(font.purpose)}
           </p>
         </div>
         <span className={`dp-pill ${isLoaded ? "dp-pill--success" : "dp-pill--warn"}`}>

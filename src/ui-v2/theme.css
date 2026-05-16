@@ -261,6 +261,13 @@
   text-transform: uppercase;
   opacity: 0.92;
 }
+/* Якщо картка має action-кнопки внизу — переносимо штамп у верх-право,
+   щоб не накривав кнопки (Текст / Шрифти / Текстури). */
+.v2-folder--with-actions .v2-stamp {
+  bottom: auto;
+  top: 14px;
+  right: 18px;
+}
 .v2-stamp--green {
   border-color: rgba(45, 107, 58, 0.85);
   color: rgba(45, 107, 58, 0.92);
@@ -330,16 +337,20 @@
   border-color: var(--v2-stamp);
 }
 
-/* Червона анотація на полі — "handwritten" */
+/* Червона анотація на полі — "handwritten". В normal flow після полів,
+   а не absolute зверху — інакше довгі нотатки налазять на dossier-line. */
 .v2-margin-note {
-  position: absolute;
-  top: 14px;
-  right: 18px;
+  display: block;
+  margin-top: 18px;
+  /* справа лишаємо місце під штамп (≈140px), щоб нотка не залізла під нього */
+  margin-right: 140px;
   color: var(--v2-stamp);
   font-family: var(--v2-font-serif);
   font-style: italic;
   font-size: 12px;
-  transform: rotate(-3deg);
+  line-height: 1.35;
+  transform: rotate(-1deg);
+  transform-origin: left center;
   opacity: 0.85;
   pointer-events: none;
 }

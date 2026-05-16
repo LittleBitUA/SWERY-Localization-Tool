@@ -62,7 +62,7 @@ declare global {
         error?: string;
         log?: string;
       }>;
-      fontsReplace: (payload: { pathId: number; newFontPath: string }) => Promise<{
+      fontsReplace: (payload: { pathId: number; newFontPath: string; assetsFile?: string }) => Promise<{
         success: boolean;
         outputPath?: string;
         error?: string;
@@ -86,6 +86,112 @@ declare global {
         error?: string;
         outputPath?: string;
         intermediatePath?: string;
+      }>;
+
+      // DP2 Textures
+      texturesExport: (payload?: {
+        assetsFile?: string;
+        pathIds?: number[];
+      }) => Promise<{
+        success: boolean;
+        outDir?: string;
+        exported?: Array<{
+          name: string;
+          pathId: number;
+          width: number;
+          height: number;
+          format: number;
+          file: string;
+          size: number;
+        }>;
+        error?: string;
+        log?: string;
+      }>;
+      texturesReplace: (payload: {
+        pathId: number;
+        newPngPath: string;
+        assetsFile?: string;
+      }) => Promise<{
+        success: boolean;
+        mode?: string;
+        resS?: string;
+        offset?: number;
+        size?: number;
+        output?: string;
+        error?: string;
+        log?: string;
+      }>;
+      texturesList: () => Promise<{ dir: string | null; files: Array<{ name: string; path: string }> }>;
+      texturesReadBase64: (filePath: string) => Promise<string | null>;
+
+      // TGL Fonts
+      tglFontsList: () => Promise<{
+        items: Array<{
+          jsonPath: string;
+          atlasPath: string | null;
+          name: string;
+          fontSize: number;
+          lineSpacing: number;
+          charCount: number;
+          texPathId: string | null;
+          baseDir: string;
+        }>;
+        baseFolder: string | null;
+        error?: string;
+      }>;
+      tglFontsExtract: (payload: { cabPath: string }) => Promise<{
+        ok: boolean;
+        outDir?: string;
+        exported?: Array<{ name: string; pathId: number; texPathId: number | null; json: string; png: string | null }>;
+        error?: string;
+        log?: string;
+      }>;
+      tglFontsImportToCab: (payload: {
+        cabPath: string; jsonPath: string; pngPath: string;
+      }) => Promise<{
+        ok: boolean;
+        output?: string;
+        size?: number;
+        glyphs?: number;
+        error?: string;
+        log?: string;
+      }>;
+      tglFontsReadJson: (path: string) => Promise<{
+        ok: boolean;
+        content?: string;
+        raw?: string;
+        data?: unknown;
+        charsSection?: { start: number; end: number } | null;
+        error?: string;
+      }>;
+      tglFontsWriteJson: (payload: { jsonPath: string; content: string }) => Promise<{ ok: boolean; bakPath?: string; error?: string }>;
+      tglFontsReadAtlasBase64: (path: string) => Promise<{ ok: boolean; base64?: string; error?: string }>;
+      tglFontsWriteAtlasBase64: (payload: { pngPath: string; base64: string }) => Promise<{ ok: boolean; bakPath?: string; error?: string }>;
+
+      // TGL (The Good Life)
+      tglLoad: (binPath: string) => Promise<{
+        ok?: boolean;
+        error?: string;
+        records?: Array<{ i: number; key: string; en: string }>;
+        ua?: string[];
+        originalSize?: number;
+        workPath?: string;
+        workfileMismatch?: { binLines: number; txtLines: number };
+      }>;
+      tglSaveWorkfile: (payload: { binPath: string; ua: string[] }) => Promise<{
+        ok?: boolean;
+        error?: string;
+        workPath?: string;
+      }>;
+      tglPack: (payload: { binPath: string; ua: string[] }) => Promise<{
+        ok?: boolean;
+        error?: string;
+        outputPath?: string;
+        bakPath?: string;
+        translated?: number;
+        fallback?: number;
+        size?: number;
+        originalSize?: number;
       }>;
     };
   }
@@ -207,6 +313,12 @@ export interface DpSettings {
   toolsDir?: string;
   setupCompleted?: boolean;
   recentFolders?: string[];
+  // DP1
+  dp1EngPath?: string;
+  dp1ToolPath?: string;
+  dp1GameDir?: string;
+  // TGL (The Good Life)
+  tglBinPath?: string;
 }
 
 export interface SetupStatus {
@@ -259,7 +371,10 @@ export type SetupPhase =
 export interface SetupProgress {
   phase: SetupPhase;
   tool?: "uabea" | "pwsh";
-  message: string;
+  /** Fallback-рядок (українською); якщо `i18nKey` є — renderer перекладе через t(). */
+  message?: string;
+  i18nKey?: string;
+  i18nParams?: Record<string, string | number>;
   total?: number;
   downloaded?: number;
   percent?: number | null;

@@ -4,8 +4,8 @@
 
 # Deadly Premonition Localization Tool
 
-**Універсальний редактор українізації для серії *Deadly Premonition*** &nbsp;·&nbsp;
-**A unified Ukrainian-localization editor for the *Deadly Premonition* series**
+**Універсальний редактор українізації для серії *Deadly Premonition* і *The Good Life*** &nbsp;·&nbsp;
+**A unified Ukrainian-localization editor for the *Deadly Premonition* series and *The Good Life***
 
 [![Latest Release](https://img.shields.io/github/v/release/LittleBitUA/Deadly-Premonition-Localization-Tool?style=flat-square&color=58a6ff&label=release)](https://github.com/LittleBitUA/Deadly-Premonition-Localization-Tool/releases/latest)
 [![Downloads](https://img.shields.io/github/downloads/LittleBitUA/Deadly-Premonition-Localization-Tool/total?style=flat-square&color=3fb950)](https://github.com/LittleBitUA/Deadly-Premonition-Localization-Tool/releases)
@@ -24,12 +24,12 @@
 
 ## 🇺🇦 Українська
 
-**Deadly Premonition Localization Tool** — настільний редактор з відкритим кодом для українізації обох частин серії *Deadly Premonition* (Director's Cut та *A Blessing in Disguise*). Один інструмент замість трьох-чотирьох — від редагування JSON-дампів до запаковки готового патчу.
+**Deadly Premonition Localization Tool** — настільний редактор з відкритим кодом для українізації трьох ігор Swery / White Owls: **Deadly Premonition** (Director's Cut), **Deadly Premonition 2: A Blessing in Disguise** та **The Good Life**. Один інструмент замість п'яти — від редагування JSON-дампів до запаковки готового патчу, з вбудованим редактором шрифтів і текстур.
 
 ### ✨ Можливості
 
 **Робота з текстом**
-- 🎮 **Дві гри в одному хабі**: Deadly Premonition (DPMsgTool by MrIkso) і Deadly Premonition 2 (UABEA-формат). Тематичний головний екран у стилі FBI-дозьє з лічильниками прогресу.
+- 🎮 **Три гри в одному хабі**: Deadly Premonition (DPMsgTool by MrIkso), Deadly Premonition 2 (UABEA-формат) і **The Good Life** (власний бінарний формат `loc/English`). Тематичний головний екран у стилі FBI-дозьє з лічильниками прогресу.
 - 💾 **Запаковка одним кліком**: для DP1 — підстановка кириличних гліфів і `DPMsgTool.exe from-json`; для DP2 — `import-to-assets.ps1` через PowerShell 7 + UABEA. Готовий файл одразу у директорії гри.
 - 🧠 **Пам'ять перекладів (TM)** з обох корпусів — cross-search DP1↔DP2, Jaccard fuzzy. **Bulk TM auto-fill (1:1)** — авто-заповнення неперекладених рядків з exact-match source (без substring-замін).
 - 📖 **Спільний глосарій** + **перевірка термінологічної консистентності** — всюди де `src` зустрічається, `tgt` має бути присутній.
@@ -46,8 +46,19 @@
 - 📊 **Огляд готовності корпусу**: підсумок % завершеності, UA/EN слова й символи, топ-15 файлів за обсягом.
 
 **Робота зі шрифтами (DP2)**
-- 🔠 **Font workshop**: окрема вкладка "Шрифти" на DP2-картці — експорт 4 ассетних шрифтів (`FOT-NewRodinProN-DB`, `FOT-NewCezannePro-DB`, `FOT-NewCezannePro-M`, `FOT-NewCinemaAStd-D`) як TTF/OTF, заміна на свій + repack `sharedassets0.assets` із `.bak`.
-- 🔬 **Live preview**: щойно експортовано — шрифт реєструється через FontFace API, видно текст саме цим шрифтом.
+- 🔠 **Font workshop**: окрема вкладка "Шрифти" на DP2-картці — експорт 7 ассетних шрифтів (`FOT-NewRodinProN-DB`, `FOT-NewCezannePro-DB`, `FOT-NewCezannePro-M`, `FOT-NewCinemaAStd-D`, `FOT-Wentworth`, `FOT-UDKakugo_LargePro-R`, `FOT-MatisseProN-UB`) з `resources.assets` і `sharedassets0.assets` як TTF/OTF, заміна на свій + repack у відповідний `.assets` файл із `.bak`.
+- 🔬 **Live preview**: щойно експортовано — шрифт реєструється через FontFace API. Після заміни — миттєвий cache-bust і preview оновлюється без re-export з гри.
+
+**Робота з текстурами (DP2)**
+- 🖼️ **Texture workshop**: експорт PNG обличчя персонажів з `resources.assets` (DXT5/BC3 → PNG), заміна на свій + in-place patching `.assets` + `.resS` (зі збереженням offset table). 22 текстури в готовому списку (Френсіс, Сімон, родини Кларксонів, Вудс, Девіс і т.д.).
+- 📦 **Export all одним кліком**: масово витягуємо всі прев'ю у `Documents\DP2-Localization-Tools\dp2-textures\`.
+
+**Шрифти The Good Life**
+- 🔡 **Bitmap-font editor**: розпаковка bundle-файлу `c0718fc478f6943d` (Unity Asset Bundle із Font + Texture2D), правка `m_CharacterRects.Array`, додавання/видалення гліфів просто на атласі.
+- ✏️ **AddGlyph модалка**: вибираєш TTF з відсутніми літерами (Є є І і Ї ї Ґ ґ), задаєш ціль "Є, є, і, ..." — програма знаходить вільне місце на атласі, малює гліф з правильним Y-flip-ом, оновлює `uv`/`vert`/`advance` і запаковує назад у CAB-bundle.
+- 🎯 **In-game preview** з реального атласу та `vert.x/y`-метрик — бачиш точно те, що покаже рушій.
+- 🗑️ **Delete-клавіша** на вибраному гліфі: видаляє запис + затирає bitmap-ділянку прозорим прямокутником, щоб не "залипало" на атласі.
+- 🌐 **Зовнішні файли локалізації**: `userData/locales/{uk,en}.json` мерджаться поверх вбудованих — інші перекладачі можуть правити рядки без перебудови програми.
 
 **Workflow і безпека**
 - 💼 **Auto-save + crash recovery**: незбережені правки скидаються у `.autosave.json` через 30с; при наступному відкритті — пропонує відновити.
@@ -100,12 +111,12 @@ npm run build:exe    # Portable .exe → release/
 
 ## 🇬🇧 English
 
-**Deadly Premonition Localization Tool** is an open-source desktop editor that bundles the entire translation workflow for both games in the *Deadly Premonition* series (Director's Cut and *A Blessing in Disguise*). One app instead of three or four — from editing JSON dumps to packing the final patch.
+**Deadly Premonition Localization Tool** is an open-source desktop editor that bundles the entire translation workflow for three Swery / White Owls titles: **Deadly Premonition** (Director's Cut), **Deadly Premonition 2: A Blessing in Disguise** and **The Good Life**. One app instead of five — from editing JSON dumps to packing the final patch, with a built-in font and texture workshop.
 
 ### ✨ Features
 
 **Text workflow**
-- 🎮 **Two games in one hub**: Deadly Premonition (via [DPMsgTool by MrIkso](https://github.com/MrIkso/DPMsgTool)) and Deadly Premonition 2 (UABEA format). Themed FBI-dossier home screen with progress counters.
+- 🎮 **Three games in one hub**: Deadly Premonition (via [DPMsgTool by MrIkso](https://github.com/MrIkso/DPMsgTool)), Deadly Premonition 2 (UABEA format) and **The Good Life** (custom binary `loc/English` container). Themed FBI-dossier home screen with progress counters.
 - 💾 **One-click packing**: DP1 — cyrillic glyph substitution + `DPMsgTool.exe from-json`; DP2 — `import-to-assets.ps1` via PowerShell 7 + UABEA. Output goes straight into the game directory.
 - 🧠 **Translation Memory (TM)** across both corpora — DP1↔DP2 cross-search with Jaccard fuzzy match. **Bulk TM auto-fill (1:1)** — auto-applies exact source matches (no substring guesswork).
 - 📖 **Shared glossary** + **terminology consistency check**: where `src` appears, `tgt` must be present.
@@ -122,8 +133,19 @@ npm run build:exe    # Portable .exe → release/
 - 📊 **Corpus readiness overview**: % completion, UA/EN word & char counts, top-15 files by volume.
 
 **Font workshop (DP2)**
-- 🔠 **Font workshop**: dedicated "Fonts" tab on the DP2 card — export the 4 asset fonts (`FOT-NewRodinProN-DB`, `FOT-NewCezannePro-DB`, `FOT-NewCezannePro-M`, `FOT-NewCinemaAStd-D`) as TTF/OTF, replace with your own + repack `sharedassets0.assets` with `.bak`.
-- 🔬 **Live preview**: as soon as exported, fonts are registered via FontFace API so you see your sample text rendered with the actual game font.
+- 🔠 **Font workshop**: dedicated "Fonts" tab on the DP2 card — export 7 asset fonts (`FOT-NewRodinProN-DB`, `FOT-NewCezannePro-DB`, `FOT-NewCezannePro-M`, `FOT-NewCinemaAStd-D`, `FOT-Wentworth`, `FOT-UDKakugo_LargePro-R`, `FOT-MatisseProN-UB`) from `resources.assets` and `sharedassets0.assets` as TTF/OTF, replace with your own + repack into the matching `.assets` file with `.bak`.
+- 🔬 **Live preview**: as soon as exported, fonts are registered via FontFace API. After Replace — instant cache-bust so the new font shows up without a re-export from the game.
+
+**Texture workshop (DP2)**
+- 🖼️ **Texture workshop**: export PNG character portraits from `resources.assets` (DXT5/BC3 → PNG), replace + in-place patch the `.assets` + `.resS` pair (offset table preserved). 22 textures shipped in the list (Francis, Simon, Clarkson family, Woods, Davis etc.).
+- 📦 **Export all in one click**: dumps all previews into `Documents\DP2-Localization-Tools\dp2-textures\`.
+
+**The Good Life fonts**
+- 🔡 **Bitmap-font editor**: unpacks the `c0718fc478f6943d` bundle (Unity Asset Bundle with Font + Texture2D), edits `m_CharacterRects.Array`, add/remove glyphs directly on the atlas.
+- ✏️ **AddGlyph modal**: pick a TTF that has the missing letters (Є є І і Ї ї Ґ ґ), enter a target list "Є, є, і, …" — the app locates a free atlas region, Y-flips the bitmap correctly, fills in `uv` / `vert` / `advance` and re-packs into the CAB bundle.
+- 🎯 **In-game preview** uses the real atlas and `vert.x/y` metrics — you see exactly what the engine renders.
+- 🗑️ **Delete key** on a selected glyph: removes the record and clears the bitmap region with a transparent rectangle so leftover pixels don't bleed.
+- 🌐 **External locale files**: `userData/locales/{uk,en}.json` are merged on top of the built-in dictionary, so translators can edit strings without rebuilding the app.
 
 **Workflow & safety**
 - 💼 **Auto-save + crash recovery**: unsaved edits flush to `.autosave.json` every 30s; on reload, the app offers to restore.
@@ -173,6 +195,10 @@ npm run build:exe    # Portable .exe → release/
 Requires Node.js 18+ and Windows for the portable `.exe` artifact.
 
 ---
+
+## 📚 Modding notes
+
+- [`docs/TGL-modding-notes.txt`](docs/TGL-modding-notes.txt) — reverse-engineering write-up for The Good Life: text container layout (`loc/English`), font bundle structure (`c0718fc478f6943d`), the `flipped` + negative-`uv.height` convention that catches every home-grown tool, atlas write-back pipeline, 64-bit PathID precision pitfalls, and Unity 2020.1.17f1 specifics. Useful even if you don't use this app — written for anyone building their own modding tools.
 
 ## 🧱 Tech Stack
 

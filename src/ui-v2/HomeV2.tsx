@@ -4,17 +4,19 @@ import { LangToggle } from "../components/LangToggle";
 import bgImage from "./assets/dp-board.jpg";
 import "./theme.css";
 
-export type GameMode = "text" | "fonts";
+export type GameMode = "text" | "fonts" | "textures";
+export type GameId = "dp1" | "dp2" | "tgl";
 
 interface Props {
-  onPickGame: (id: "dp1" | "dp2", mode?: GameMode) => void;
+  onPickGame: (id: GameId, mode?: GameMode) => void;
   onOpenSetup: () => void;
-  recentFolders: string[];
   onOpenFolder: (path: string) => void;
+  /** Останні шляхи з усіх ігор (DP1/DP2/TGL). */
+  onOpenRecent?: (game: GameId, path: string) => void;
 }
 
 interface CaseDef {
-  id: "dp1" | "dp2";
+  id: GameId;
   caseNo: string;
   subjectKey: string;
   altnameKey: string;
@@ -45,18 +47,31 @@ const CASES: CaseDef[] = [
     format: "sharedassets / .assets",
     noteKey: "home.v2.dp2.note",
   },
+  {
+    id: "tgl",
+    caseNo: "003",
+    subjectKey: "home.tgl.title",
+    altnameKey: "home.tgl.altname",
+    regionKey: "home.v2.tgl.region",
+    platform: "PC · Steam",
+    format: "loc/English (binary)",
+    noteKey: "home.v2.tgl.note",
+  },
 ];
 
-export function HomeV2({ onPickGame, onOpenSetup, recentFolders, onOpenFolder }: Props) {
+export function HomeV2({ onPickGame, onOpenSetup, onOpenFolder, onOpenRecent }: Props) {
   const t = useT();
   const [mounted, setMounted] = useState(false);
-  const [state, setState] = useState<Record<"dp1" | "dp2", {
+  const [state, setState] = useState<Record<GameId, {
     hasPath: boolean;
     progress: { done: number; total: number } | null;
   }>>({
     dp1: { hasPath: false, progress: null },
     dp2: { hasPath: false, progress: null },
+    tgl: { hasPath: false, progress: null },
   });
+  // Уніфіковані recents: DP1 eng.json, DP2 lastFolder + recentFolders[], TGL bin.
+  const [recentItems, setRecentItems] = useState<Array<{ game: GameId; path: string }>>([]);
 
   useEffect(() => {
     setTimeout(() => setMounted(true), 10);
@@ -66,7 +81,25 @@ export function HomeV2({ onPickGame, onOpenSetup, recentFolders, onOpenFolder }:
         setState({
           dp1: { hasPath: !!settings.dp1EngPath, progress: null },
           dp2: { hasPath: !!settings.lastFolder, progress: null },
+          tgl: { hasPath: !!settings.tglBinPath, progress: null },
         });
+        // Уніфікований список останніх: DP1 eng.json, DP2 lastFolder
+        // (+ старий recentFolders[]), TGL bin. Dedup і обмеження 8.
+        const items: Array<{ game: GameId; path: string }> = [];
+        const seen = new Set<string>();
+        const push = (game: GameId, p?: string) => {
+          if (!p) return;
+          const key = `${game}::${p}`;
+          if (seen.has(key)) return;
+          seen.add(key);
+          items.push({ game, path: p });
+        };
+        push("dp1", settings.dp1EngPath);
+        push("dp2", settings.lastFolder);
+        push("tgl", settings.tglBinPath);
+        const rf: string[] = Array.isArray(settings.recentFolders) ? settings.recentFolders : [];
+        for (const p of rf) push("dp2", p);
+        setRecentItems(items.slice(0, 8));
         if (settings.lastFolder) {
           window.dp2.corpusStatsWorker({ folder: settings.lastFolder })
             .then((stats) => {
@@ -110,7 +143,7 @@ export function HomeV2({ onPickGame, onOpenSetup, recentFolders, onOpenFolder }:
           </header>
 
           {/* Картки-теки */}
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-x-10 gap-y-8 mb-14">
+          <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-x-8 gap-y-8 mb-14">
             {CASES.map((c) => {
               const s = state[c.id];
               const pct = s.progress && s.progress.total > 0
@@ -131,14 +164,16 @@ export function HomeV2({ onPickGame, onOpenSetup, recentFolders, onOpenFolder }:
                 : t("home.v2.status.open");
 
               const isDp2 = c.id === "dp2";
+              const isTgl = c.id === "tgl";
+              const hasActions = isDp2 || isTgl;
               return (
                 <div
                   key={c.id}
-                  className="v2-folder"
-                  // DP1 — клік по всій картці відкриває редактор. DP2 — лише
-                  // через окремі action-кнопки внизу (Текст / Шрифти).
-                  onClick={!isDp2 ? () => onPickGame(c.id, "text") : undefined}
-                  style={{ cursor: isDp2 ? "default" : "pointer" }}
+                  className={`v2-folder${hasActions ? " v2-folder--with-actions" : ""}`}
+                  // DP1 — клік по всій картці відкриває редактор.
+                  // DP2/TGL — лише через окремі action-кнопки внизу.
+                  onClick={!hasActions ? () => onPickGame(c.id, "text") : undefined}
+                  style={{ cursor: hasActions ? "default" : "pointer" }}
                 >
                   <span className="v2-folder__tab">{t("home.v2.case", { n: c.caseNo })}</span>
 
@@ -189,8 +224,34 @@ export function HomeV2({ onPickGame, onOpenSetup, recentFolders, onOpenFolder }:
                       {stampLabel}
                     </div>
 
-                    {/* DP2-режими: два action-pills у нижній частині картки */}
+                    {/* DP2-режими: три action-pills у нижній частині картки */}
                     {isDp2 && (
+                      <div className="v2-folder__actions">
+                        <button
+                          type="button"
+                          className="v2-folder__action"
+                          onClick={(e) => { e.stopPropagation(); onPickGame(c.id, "text"); }}
+                        >
+                          {t("home.v2.action.text")}
+                        </button>
+                        <button
+                          type="button"
+                          className="v2-folder__action v2-folder__action--alt"
+                          onClick={(e) => { e.stopPropagation(); onPickGame(c.id, "fonts"); }}
+                        >
+                          {t("home.v2.action.fonts")}
+                        </button>
+                        <button
+                          type="button"
+                          className="v2-folder__action v2-folder__action--alt"
+                          onClick={(e) => { e.stopPropagation(); onPickGame(c.id, "textures"); }}
+                        >
+                          {t("home.v2.action.textures")}
+                        </button>
+                      </div>
+                    )}
+                    {/* TGL: Текст + Шрифти */}
+                    {isTgl && (
                       <div className="v2-folder__actions">
                         <button
                           type="button"
@@ -214,17 +275,27 @@ export function HomeV2({ onPickGame, onOpenSetup, recentFolders, onOpenFolder }:
             })}
           </div>
 
-          {recentFolders.length > 0 && (
+          {recentItems.length > 0 && (
             <section className="mb-10">
               <h3 className="v2-recent-title">{t("home.recent")}</h3>
               <div className="space-y-1.5">
-                {recentFolders.slice(0, 5).map((p) => {
-                  const short = p.split(/[\\/]/).slice(-2).join("/");
+                {recentItems.map(({ game, path }) => {
+                  const short = path.split(/[\\/]/).slice(-2).join("/");
+                  const badge = game.toUpperCase();
                   return (
-                    <button key={p} onClick={() => onOpenFolder(p)} className="v2-recent-item" title={p}>
+                    <button
+                      key={`${game}-${path}`}
+                      onClick={() => {
+                        if (onOpenRecent) onOpenRecent(game, path);
+                        else if (game === "dp2") onOpenFolder(path);
+                      }}
+                      className="v2-recent-item"
+                      title={path}
+                    >
                       <span className="v2-recent-item__marker">▌</span>
+                      <span className="dp-pill dp-pill--info text-[10px]" style={{ marginRight: 8 }}>{badge}</span>
                       <span className="v2-recent-item__name">{short}</span>
-                      <span className="v2-recent-item__path">{p}</span>
+                      <span className="v2-recent-item__path">{path}</span>
                     </button>
                   );
                 })}

@@ -153,3 +153,16 @@ export function isTranslated(s: FlatEntry): boolean {
   if (s.en === s.originalEn) return false;
   return HAS_CYR_RE.test(s.en);
 }
+
+const HAS_LATIN_RE = /[A-Za-z]/;
+
+/**
+ * Запис потребує перекладу лише якщо в оригіналі є латинські літери
+ * (людський англійський текст). Числа на кшталт "2005", дефіси "—" і
+ * порожні рядки не вимагають перекладу — відсікаємо їх із фільтра
+ * "не перекладені", щоб counter не задирався.
+ */
+export function needsTranslation(s: FlatEntry): boolean {
+  if (!s.originalEn) return false;
+  return HAS_LATIN_RE.test(s.originalEn);
+}

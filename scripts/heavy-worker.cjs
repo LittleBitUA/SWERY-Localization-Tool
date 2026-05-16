@@ -201,12 +201,17 @@ function flattenDp2(filePath, root, origRoot) {
 }
 
 const HAS_CYR = /[Ѐ-ӿ]/;
+const HAS_LATIN = /[A-Za-z]/;
 function isTranslated(e) {
   if (!e.originalEn) return false;
   if (e.en === e.originalEn) return false;
   // Те саме що у frontend/src/lib/parser.ts: вимагаємо реальну кирилицю,
   // щоб не ловити невидимі різниці у бекапі (пробіли/регістр/escape).
   return HAS_CYR.test(e.en);
+}
+function needsTranslation(e) {
+  if (!e.originalEn) return false;
+  return HAS_LATIN.test(e.originalEn);
 }
 
 // ── Task: build-tm ──────────────────────────────────────────────────────
@@ -534,9 +539,17 @@ async function taskFileCounts(folder) {
   for (const f of all) {
     const entries = getEntries(f);
     if (!entries) continue;
+    // Рахуємо лише ті записи, що ПОТРЕБУЮТЬ перекладу (мають латинські літери
+    // в оригіналі). Числа/empty/"-" виключаються — інакше counter показує
+    // "untranslated=3", а фільтр "Untranslated" порожній.
+    let translatable = 0;
     let translated = 0;
-    for (const e of entries) if (isTranslated(e)) translated++;
-    out.push({ path: f.path, total: entries.length, translated });
+    for (const e of entries) {
+      if (!needsTranslation(e)) continue;
+      translatable++;
+      if (isTranslated(e)) translated++;
+    }
+    out.push({ path: f.path, total: translatable, translated });
   }
   return out;
 }
@@ -865,6 +878,202 @@ async function taskSearchAll(folder, opts) {
   return result;
 }
 
+// ── TGL (The Good Life) — bin codec + txt workflow ─────────────────────
+// Великі операції (28k записів + UTF-8 декод) дряпають main process, тож
+// винесено сюди. Worker отримує лише шлях/масив рядків — Buffer'и через IPC
+// не курсують.
+
+const fsSync = require('node:fs');
+
+function tglRead7Bit(buf, off) {
+  // C# BinaryReader 7-bit-encoded int — використовуємо МНОЖЕННЯ замість
+  // зсуву, бо JS `<< 28` коерсить до signed int32 і ламає старші біти.
+  let val = 0, shift = 0, p = off;
+  while (true) {
+    if (p >= buf.length) throw new Error('7-bit read past EOF at ' + off);
+    const b = buf[p++];
+    val += (b & 0x7f) * 2 ** shift;
+    if ((b & 0x80) === 0) break;
+    shift += 7;
+    if (shift > 35) throw new Error('7-bit int too long at ' + off);
+  }
+  return { value: val, next: p };
+}
+function tglKeyHex(buf, off) {
+  const lo = buf.readUInt32LE(off);
+  const hi = buf.readUInt32LE(off + 4);
+  return (BigInt(hi) << 32n | BigInt(lo)).toString(16).padStart(16, '0');
+}
+function tglDecodeBin(file) {
+  const buf = fsSync.readFileSync(file);
+  const count = buf.readUInt32LE(0);
+  let off = 4;
+  const records = new Array(count);
+  for (let i = 0; i < count; i++) {
+    const key = tglKeyHex(buf, off); off += 8;
+    const li = tglRead7Bit(buf, off); off = li.next;
+    const text = buf.slice(off, off + li.value).toString('utf8');
+    off += li.value;
+    records[i] = { i, key, en: text };
+  }
+  if (off !== buf.length) {
+    throw new Error('TGL trailing bytes: parsed ' + off + ', file ' + buf.length);
+  }
+  return { records, originalSize: buf.length };
+}
+function tglEncodeBin(records) {
+  let total = 4;
+  const enc = new Array(records.length);
+  for (let i = 0; i < records.length; i++) {
+    const utf = Buffer.from(records[i].text, 'utf8');
+    const lenBytes = [];
+    let v = utf.length;
+    while (v >= 0x80) { lenBytes.push((v & 0x7f) | 0x80); v = v >>> 7; }
+    lenBytes.push(v & 0x7f);
+    enc[i] = { keyHex: records[i].key, lenBytes, utf };
+    total += 8 + lenBytes.length + utf.length;
+  }
+  const out = Buffer.allocUnsafe(total);
+  out.writeUInt32LE(records.length, 0);
+  let off = 4;
+  for (const e of enc) {
+    const key = BigInt('0x' + e.keyHex);
+    out.writeUInt32LE(Number(key & 0xffffffffn), off);
+    out.writeUInt32LE(Number((key >> 32n) & 0xffffffffn), off + 4);
+    off += 8;
+    for (const b of e.lenBytes) out[off++] = b;
+    e.utf.copy(out, off);
+    off += e.utf.length;
+  }
+  return out;
+}
+function tglEscape(s) {
+  let out = '';
+  for (let i = 0; i < s.length; i++) {
+    const ch = s[i];
+    if (ch === '\\') out += '\\\\';
+    else if (ch === '\r') out += '\\r';
+    else if (ch === '\n') out += '\\n';
+    else out += ch;
+  }
+  return out;
+}
+function tglUnescape(s) {
+  let out = '';
+  for (let i = 0; i < s.length; i++) {
+    const ch = s[i];
+    if (ch === '\\' && i + 1 < s.length) {
+      const nxt = s[i + 1];
+      if (nxt === '\\') { out += '\\'; i++; }
+      else if (nxt === 'r') { out += '\r'; i++; }
+      else if (nxt === 'n') { out += '\n'; i++; }
+      else { out += ch; }
+    } else {
+      out += ch;
+    }
+  }
+  return out;
+}
+function tglTxtToLines(txt) {
+  if (txt.charCodeAt(0) === 0xfeff) txt = txt.slice(1);
+  if (txt.endsWith('\r\n')) txt = txt.slice(0, -2);
+  else if (txt.endsWith('\n')) txt = txt.slice(0, -1);
+  return txt.split(/\r\n|\r|\n/);
+}
+
+async function taskTglLoad(binPath) {
+  const parsed = tglDecodeBin(binPath);
+  const workPath = binPath + '.txt';
+  let ua = parsed.records.map((r) => r.en);
+  let workfileMismatch = null;
+  try {
+    const raw = await fs.readFile(workPath, 'utf8');
+    const lines = tglTxtToLines(raw);
+    if (lines.length === parsed.records.length) {
+      ua = lines.map(tglUnescape);
+    } else {
+      workfileMismatch = { binLines: parsed.records.length, txtLines: lines.length };
+    }
+  } catch {}
+  return { records: parsed.records, ua, originalSize: parsed.originalSize, workPath, workfileMismatch };
+}
+
+async function taskTglSaveWorkfile(binPath, ua) {
+  const parsed = tglDecodeBin(binPath);
+  if (ua.length !== parsed.records.length) {
+    throw new Error('ua length (' + ua.length + ') != bin records (' + parsed.records.length + ')');
+  }
+  const body = ua.map((s, i) => tglEscape(typeof s === 'string' ? s : parsed.records[i].en)).join('\r\n');
+  const workPath = binPath + '.txt';
+  await fs.writeFile(workPath, body, 'utf8');
+  return { workPath };
+}
+
+// Find balanced {} block starting from `openAt` (where char is '{').
+function tglFindBalancedBlock(raw, openAt) {
+  if (raw.charCodeAt(openAt) !== 0x7B) return -1;
+  let depth = 0;
+  let inStr = false;
+  let esc = false;
+  for (let i = openAt; i < raw.length; i++) {
+    const ch = raw.charCodeAt(i);
+    if (inStr) {
+      if (esc) { esc = false; continue; }
+      if (ch === 0x5C) { esc = true; continue; }
+      if (ch === 0x22) { inStr = false; }
+      continue;
+    }
+    if (ch === 0x22) { inStr = true; continue; }
+    if (ch === 0x7B) depth++;
+    else if (ch === 0x7D) {
+      depth--;
+      if (depth === 0) return i;
+    }
+  }
+  return -1;
+}
+
+async function taskTglFontParse(jsonPath) {
+  const raw = await fs.readFile(jsonPath, 'utf8');
+  const data = JSON.parse(raw);
+  // Locate "m_CharacterRects": { ... } section in raw for patch-safe save.
+  let charsSection = null;
+  const re = /"m_CharacterRects"\s*:\s*\{/g;
+  const m = re.exec(raw);
+  if (m) {
+    const openAt = m.index + m[0].length - 1;
+    const closeAt = tglFindBalancedBlock(raw, openAt);
+    if (closeAt > 0) charsSection = { start: openAt, end: closeAt };
+  }
+  return { raw, data, charsSection };
+}
+
+async function taskTglPack(binPath, ua) {
+  const parsed = tglDecodeBin(binPath);
+  if (ua.length !== parsed.records.length) {
+    throw new Error('ua length (' + ua.length + ') != bin records (' + parsed.records.length + ')');
+  }
+  let translated = 0, fallback = 0;
+  const packed = parsed.records.map((r) => {
+    const u = ua[r.i];
+    if (typeof u === 'string' && u.length > 0 && u !== r.en) { translated++; return { key: r.key, text: u }; }
+    fallback++;
+    return { key: r.key, text: r.en };
+  });
+  const bak = binPath + '.bak';
+  try { await fs.access(bak); } catch { await fs.copyFile(binPath, bak); }
+  const buf = tglEncodeBin(packed);
+  await fs.writeFile(binPath, buf);
+  return {
+    outputPath: binPath,
+    bakPath: bak,
+    translated,
+    fallback,
+    size: buf.length,
+    originalSize: parsed.originalSize,
+  };
+}
+
 // ── Dispatcher ──────────────────────────────────────────────────────────
 parentPort.on('message', async (msg) => {
   const id = msg && msg.id;
@@ -890,6 +1099,14 @@ parentPort.on('message', async (msg) => {
       result = await taskNameConsistency(payload.folder);
     } else if (type === 'rename-chara') {
       result = await taskRenameChara(payload.folder, payload.oldName, payload.newName);
+    } else if (type === 'tgl-load') {
+      result = await taskTglLoad(payload.binPath);
+    } else if (type === 'tgl-save-workfile') {
+      result = await taskTglSaveWorkfile(payload.binPath, payload.ua);
+    } else if (type === 'tgl-pack') {
+      result = await taskTglPack(payload.binPath, payload.ua);
+    } else if (type === 'tgl-font-parse') {
+      result = await taskTglFontParse(payload.jsonPath);
     } else {
       throw new Error('Unknown task type: ' + type);
     }

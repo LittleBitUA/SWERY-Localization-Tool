@@ -1,6 +1,6 @@
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useStore, dp2StatusKey } from "../lib/store";
-import { isTranslated } from "../lib/parser";
+import { isTranslated, needsTranslation } from "../lib/parser";
 import { useT } from "../lib/i18n";
 import { useLocalStorage } from "../lib/useLocalStorage";
 import type { StatusKind, StatusEntry } from "../lib/status";
@@ -117,7 +117,6 @@ export function SentenceTable() {
   const filePath = useStore((s) => s.selectedFilePath);
   const fileName = filePath ? filePath.split(/[\\/]/).pop() : null;
   const statuses = useStore((s) => s.statuses);
-  const setEntryStatus = useStore((s) => s.setEntryStatus);
   const toggleBookmark = useStore((s) => s.toggleEntryBookmark);
   const bulkSetStatus = useStore((s) => s.bulkSetStatus);
   const bulkCopy = useStore((s) => s.bulkCopyOriginalToTranslation);
@@ -175,7 +174,10 @@ export function SentenceTable() {
       .filter(({ e }) => {
         const st = statuses.entries[dp2StatusKey(e)];
         if (filter === "translated" && !isTranslated(e)) return false;
-        if (filter === "untranslated" && isTranslated(e)) return false;
+        // "Не перекладені" — лише записи, що реально потребують перекладу
+        // (мають латинські літери в оригіналі). Числа, "—", порожні рядки
+        // не вимагають перекладу — відсікаємо їх.
+        if (filter === "untranslated" && (isTranslated(e) || !needsTranslation(e))) return false;
         if (filter === "draft" && st?.status !== "draft") return false;
         if (filter === "review" && st?.status !== "review") return false;
         if (filter === "approved" && st?.status !== "approved") return false;

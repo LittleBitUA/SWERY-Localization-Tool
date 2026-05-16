@@ -57,25 +57,58 @@ Write-Diag ("New font size: {0:N0} bytes" -f $newBytes.Length)
 $dataField = $base["m_FontData"]
 if ($null -eq $dataField) { throw "m_FontData field missing on font $fontName" }
 
-# Спроба 1: AsByteArray (швидко, типове API v3 для vector<UInt8>)
+# m_FontData у Unity — це vector<UInt8>, тобто {Array: [byte, byte, ...]}.
+# Правильно записувати на inner ["Array"], а НЕ на сам dataField. У старому
+# порядку спочатку спрацював fallback AssetTypeValue(ByteArray) на зовнішнє
+# поле — це могло записати raw bytes у неправильне місце.
 $replaced = $false
-try {
-    $dataField.AsByteArray = $newBytes
-    $replaced = $true
-    Write-Diag "Set via AsByteArray"
-} catch {
-    Write-Diag "AsByteArray set failed: $($_.Exception.Message)"
+
+# Спроба 1: inner Array.AsByteArray — це канонічний шлях для vector<UInt8>.
+$arrayField = $null
+try { $arrayField = $dataField["Array"] } catch {}
+if ($null -ne $arrayField) {
+    try {
+        $arrayField.AsByteArray = $newBytes
+        $replaced = $true
+        Write-Diag "Set via inner Array.AsByteArray (canonical)"
+    } catch {
+        Write-Diag "Array.AsByteArray set failed: $($_.Exception.Message)"
+    }
 }
 
-# Спроба 2: replace inner Array via AssetTypeValue (TypelessData-style)
+# Спроба 2: outer AsByteArray — деякі версії API підтримують і її.
+if (-not $replaced) {
+    try {
+        $dataField.AsByteArray = $newBytes
+        $replaced = $true
+        Write-Diag "Set via outer AsByteArray"
+    } catch {
+        Write-Diag "Outer AsByteArray set failed: $($_.Exception.Message)"
+    }
+}
+
+# Спроба 3: AssetTypeValue ByteArray на inner Array (НЕ на outer field).
+if (-not $replaced -and $null -ne $arrayField) {
+    try {
+        $atv = New-Object AssetsTools.NET.AssetTypeValue([AssetsTools.NET.AssetValueType]::ByteArray, $newBytes)
+        $arrayField.Value = $atv
+        $replaced = $true
+        Write-Diag "Set via inner Array.Value=AssetTypeValue(ByteArray)"
+    } catch {
+        Write-Diag "Array.Value=AssetTypeValue failed: $($_.Exception.Message)"
+    }
+}
+
+# Спроба 4 (last resort): AssetTypeValue на outer dataField — може писати
+# не в той слот, але краще ніж абсолютна відмова.
 if (-not $replaced) {
     try {
         $atv = New-Object AssetsTools.NET.AssetTypeValue([AssetsTools.NET.AssetValueType]::ByteArray, $newBytes)
         $dataField.Value = $atv
         $replaced = $true
-        Write-Diag "Set via AssetTypeValue(ByteArray)"
+        Write-Diag "WARN: Set via outer Value=AssetTypeValue(ByteArray) — fallback, може спрацювати некоректно"
     } catch {
-        Write-Diag "Value=AssetTypeValue(ByteArray) failed: $($_.Exception.Message)"
+        Write-Diag "Outer Value=AssetTypeValue failed: $($_.Exception.Message)"
     }
 }
 
@@ -96,32 +129,66 @@ $inPlace = ($normSrc -ieq $normDst)
 $writeTarget = if ($inPlace) { $OutputPath + ".tmp" } else { $OutputPath }
 
 Write-Step "Writing $writeTarget ..."
+Write-Diag ("  in-place: {0}, source: {1}, target: {2}" -f $inPlace, $AssetsPath, $writeTarget)
 $writer = $null
 try {
+    Write-Diag "  creating AssetsFileWriter..."
     $writer = New-Object AssetsTools.NET.AssetsFileWriter($writeTarget)
+    Write-Diag "  AssetsFileWriter ready, invoking file.Write(writer, 0)..."
     $assetsInst.file.Write($writer, 0)
+    Write-Diag "  file.Write returned without exception"
+} catch {
+    Write-Diag ("  WRITE FAILED: {0}" -f $_.Exception.Message)
+    throw
 } finally {
-    if ($null -ne $writer) { $writer.Close() }
+    if ($null -ne $writer) {
+        try { $writer.Close(); Write-Diag "  writer closed" }
+        catch { Write-Diag ("  writer close threw: {0}" -f $_.Exception.Message) }
+    }
+}
+
+if (Test-Path $writeTarget) {
+    $tmpSize = (Get-Item $writeTarget).Length
+    Write-Diag ("  tmp file written: {0:N0} bytes at {1}" -f $tmpSize, $writeTarget)
+} else {
+    Write-Warning "Tmp file is missing after write: $writeTarget"
 }
 
 if ($inPlace) {
-    try { $assetsInst.file.Reader.Close() } catch {}
-    try { $manager.UnloadAllAssetsFiles() } catch {}
-    try { $manager.UnloadAll() } catch {}
+    Write-Step "In-place mode: releasing handles and swapping files"
+    try { $assetsInst.file.Reader.Close(); Write-Diag "  reader closed" } catch { Write-Diag ("  reader close failed: {0}" -f $_.Exception.Message) }
+    try { $manager.UnloadAllAssetsFiles(); Write-Diag "  manager.UnloadAllAssetsFiles()" } catch { Write-Diag ("  UnloadAllAssetsFiles failed: {0}" -f $_.Exception.Message) }
+    try { $manager.UnloadAll(); Write-Diag "  manager.UnloadAll()" } catch { Write-Diag ("  UnloadAll failed: {0}" -f $_.Exception.Message) }
     [System.GC]::Collect()
     [System.GC]::WaitForPendingFinalizers()
+    Write-Diag "  GC collected"
 
     $bakPath = $AssetsPath + ".bak"
     if (-not (Test-Path $bakPath)) {
-        Copy-Item -LiteralPath $AssetsPath -Destination $bakPath -Force
-        Write-Diag "Backup created: $bakPath"
+        try {
+            Copy-Item -LiteralPath $AssetsPath -Destination $bakPath -Force
+            Write-Diag "  backup created: $bakPath"
+        } catch {
+            Write-Diag ("  backup failed: {0}" -f $_.Exception.Message)
+            throw
+        }
     } else {
-        Write-Diag "Backup already exists, keeping: $bakPath"
+        Write-Diag "  backup already exists, keeping: $bakPath"
     }
 
-    Move-Item -LiteralPath $writeTarget -Destination $OutputPath -Force
+    try {
+        Move-Item -LiteralPath $writeTarget -Destination $OutputPath -Force
+        Write-Diag "  moved tmp → $OutputPath"
+    } catch {
+        Write-Diag ("  MOVE FAILED: {0}" -f $_.Exception.Message)
+        Write-Diag "  файл .tmp залишається на диску — спробуй перейменувати вручну"
+        throw
+    }
 }
 
+if (-not (Test-Path $OutputPath)) {
+    throw "Output file is missing: $OutputPath"
+}
 $outSize = (Get-Item $OutputPath).Length
 Write-Step ("DONE -> {0} ({1:N0} bytes)" -f $OutputPath, $outSize)
 exit 0

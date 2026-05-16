@@ -412,46 +412,42 @@ ipcMain.handle("dp2:setup-run", async (_e, payload) => {
   const toolsDir = String(payload.toolsDir || "").trim();
   if (!toolsDir) return { error: "toolsDir не задано" };
 
-  sendSetupProgress({ phase: "check", message: "Перевірка..." });
+  sendSetupProgress({ phase: "check", i18nKey: "setup.progress.check" });
 
   try {
     await fs.mkdir(toolsDir, { recursive: true });
   } catch (e) {
     const msg = "Не вдалося створити tools-теку: " + (e.message || e);
-    sendSetupProgress({ phase: "error", message: msg });
+    sendSetupProgress({ phase: "error", i18nKey: "setup.progress.mkdirFail", i18nParams: { err: String(e.message || e) }, message: msg });
     return { error: msg };
   }
 
   let uabeaPath = payload.uabeaPath || null;
   let pwshPath = payload.pwshPath || null;
 
-  // ----- UABEA Next -----
+  // ----- UABEA Next (nightly CI build via nightly.link) -----
   if (payload.downloadUabea) {
     try {
-      sendSetupProgress({ phase: "fetch", tool: "uabea", message: "Шукаю останній реліз UABEA Next..." });
-      const rel = await setupTools.fetchLatestRelease("nesrak1", "UABEA");
-      const asset = setupTools.pickAsset(
-        rel.assets,
-        (a) => /\.zip$/i.test(a.name) && /(uabea|win|windows)/i.test(a.name)
-      ) || rel.assets.find((a) => /\.zip$/i.test(a.name));
-      if (!asset) throw new Error("У релізі " + rel.tag + " немає .zip");
+      const UABEA_URL = "https://nightly.link/nesrak1/UABEANext/workflows/build-windows/master/uabea-windows.zip";
+      const assetName = "uabea-windows.zip";
+      sendSetupProgress({ phase: "fetch", tool: "uabea", i18nKey: "setup.progress.fetch.uabea" });
 
-      const destZip = path.join(toolsDir, asset.name);
+      const destZip = path.join(toolsDir, assetName);
       sendSetupProgress({
         phase: "download", tool: "uabea",
-        message: `Завантажую ${asset.name} (${rel.tag})...`,
-        total: asset.size, downloaded: 0, percent: 0,
+        i18nKey: "setup.progress.downloading", i18nParams: { name: assetName },
+        total: 0, downloaded: 0, percent: 0,
       });
-      const res = await setupTools.downloadFile(asset.url, destZip, (p) => {
+      const res = await setupTools.downloadFile(UABEA_URL, destZip, (p) => {
         sendSetupProgress({
           phase: "download", tool: "uabea",
-          message: `Завантажую ${asset.name}...`,
+          i18nKey: "setup.progress.downloading", i18nParams: { name: assetName },
           total: p.total, downloaded: p.downloaded, percent: p.percent,
         });
       });
 
       const extractDir = path.join(toolsDir, "uabea");
-      sendSetupProgress({ phase: "extract", tool: "uabea", message: "Розпакую UABEA..." });
+      sendSetupProgress({ phase: "extract", tool: "uabea", i18nKey: "setup.progress.extract.uabea" });
       let needExtract = true;
       try {
         const items = await fs.readdir(extractDir);
@@ -464,12 +460,12 @@ ipcMain.handle("dp2:setup-run", async (_e, payload) => {
       }
 
       const exe = await setupTools.findExeInDir(extractDir, /uabea/i);
-      if (!exe) throw new Error("Не знайшов UABEA*.exe у " + extractDir);
+      if (!exe) throw new Error("UABEA*.exe not found in " + extractDir);
       uabeaPath = exe;
-      sendSetupProgress({ phase: "done", tool: "uabea", message: "UABEA готовий: " + exe });
+      sendSetupProgress({ phase: "done", tool: "uabea", i18nKey: "setup.progress.ready.uabea", i18nParams: { path: exe } });
     } catch (e) {
       const msg = "UABEA: " + (e.message || e);
-      sendSetupProgress({ phase: "error", tool: "uabea", message: msg });
+      sendSetupProgress({ phase: "error", tool: "uabea", i18nKey: "setup.progress.fail.uabea", i18nParams: { err: String(e.message || e) }, message: msg });
       return { error: msg };
     }
   }
@@ -477,9 +473,8 @@ ipcMain.handle("dp2:setup-run", async (_e, payload) => {
   // ----- PowerShell 7 portable -----
   if (payload.downloadPwsh) {
     try {
-      sendSetupProgress({ phase: "fetch", tool: "pwsh", message: "Шукаю останній реліз PowerShell 7..." });
+      sendSetupProgress({ phase: "fetch", tool: "pwsh", i18nKey: "setup.progress.fetch.pwsh" });
       const rel = await setupTools.fetchLatestRelease("PowerShell", "PowerShell");
-      // Шукаємо portable win-x64 .zip. Уникаємо MSI/preview/lts-only.
       const asset = setupTools.pickAsset(
         rel.assets,
         (a) =>
@@ -487,24 +482,24 @@ ipcMain.handle("dp2:setup-run", async (_e, payload) => {
           /win-x64/i.test(a.name) &&
           !/preview|lts/i.test(a.name)
       ) || setupTools.pickAsset(rel.assets, (a) => /\.zip$/i.test(a.name) && /win-x64/i.test(a.name));
-      if (!asset) throw new Error("У релізі " + rel.tag + " немає win-x64 .zip");
+      if (!asset) throw new Error("No win-x64 .zip in release " + rel.tag);
 
       const destZip = path.join(toolsDir, asset.name);
       sendSetupProgress({
         phase: "download", tool: "pwsh",
-        message: `Завантажую ${asset.name} (${rel.tag})...`,
+        i18nKey: "setup.progress.downloading", i18nParams: { name: asset.name },
         total: asset.size, downloaded: 0, percent: 0,
       });
       const res = await setupTools.downloadFile(asset.url, destZip, (p) => {
         sendSetupProgress({
           phase: "download", tool: "pwsh",
-          message: `Завантажую ${asset.name}...`,
+          i18nKey: "setup.progress.downloading", i18nParams: { name: asset.name },
           total: p.total, downloaded: p.downloaded, percent: p.percent,
         });
       });
 
       const extractDir = path.join(toolsDir, "pwsh");
-      sendSetupProgress({ phase: "extract", tool: "pwsh", message: "Розпакую PowerShell..." });
+      sendSetupProgress({ phase: "extract", tool: "pwsh", i18nKey: "setup.progress.extract.pwsh" });
       let needExtract = true;
       try {
         const items = await fs.readdir(extractDir);
@@ -517,18 +512,18 @@ ipcMain.handle("dp2:setup-run", async (_e, payload) => {
       }
 
       const exe = await setupTools.findExeInDir(extractDir, /^pwsh\.exe$/i);
-      if (!exe) throw new Error("Не знайшов pwsh.exe у " + extractDir);
+      if (!exe) throw new Error("pwsh.exe not found in " + extractDir);
       pwshPath = exe;
-      sendSetupProgress({ phase: "done", tool: "pwsh", message: "PowerShell готовий: " + exe });
+      sendSetupProgress({ phase: "done", tool: "pwsh", i18nKey: "setup.progress.ready.pwsh", i18nParams: { path: exe } });
     } catch (e) {
       const msg = "PowerShell: " + (e.message || e);
-      sendSetupProgress({ phase: "error", tool: "pwsh", message: msg });
+      sendSetupProgress({ phase: "error", tool: "pwsh", i18nKey: "setup.progress.fail.pwsh", i18nParams: { err: String(e.message || e) }, message: msg });
       return { error: msg };
     }
   }
 
   // ----- Persist settings -----
-  sendSetupProgress({ phase: "persist", message: "Зберігаю налаштування..." });
+  sendSetupProgress({ phase: "persist", i18nKey: "setup.progress.persist" });
   const cur = await readSettings();
   const next = {
     ...cur,
@@ -541,7 +536,7 @@ ipcMain.handle("dp2:setup-run", async (_e, payload) => {
   };
   await writeSettings(next);
 
-  sendSetupProgress({ phase: "done", message: "Готово!" });
+  sendSetupProgress({ phase: "done", i18nKey: "setup.progress.allDone" });
   return {
     ok: true,
     settings: {
@@ -614,7 +609,6 @@ ipcMain.handle("dp2:fonts-export", async () => {
   if (!assetsPath) return { success: false, error: "Не задано шлях до .assets файла (Налаштування)" };
   if (!uabeaPath)  return { success: false, error: "Не задано шлях до UABEA" };
 
-  // Auto-fallback: якщо toolsDir не заданий, беремо дефолт (Documents/DP2-...).
   let toolsDir = settings.toolsDir;
   if (!toolsDir) {
     toolsDir = path.join(app.getPath("documents"), "DP2-Localization-Tools");
@@ -629,39 +623,54 @@ ipcMain.handle("dp2:fonts-export", async () => {
   const outDir = path.join(toolsDir, "dp2-fonts");
   await fs.mkdir(outDir, { recursive: true });
 
-  return await new Promise((resolve) => {
+  // У DP2 шрифти лежать у двох файлах: resources.assets (PathID 722-725) і
+  // sharedassets0.assets (PathID 22522-22524). Інші sharedassets/globalgame*
+  // шрифтів не містять — пропускаємо щоб не марнувати час.
+  const gameDir = path.dirname(assetsPath);
+  const candidates = ["resources.assets", "sharedassets0.assets"];
+  const assetsTargets = [];
+  for (const c of candidates) {
+    const full = path.join(gameDir, c);
+    try { await fs.access(full); assetsTargets.push(full); } catch {}
+  }
+  if (assetsTargets.length === 0) assetsTargets.push(assetsPath);
+
+  const runOne = (assetsFile) => new Promise((resolve) => {
     const args = [
       "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass",
       "-File", scriptPath,
-      "-AssetsPath", assetsPath,
+      "-AssetsPath", assetsFile,
       "-OutDir", outDir,
       "-UabeaDir", uabeaDir,
     ];
     const child = spawn(pwshLookup, args, { windowsHide: true });
     let allStdout = "";
-    // Buffer everything for final parse but ALSO stream line-by-line to UI.
     child.stdout.on("data", (d) => { allStdout += d.toString(); });
     streamChildOutput(child, "dp2:fonts-export-progress");
-    child.on("error", (err) => resolve({ success: false, error: err.message }));
+    child.on("error", (err) => resolve({ success: false, error: err.message, log: allStdout }));
     child.on("exit", (code) => {
-      if (code !== 0) {
-        const tail = allStdout.split("\n").slice(-15).join("\n").trim();
-        resolve({ success: false, error: (tail || `Exit ${code}`).trim(), log: allStdout });
-        return;
-      }
       let exported = [];
       const m = allStdout.match(/RESULT_JSON:\s*(.+)$/m);
-      if (m) {
-        try { exported = JSON.parse(m[1]); } catch {}
-      }
-      resolve({ success: true, outDir, exported, log: allStdout });
+      if (m) { try { exported = JSON.parse(m[1]); } catch {} }
+      resolve({ success: code === 0, code, exported, log: allStdout });
     });
   });
+
+  const allExported = [];
+  const logs = [];
+  for (const f of assetsTargets) {
+    const r = await runOne(f);
+    logs.push(`=== ${path.basename(f)} ===\n` + (r.log || ""));
+    if (r.exported && r.exported.length) {
+      for (const e of r.exported) allExported.push(e);
+    }
+  }
+  return { success: true, outDir, exported: allExported, log: logs.join("\n\n") };
 });
 
 // ── IPC: replace single font in sharedassets0.assets ────────────────────
 ipcMain.handle("dp2:fonts-replace", async (_e, payload) => {
-  const { pathId, newFontPath } = payload || {};
+  const { pathId, newFontPath, assetsFile } = payload || {};
   if (!pathId || !newFontPath) return { success: false, error: "Не задано pathId або шлях до нового шрифту" };
   const settings = await readSettings();
   const { uabeaPath, assetsPath } = settings;
@@ -674,14 +683,20 @@ ipcMain.handle("dp2:fonts-replace", async (_e, payload) => {
   const uabeaDir = path.dirname(uabeaPath);
   const scriptPath = resolveResource("scripts/fonts-replace.ps1");
 
+  // Якщо assetsFile задано — шукаємо у тій самій теці. Інакше — у resources.assets.
+  const gameDir = path.dirname(assetsPath);
+  const targetAssets = assetsFile
+    ? path.join(gameDir, assetsFile)
+    : assetsPath;
+
   return await new Promise((resolve) => {
     const args = [
       "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass",
       "-File", scriptPath,
-      "-AssetsPath", assetsPath,
+      "-AssetsPath", targetAssets,
       "-PathId", String(pathId),
       "-NewFontFile", newFontPath,
-      "-OutputPath", assetsPath,
+      "-OutputPath", targetAssets,
       "-UabeaDir", uabeaDir,
     ];
     const child = spawn(pwshLookup, args, { windowsHide: true });
@@ -695,7 +710,7 @@ ipcMain.handle("dp2:fonts-replace", async (_e, payload) => {
         resolve({ success: false, error: (tail || `Exit ${code}`).trim(), log: allStdout });
         return;
       }
-      resolve({ success: true, outputPath: assetsPath, log: allStdout });
+      resolve({ success: true, outputPath: targetAssets, log: allStdout });
     });
   });
 });
@@ -723,6 +738,20 @@ ipcMain.handle("dp2:fonts-read-base64", async (_e, filePath) => {
   } catch (e) {
     return null;
   }
+});
+
+// Зчитує zовнішній locale-файл з %APPDATA%/.../locales/{lang}.json. Якщо файлу
+// немає або він невалідний — повертає null, app тоді використовує вбудований
+// словник. Дозволяє користувачам додавати/правити переклади без перебудови.
+ipcMain.handle("dp2:read-locale-file", async (_e, lang) => {
+  try {
+    if (typeof lang !== "string" || !/^[a-z]{2}$/.test(lang)) return null;
+    const dir = path.join(app.getPath("userData"), "locales");
+    const file = path.join(dir, `${lang}.json`);
+    const raw = await fs.readFile(file, "utf8");
+    const obj = JSON.parse(raw);
+    return obj && typeof obj === "object" ? obj : null;
+  } catch { return null; }
 });
 
 // ── IPC: build .assets via PowerShell + AssetsTools.NET ─────────
@@ -822,6 +851,471 @@ ipcMain.handle("dp2:build-assets", async () => {
       }
     });
   });
+});
+
+// ── IPC: DP2 Textures (resources.assets + .resS in-place patch) ─────────
+// Експорт усіх або вибраних PathID у PNG; заміна окремого PathID одним
+// PNG-файлом. Скрипти кодекують DXT5/BC через UABEA native libs.
+
+ipcMain.handle("dp2:textures-export", async (_e, payload) => {
+  const settings = await readSettings();
+  const { uabeaPath } = settings;
+  const assetsFile = (payload && payload.assetsFile) || "resources.assets";
+  const pathIds = (payload && Array.isArray(payload.pathIds)) ? payload.pathIds : null;
+  if (!settings.assetsPath) return { success: false, error: "Не задано шлях до .assets файла (Налаштування)" };
+  if (!uabeaPath) return { success: false, error: "Не задано шлях до UABEA" };
+
+  // resources.assets лежить у тій самій теці, що sharedassets0.assets
+  // (settings.assetsPath). Тож беремо parent dir + assetsFile.
+  const gameDir = path.dirname(settings.assetsPath);
+  const fullAssets = path.join(gameDir, assetsFile);
+  try { await fs.access(fullAssets); }
+  catch { return { success: false, error: ".assets не знайдено: " + fullAssets }; }
+
+  let toolsDir = settings.toolsDir;
+  if (!toolsDir) {
+    toolsDir = path.join(app.getPath("documents"), "DP2-Localization-Tools");
+    await writeSettings({ ...settings, toolsDir });
+  }
+  const pwshLookup = await findPwsh(settings);
+  if (!pwshLookup) return { success: false, error: "PowerShell 7 не знайдено" };
+
+  const uabeaDir = path.dirname(uabeaPath);
+  const scriptPath = resolveResource("scripts/textures-export.ps1");
+  const outDir = path.join(toolsDir, "dp2-textures");
+  await fs.mkdir(outDir, { recursive: true });
+
+  const args = [
+    "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass",
+    "-File", scriptPath,
+    "-AssetsPath", fullAssets,
+    "-OutDir", outDir,
+    "-UabeaDir", uabeaDir,
+  ];
+  if (pathIds && pathIds.length) {
+    args.push("-PathIds", pathIds.join(","));
+  }
+
+  return await new Promise((resolve) => {
+    const child = spawn(pwshLookup, args, { windowsHide: true });
+    let allStdout = "";
+    child.stdout.on("data", (d) => { allStdout += d.toString(); });
+    child.stderr.on("data", (d) => { allStdout += d.toString(); });
+    child.on("error", (err) => resolve({ success: false, error: err.message }));
+    child.on("exit", (code) => {
+      if (code !== 0) {
+        const tail = allStdout.split("\n").slice(-20).join("\n").trim();
+        resolve({ success: false, error: tail || `Exit ${code}`, log: allStdout });
+        return;
+      }
+      let exported = [];
+      const m = allStdout.match(/RESULT_JSON:\s*(.+)$/m);
+      if (m) { try { exported = JSON.parse(m[1]); } catch {} }
+      resolve({ success: true, outDir, exported, log: allStdout });
+    });
+  });
+});
+
+ipcMain.handle("dp2:textures-replace", async (_e, payload) => {
+  const settings = await readSettings();
+  const { uabeaPath } = settings;
+  const pathId = payload && payload.pathId;
+  const assetsFile = (payload && payload.assetsFile) || "resources.assets";
+  const newPngPath = payload && payload.newPngPath;
+  if (!settings.assetsPath) return { success: false, error: "Не задано шлях до .assets файла" };
+  if (!uabeaPath) return { success: false, error: "Не задано шлях до UABEA" };
+  if (!pathId || !newPngPath) return { success: false, error: "Не задано pathId або PNG-шлях" };
+
+  const gameDir = path.dirname(settings.assetsPath);
+  const fullAssets = path.join(gameDir, assetsFile);
+  try { await fs.access(fullAssets); }
+  catch { return { success: false, error: ".assets не знайдено: " + fullAssets }; }
+  try { await fs.access(newPngPath); }
+  catch { return { success: false, error: "PNG не знайдено: " + newPngPath }; }
+
+  const pwshLookup = await findPwsh(settings);
+  if (!pwshLookup) return { success: false, error: "PowerShell 7 не знайдено" };
+  const uabeaDir = path.dirname(uabeaPath);
+  const scriptPath = resolveResource("scripts/textures-replace.ps1");
+
+  return await new Promise((resolve) => {
+    const args = [
+      "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass",
+      "-File", scriptPath,
+      "-AssetsPath", fullAssets,
+      "-PathId", String(pathId),
+      "-NewPngFile", newPngPath,
+      "-OutputPath", fullAssets,
+      "-UabeaDir", uabeaDir,
+    ];
+    const child = spawn(pwshLookup, args, { windowsHide: true });
+    let allStdout = "";
+    let leftover = "";
+    const win = BrowserWindow.getAllWindows()[0];
+    const emit = (chunk) => {
+      allStdout += chunk;
+      leftover += chunk;
+      const lines = leftover.split(/\r?\n/);
+      leftover = lines.pop() || "";
+      for (const ln of lines) {
+        if (!ln.trim()) continue;
+        try { win?.webContents.send("dp2:textures-replace-progress", ln); } catch {}
+      }
+    };
+    child.stdout.on("data", (d) => emit(d.toString()));
+    child.stderr.on("data", (d) => emit(d.toString()));
+    child.on("error", (err) => resolve({ success: false, error: err.message }));
+    child.on("exit", (code) => {
+      if (leftover.trim()) {
+        try { win?.webContents.send("dp2:textures-replace-progress", leftover); } catch {}
+      }
+      if (code !== 0) {
+        const tail = allStdout.split("\n").slice(-20).join("\n").trim();
+        resolve({ success: false, error: tail || `Exit ${code}`, log: allStdout });
+        return;
+      }
+      let result = null;
+      const m = allStdout.match(/RESULT_JSON:\s*(.+)$/m);
+      if (m) { try { result = JSON.parse(m[1]); } catch {} }
+      resolve({ success: true, log: allStdout, ...result });
+    });
+  });
+});
+
+// Список наявних PNG-екстрактів у toolsDir/dp2-textures/ + read base64 для прев'ю.
+ipcMain.handle("dp2:textures-list", async () => {
+  const settings = await readSettings();
+  if (!settings.toolsDir) return { dir: null, files: [] };
+  const dir = path.join(settings.toolsDir, "dp2-textures");
+  try {
+    const items = await fs.readdir(dir, { withFileTypes: true });
+    const files = items
+      .filter((e) => e.isFile() && /\.png$/i.test(e.name))
+      .map((e) => ({ name: e.name, path: path.join(dir, e.name) }));
+    return { dir, files };
+  } catch {
+    return { dir, files: [] };
+  }
+});
+
+ipcMain.handle("dp2:textures-read-base64", async (_e, filePath) => {
+  try {
+    const buf = await fs.readFile(filePath);
+    return buf.toString("base64");
+  } catch { return null; }
+});
+
+// ── IPC: TGL Fonts (atlas + character rects JSON) ───────────────────────
+// Шрифт у грі — два файла поряд у StreamingAssets/<dir>/:
+//   ChiaroStd-B-CAB-XXXX--<negPathId>.json — поля m_CharacterRects, m_Texture, …
+//   Font Texture-CAB-XXXX--<negPathId>.png — atlas PNG (зазвичай 2048×2048).
+
+// Витягнути m_Texture.m_PathID з RAW тексту JSON (без JSON.parse), щоб
+// зберегти 64-бітну точність — JavaScript number втрачає її для значень >2^53.
+function extractTextureRawPathId(raw) {
+  // Шукаємо блок "m_Texture": { ... "m_PathID": <num> ... }
+  const idx = raw.indexOf('"m_Texture"');
+  if (idx < 0) return null;
+  // У наступних ~200 байтах має лежати m_PathID цього об'єкту.
+  const slice = raw.slice(idx, idx + 400);
+  const m = slice.match(/"m_PathID"\s*:\s*(-?\d+)/);
+  return m ? m[1] : null;
+}
+
+async function findTglFonts(baseFolder, dbgReject) {
+  const out = [];
+  async function walk(dir, depth) {
+    if (depth > 3) return;
+    let items;
+    try { items = await fs.readdir(dir, { withFileTypes: true }); }
+    catch { return; }
+    const jsonsHere = [];
+    const pngsHere = [];
+    for (const e of items) {
+      const full = path.join(dir, e.name);
+      if (e.isDirectory()) { await walk(full, depth + 1); continue; }
+      if (!e.isFile()) continue;
+      if (/\.json$/i.test(e.name)) jsonsHere.push(full);
+      else if (/\.png$/i.test(e.name)) pngsHere.push(full);
+    }
+    for (const jsonPath of jsonsHere) {
+      let raw = "";
+      try { raw = await fs.readFile(jsonPath, "utf8"); }
+      catch (e) { if (dbgReject) dbgReject.push({ file: path.basename(jsonPath), why: "read-fail", err: String(e.message || e) }); continue; }
+      // UTF-8 BOM (﻿) ламає JSON.parse — обрізаємо.
+      if (raw.charCodeAt(0) === 0xFEFF) raw = raw.slice(1);
+      if (!/"m_CharacterRects"\s*:/.test(raw)) {
+        if (dbgReject) dbgReject.push({ file: path.basename(jsonPath), why: "no-m_CharacterRects-regex", size: raw.length, head: raw.slice(0, 80) });
+        continue;
+      }
+      let parsed;
+      try { parsed = JSON.parse(raw); }
+      catch (e) { if (dbgReject) dbgReject.push({ file: path.basename(jsonPath), why: "JSON.parse-fail", err: String(e.message || e), size: raw.length, head: raw.slice(0, 60) }); continue; }
+      if (!parsed?.m_CharacterRects?.Array) {
+        if (dbgReject) dbgReject.push({ file: path.basename(jsonPath), why: "no-Array-field", hasMCR: !!parsed?.m_CharacterRects, mcrKeys: parsed?.m_CharacterRects ? Object.keys(parsed.m_CharacterRects).join(",") : "(none)" });
+        continue;
+      }
+      const name = String(parsed.m_Name || path.basename(jsonPath, ".json"));
+      const fontSize = Number(parsed.m_FontSize) || 0;
+      const lineSpacing = Number(parsed.m_LineSpacing) || 0;
+      const charCount = parsed.m_CharacterRects.Array.length;
+      // PNG-mapping: беремо PathID з raw і шукаємо PNG, в імені якого є
+      // abs(pathId) як decimal suffix. PathID 64-bit → завжди порівнюємо як string.
+      let texPathId = extractTextureRawPathId(raw);
+      let atlasPath = null;
+      if (texPathId) {
+        const absStr = texPathId.replace(/^-/, "");
+        for (const png of pngsHere) {
+          const m = path.basename(png).match(/(-?\d{10,})\.png$/i);
+          if (m && m[1].replace(/^-/, "") === absStr) { atlasPath = png; break; }
+        }
+      }
+      if (!atlasPath && pngsHere.length === 1) atlasPath = pngsHere[0];
+      out.push({
+        jsonPath, atlasPath,
+        name, fontSize, lineSpacing, charCount,
+        texPathId,
+        baseDir: path.dirname(jsonPath),
+      });
+    }
+  }
+  await walk(baseFolder, 0);
+  return out;
+}
+
+ipcMain.handle("dp2:tgl-fonts-list", async () => {
+  const settings = await readSettings();
+  const binPath = settings.tglBinPath;
+  const items = [];
+  let baseFolder = null;
+  const dbg = { toolsDir: settings.toolsDir || null, binPath: binPath || null, scans: [] };
+  if (binPath) {
+    const streamingAssets = path.dirname(path.dirname(binPath));
+    baseFolder = streamingAssets;
+    try {
+      await fs.access(streamingAssets);
+      const sa = await findTglFonts(streamingAssets);
+      dbg.scans.push({ dir: streamingAssets, found: sa.length });
+      for (const e of sa) items.push(e);
+    } catch (e) {
+      dbg.scans.push({ dir: streamingAssets, error: String(e.message || e) });
+    }
+  }
+  if (settings.toolsDir) {
+    const extractDir = path.join(settings.toolsDir, "tgl-fonts");
+    try {
+      await fs.access(extractDir);
+      const dirEntries = await fs.readdir(extractDir, { withFileTypes: true });
+      const files = dirEntries.filter((e) => e.isFile()).map((e) => e.name);
+      const rejects = [];
+      const extra = await findTglFonts(extractDir, rejects);
+      dbg.scans.push({ dir: extractDir, files, found: extra.length, rejects });
+      for (const e of extra) items.push(e);
+    } catch (e) {
+      dbg.scans.push({ dir: extractDir, error: String(e.message || e) });
+    }
+  }
+  return { items, baseFolder, debug: dbg };
+});
+
+ipcMain.handle("dp2:tgl-fonts-read-json", async (_e, jsonPath) => {
+  // Heavy parse (11 MB JSON для NotoSansSC) виносимо у worker thread, щоб
+  // не блокувати main process на 500-800ms. Renderer отримує вже parsed.
+  try {
+    const r = await callHeavy("tgl-font-parse", { jsonPath });
+    return { ok: true, raw: r.raw, data: r.data, charsSection: r.charsSection };
+  } catch (e) {
+    return { ok: false, error: String(e.message || e) };
+  }
+});
+
+ipcMain.handle("dp2:tgl-fonts-write-json", async (_e, payload) => {
+  const { jsonPath, content } = payload || {};
+  if (!jsonPath || typeof content !== "string") return { ok: false, error: "bad args" };
+  try {
+    const bak = jsonPath + ".bak";
+    try { await fs.access(bak); }
+    catch { await fs.copyFile(jsonPath, bak); }
+    await fs.writeFile(jsonPath, content, "utf8");
+    return { ok: true, bakPath: bak };
+  } catch (e) { return { ok: false, error: String(e.message || e) }; }
+});
+
+ipcMain.handle("dp2:tgl-fonts-read-atlas-base64", async (_e, pngPath) => {
+  try {
+    const buf = await fs.readFile(pngPath);
+    return { ok: true, base64: buf.toString("base64") };
+  } catch (e) { return { ok: false, error: String(e.message || e) }; }
+});
+
+// Extract Font + Texture from a CAB-file inside TGL StreamingAssets.
+ipcMain.handle("dp2:tgl-fonts-extract", async (_e, payload) => {
+  const cabPath = String((payload && payload.cabPath) || "").trim();
+  if (!cabPath) return { ok: false, error: "cabPath не задано" };
+  try { await fs.access(cabPath); }
+  catch { return { ok: false, error: "CAB не знайдено: " + cabPath }; }
+
+  const settings = await readSettings();
+  const uabeaPath = settings.uabeaPath;
+  if (!uabeaPath) return { ok: false, error: "UABEA шлях не задано (Налаштування)" };
+  const uabeaDir = path.dirname(uabeaPath);
+
+  let toolsDir = settings.toolsDir;
+  if (!toolsDir) {
+    toolsDir = path.join(app.getPath("documents"), "DP2-Localization-Tools");
+  }
+  // Запам'ятовуємо cabPath, щоб наступного разу не запитувати — toolsDir теж.
+  try { await writeSettings({ ...settings, toolsDir, tglCabPath: cabPath }); } catch {}
+  const outDir = path.join(toolsDir, "tgl-fonts");
+  await fs.mkdir(outDir, { recursive: true });
+
+  const pwshLookup = await findPwsh(settings);
+  if (!pwshLookup) return { ok: false, error: "PowerShell 7 не знайдено" };
+  const scriptPath = resolveResource("scripts/tgl-fonts-extract.ps1");
+
+  return await new Promise((resolve) => {
+    const args = [
+      "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass",
+      "-File", scriptPath,
+      "-CabPath", cabPath,
+      "-OutDir", outDir,
+      "-UabeaDir", uabeaDir,
+    ];
+    const child = spawn(pwshLookup, args, { windowsHide: true });
+    let allStdout = "";
+    child.stdout.on("data", (d) => { allStdout += d.toString(); });
+    child.stderr.on("data", (d) => { allStdout += d.toString(); });
+    child.on("error", (err) => resolve({ ok: false, error: err.message }));
+    child.on("exit", (code) => {
+      if (code !== 0) {
+        const tail = allStdout.split("\n").slice(-20).join("\n").trim();
+        resolve({ ok: false, error: tail || `Exit ${code}`, log: allStdout });
+        return;
+      }
+      let exported = [];
+      const m = allStdout.match(/RESULT_JSON:\s*(.+)$/m);
+      if (m) { try { exported = JSON.parse(m[1]); } catch {} }
+      resolve({ ok: true, outDir, exported, log: allStdout });
+    });
+  });
+});
+
+// Import Font JSON + atlas PNG back into the game CAB file.
+ipcMain.handle("dp2:tgl-fonts-import-to-cab", async (_e, payload) => {
+  const cabPath = String((payload && payload.cabPath) || "").trim();
+  const jsonPath = String((payload && payload.jsonPath) || "").trim();
+  const pngPath = String((payload && payload.pngPath) || "").trim();
+  if (!cabPath || !jsonPath || !pngPath) return { ok: false, error: "cabPath/jsonPath/pngPath обов'язкові" };
+  try { await fs.access(cabPath); await fs.access(jsonPath); await fs.access(pngPath); }
+  catch (e) { return { ok: false, error: "Файл не знайдено: " + (e.message || e) }; }
+
+  const settings = await readSettings();
+  // Запам'ятовуємо cabPath на майбутнє.
+  if (settings.tglCabPath !== cabPath) {
+    try { await writeSettings({ ...settings, tglCabPath: cabPath }); } catch {}
+  }
+  const uabeaPath = settings.uabeaPath;
+  if (!uabeaPath) return { ok: false, error: "UABEA шлях не задано" };
+  const uabeaDir = path.dirname(uabeaPath);
+  const pwshLookup = await findPwsh(settings);
+  if (!pwshLookup) return { ok: false, error: "PowerShell 7 не знайдено" };
+  const scriptPath = resolveResource("scripts/tgl-fonts-import.ps1");
+
+  return await new Promise((resolve) => {
+    const args = [
+      "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass",
+      "-File", scriptPath,
+      "-CabPath", cabPath,
+      "-FontJsonPath", jsonPath,
+      "-AtlasPngPath", pngPath,
+      "-UabeaDir", uabeaDir,
+    ];
+    const child = spawn(pwshLookup, args, { windowsHide: true });
+    let allStdout = "";
+    let leftover = "";
+    const win = BrowserWindow.getAllWindows()[0];
+    const emit = (chunk) => {
+      allStdout += chunk;
+      leftover += chunk;
+      const lines = leftover.split(/\r?\n/);
+      leftover = lines.pop() || "";
+      for (const ln of lines) {
+        if (!ln.trim()) continue;
+        try { win?.webContents.send("dp2:tgl-fonts-import-progress", ln); } catch {}
+      }
+    };
+    child.stdout.on("data", (d) => emit(d.toString()));
+    child.stderr.on("data", (d) => emit(d.toString()));
+    child.on("error", (err) => resolve({ ok: false, error: err.message }));
+    child.on("exit", (code) => {
+      if (leftover.trim()) {
+        try { win?.webContents.send("dp2:tgl-fonts-import-progress", leftover); } catch {}
+      }
+      if (code !== 0) {
+        const tail = allStdout.split("\n").slice(-25).join("\n").trim();
+        resolve({ ok: false, error: tail || `Exit ${code}`, log: allStdout });
+        return;
+      }
+      let result = null;
+      const m = allStdout.match(/RESULT_JSON:\s*(.+)$/m);
+      if (m) { try { result = JSON.parse(m[1]); } catch {} }
+      resolve({ ok: true, log: allStdout, ...result });
+    });
+  });
+});
+
+ipcMain.handle("dp2:tgl-fonts-write-atlas-base64", async (_e, payload) => {
+  const { pngPath, base64 } = payload || {};
+  if (!pngPath || typeof base64 !== "string") return { ok: false, error: "bad args" };
+  try {
+    const bak = pngPath + ".bak";
+    try { await fs.access(bak); }
+    catch { await fs.copyFile(pngPath, bak); }
+    await fs.writeFile(pngPath, Buffer.from(base64, "base64"));
+    return { ok: true, bakPath: bak };
+  } catch (e) { return { ok: false, error: String(e.message || e) }; }
+});
+
+// ── IPC: TGL (The Good Life) — всі важкі операції у heavy-worker ────────
+// Binary parsing + workfile read/write + pack делегуються worker_threads
+// (scripts/heavy-worker.cjs), щоб не блокувати main process. Тут лишається
+// лише валідація шляхів і апдейт settings.
+
+ipcMain.handle("dp2:tgl-load", async (_event, binPath) => {
+  if (!binPath) return { error: "binPath не задано" };
+  try { await fs.access(binPath); }
+  catch { return { error: "Файл не знайдено: " + binPath }; }
+  try {
+    const r = await callHeavy("tgl-load", { binPath });
+    try { await writeSettings({ ...(await readSettings()), tglBinPath: binPath }); } catch {}
+    return { ok: true, ...r };
+  } catch (e) {
+    return { error: "Не вдалося завантажити: " + (e.message || e) };
+  }
+});
+
+ipcMain.handle("dp2:tgl-save-workfile", async (_event, payload) => {
+  const binPath = String((payload && payload.binPath) || "").trim();
+  const ua = (payload && payload.ua) || [];
+  if (!binPath) return { error: "binPath не задано" };
+  try {
+    const r = await callHeavy("tgl-save-workfile", { binPath, ua });
+    return { ok: true, ...r };
+  } catch (e) {
+    return { error: "Не вдалося зберегти workfile: " + (e.message || e) };
+  }
+});
+
+ipcMain.handle("dp2:tgl-pack", async (_event, payload) => {
+  const binPath = String((payload && payload.binPath) || "").trim();
+  const ua = (payload && payload.ua) || [];
+  if (!binPath) return { error: "binPath не задано" };
+  try {
+    const r = await callHeavy("tgl-pack", { binPath, ua });
+    return { ok: true, ...r };
+  } catch (e) {
+    return { error: "Не вдалося запакувати: " + (e.message || e) };
+  }
 });
 
 // ── IPC: DP1 pack pipeline ───────────────────────────────────────
