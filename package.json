@@ -37,8 +37,8 @@
     "wait-on": "^8.0.1"
   },
   "build": {
-    "appId": "com.lb.deadly-premonition-localization",
-    "productName": "Deadly Premonition Localization Tool",
+    "appId": "com.lb.swery-localization",
+    "productName": "SWERY Localization Tool",
     "directories": {
       "output": "release",
       "buildResources": "."

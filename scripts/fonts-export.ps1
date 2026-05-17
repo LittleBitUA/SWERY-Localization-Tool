@@ -213,7 +213,13 @@ foreach ($info in $assetsInst.file.AssetInfos) {
         if ($null -ne $nameField) {
             try { $fontName = $nameField.AsString } catch {}
         }
-        if (-not $fontName) { $fontName = "font_$($info.PathId)" }
+        # Пропускаємо безіменні Font-assets — у sharedassets0 трапляються
+        # технічні шрифти без m_Name, які нам не потрібні і лише засмічують
+        # toolsDir/DP2/Fonts. Експортуємо лише іменовані (FOT-*, Noto*, …).
+        if (-not $fontName) {
+            Write-Diag ("  skip PathID {0}: m_Name empty" -f $info.PathId)
+            continue
+        }
 
         $dataField = Get-Child $base "m_FontData"
         $bytes = Get-FontBytes $dataField

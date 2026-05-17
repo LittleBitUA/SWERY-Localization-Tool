@@ -3,6 +3,11 @@
 
 const { app, BrowserWindow, ipcMain, dialog, shell, Menu } = require("electron");
 
+// Фіксуємо назву додатку ДО першого виклику app.getPath() — інакше папка
+// у %APPDATA% буде з імені у package.json ("deadly-premonition-..."), а ми
+// хочемо "SWERY Localization Tool".
+app.setName("SWERY Localization Tool");
+
 // Прибираємо стандартне меню Electron, щоб не перехоплювало Monaco shortcuts
 // (Ctrl+F, Ctrl+H, Ctrl+G тощо).
 Menu.setApplicationMenu(null);
@@ -81,7 +86,64 @@ const settingsPath = () => path.join(app.getPath("userData"), "settings.json");
 async function readSettings() {
   try {
     const raw = await fs.readFile(settingsPath(), "utf8");
-    return JSON.parse(raw);
+    const obj = JSON.parse(raw);
+    // Авто-резолв конкретних шляхів з кореневих тек ігор. Користувач у
+    // onboarding step 3 вказує корінь Steam-теки гри — звідти обчислюємо
+    // assetsPath / tglBinPath, якщо вони ще не задані явно.
+    if (!obj.assetsPath && obj.dp2Root) {
+      const cand1 = path.join(obj.dp2Root, "DeadlyPremonition2_Data", "sharedassets0.assets");
+      const cand2 = path.join(obj.dp2Root, "sharedassets0.assets");
+      try { await fs.access(cand1); obj.assetsPath = cand1; }
+      catch {
+        try { await fs.access(cand2); obj.assetsPath = cand2; } catch {}
+      }
+    }
+    // TGL: загальний резолвер StreamingAssets — пробуємо кілька варіантів,
+    // бо користувач міг вказати або корінь Steam-теки, або одразу _Data, або
+    // прямо StreamingAssets.
+    async function resolveTglStreamingAssets(root) {
+      const cands = [
+        path.join(root, "StandaloneWindows64_Data", "StreamingAssets"),
+        path.join(root, "StreamingAssets"),
+        root,
+      ];
+      for (const c of cands) {
+        try { await fs.access(c); return c; } catch {}
+      }
+      return null;
+    }
+    // Hotel Barcelona: AAA-bundle із MonoBehaviour-текстами.
+    if (!obj.hbrBundlePath && obj.hbrRoot) {
+      const subDir = path.join(obj.hbrRoot, "HOTEL BARCELONA_Data", "StreamingAssets", "aa", "StandaloneWindows64");
+      const fixedCand = path.join(subDir, "_resources_assets_all_e8a024b2dce1dfada7cc2ce7dced913c.bundle");
+      try { await fs.access(fixedCand); obj.hbrBundlePath = fixedCand; }
+      catch {
+        try {
+          const entries = await fs.readdir(subDir);
+          const match = entries.find((n) => /^_resources_assets_all_.+\.bundle$/i.test(n));
+          if (match) obj.hbrBundlePath = path.join(subDir, match);
+        } catch {}
+      }
+    }
+    if (obj.tglRoot && (!obj.tglBinPath || !obj.tglCabPath)) {
+      const saDir = await resolveTglStreamingAssets(obj.tglRoot);
+      if (saDir) {
+        // Текст: loc/English (без розширення).
+        if (!obj.tglBinPath) {
+          const eng = path.join(saDir, "loc", "English");
+          try { await fs.access(eng); obj.tglBinPath = eng; } catch {}
+        }
+        // Шрифт: bundle з ChiaroStd-B — це КОНКРЕТНО `c0718fc478f6943d`
+        // у StreamingAssets. У теці є кілька hex-named bundle'ів (шрифти
+        // інших активів типу `font_flamingo_pound_digits`), нам потрібен
+        // саме цей файл, тому НЕ вгадуємо за розміром.
+        if (!obj.tglCabPath) {
+          const fontBundle = path.join(saDir, "c0718fc478f6943d");
+          try { await fs.access(fontBundle); obj.tglCabPath = fontBundle; } catch {}
+        }
+      }
+    }
+    return obj;
   } catch {
     return {};
   }
@@ -112,7 +174,7 @@ async function createWindow() {
     // з --bg у global.css, інакше при старті блимає чужа тема.
     backgroundColor: "#0d1117",
     show: false,
-    title: "Deadly Premonition Localization Tool",
+    title: "SWERY Localization Tool",
     icon: iconPath,
     autoHideMenuBar: true,
     webPreferences: {
@@ -143,9 +205,13 @@ async function createWindow() {
 }
 
 // ── IPC: pick folder ─────────────────────────────────────────────
-ipcMain.handle("dp2:pick-folder", async () => {
+// Глобальний хелпер: викликається з усіх місць (DP2 fonts/textures, TGL,
+// onboarding paths). За замовч. — нейтральний title; callers, яким треба
+// специфічний підпис, передають `{ title: "..." }`.
+ipcMain.handle("dp2:pick-folder", async (_e, opts) => {
+  const title = (opts && typeof opts.title === "string" && opts.title.trim()) || "Виберіть теку";
   const result = await dialog.showOpenDialog({
-    title: "Виберіть теку з JSON-дампами DP2",
+    title,
     properties: ["openDirectory"],
   });
   if (result.canceled || result.filePaths.length === 0) return null;
@@ -354,10 +420,10 @@ ipcMain.handle("dp2:save-settings", async (_event, partial) => {
 });
 
 // ── IPC: setup / onboarding ──────────────────────────────────────
-// Дефолти для setup-екрана: пропонуємо ~/Documents/DP2-Localization-Tools
+// Дефолти для setup-екрана: пропонуємо ~/Documents/SWERY-Localization-Tool
 // як корінь, де лежатимуть UABEA + PowerShell.
 function getSetupDefaults() {
-  const root = path.join(app.getPath("documents"), "DP2-Localization-Tools");
+  const root = path.join(app.getPath("documents"), "SWERY-Localization-Tool");
   return {
     toolsDir: root,
     // Стандартний шлях до DP2 у Steam Library. Може не існувати — користувач задасть свій.
@@ -398,11 +464,35 @@ ipcMain.handle("dp2:setup-status", async () => {
   };
 });
 
-ipcMain.handle("dp2:setup-reset", async () => {
-  const raw = await readSettings();
-  raw.setupCompleted = false;
-  await writeSettings(raw);
-  return { ok: true };
+ipcMain.handle("dp2:setup-reset", async (_e, payload) => {
+  const opts = payload || {};
+  const wipedPaths = [];
+  // Soft reset (default): просто знімаємо прапор завершеного setup'у —
+  // зберігає шляхи до гри, UABEA, всі recents.
+  if (!opts.full && !opts.wipeTools) {
+    const raw = await readSettings();
+    raw.setupCompleted = false;
+    await writeSettings(raw);
+    return { ok: true, mode: "soft", wipedPaths };
+  }
+  // Full reset: видаляємо settings.json повністю, опціонально toolsDir.
+  if (opts.full) {
+    try {
+      await fs.unlink(settingsPath());
+      wipedPaths.push(settingsPath());
+    } catch {}
+  }
+  if (opts.wipeTools) {
+    try {
+      const cur = (await readSettings().catch(() => ({}))) || {};
+      const dir = cur.toolsDir || path.join(app.getPath("documents"), "SWERY-Localization-Tool");
+      if (dir) {
+        await fs.rm(dir, { recursive: true, force: true });
+        wipedPaths.push(dir);
+      }
+    } catch {}
+  }
+  return { ok: true, mode: "full", wipedPaths };
 });
 
 // Запуск setup-flow. Завантажує UABEA Next + PowerShell 7 у toolsDir.
@@ -606,12 +696,12 @@ function streamChildOutput(child, channel) {
 ipcMain.handle("dp2:fonts-export", async () => {
   const settings = await readSettings();
   const { uabeaPath, assetsPath } = settings;
-  if (!assetsPath) return { success: false, error: "Не задано шлях до .assets файла (Налаштування)" };
-  if (!uabeaPath)  return { success: false, error: "Не задано шлях до UABEA" };
+  if (!assetsPath) return { success: false, error: "DP2 game path not set — open the prep wizard first" };
+  if (!uabeaPath)  return { success: false, error: "UABEA path not set" };
 
   let toolsDir = settings.toolsDir;
   if (!toolsDir) {
-    toolsDir = path.join(app.getPath("documents"), "DP2-Localization-Tools");
+    toolsDir = path.join(app.getPath("documents"), "SWERY-Localization-Tool");
     await writeSettings({ ...settings, toolsDir });
   }
 
@@ -620,8 +710,18 @@ ipcMain.handle("dp2:fonts-export", async () => {
 
   const uabeaDir = path.dirname(uabeaPath);
   const scriptPath = resolveResource("scripts/fonts-export.ps1");
-  const outDir = path.join(toolsDir, "dp2-fonts");
+  const outDir = path.join(toolsDir, "DP2", "Fonts");
   await fs.mkdir(outDir, { recursive: true });
+  // Pre-cleanup: видаляємо сміттєві font_<pid>-* файли від попередніх версій
+  // та all .ttf/.otf — щоб expor завжди давав чистий набір.
+  try {
+    const items = await fs.readdir(outDir);
+    for (const n of items) {
+      if (/^font_\d+-.*\.(ttf|otf)$/i.test(n) || /\.(ttf|otf)$/i.test(n)) {
+        try { await fs.unlink(path.join(outDir, n)); } catch {}
+      }
+    }
+  } catch {}
 
   // У DP2 шрифти лежать у двох файлах: resources.assets (PathID 722-725) і
   // sharedassets0.assets (PathID 22522-22524). Інші sharedassets/globalgame*
@@ -674,8 +774,8 @@ ipcMain.handle("dp2:fonts-replace", async (_e, payload) => {
   if (!pathId || !newFontPath) return { success: false, error: "Не задано pathId або шлях до нового шрифту" };
   const settings = await readSettings();
   const { uabeaPath, assetsPath } = settings;
-  if (!assetsPath) return { success: false, error: "Не задано шлях до .assets файла" };
-  if (!uabeaPath)  return { success: false, error: "Не задано шлях до UABEA" };
+  if (!assetsPath) return { success: false, error: "DP2 game path not set" };
+  if (!uabeaPath)  return { success: false, error: "UABEA path not set" };
 
   const pwshLookup = await findPwsh(settings);
   if (!pwshLookup) return { success: false, error: "PowerShell 7 не знайдено" };
@@ -683,11 +783,15 @@ ipcMain.handle("dp2:fonts-replace", async (_e, payload) => {
   const uabeaDir = path.dirname(uabeaPath);
   const scriptPath = resolveResource("scripts/fonts-replace.ps1");
 
-  // Якщо assetsFile задано — шукаємо у тій самій теці. Інакше — у resources.assets.
+  // Точкова заміна: assetsFile приходить з frontend (з hardcoded FONTS
+  // mapping). Не вгадуємо, не пробуємо «обидва» — пишемо рівно у вказаний
+  // .assets, як просив користувач.
   const gameDir = path.dirname(assetsPath);
+  const fontName = (payload && payload.name ? String(payload.name) : "").trim();
   const targetAssets = assetsFile
     ? path.join(gameDir, assetsFile)
     : assetsPath;
+  const targetAssetsBase = path.basename(targetAssets);
 
   return await new Promise((resolve) => {
     const args = [
@@ -704,11 +808,25 @@ ipcMain.handle("dp2:fonts-replace", async (_e, payload) => {
     child.stdout.on("data", (d) => { allStdout += d.toString(); });
     streamChildOutput(child, "dp2:fonts-replace-progress");
     child.on("error", (err) => resolve({ success: false, error: err.message }));
-    child.on("exit", (code) => {
+    child.on("exit", async (code) => {
       if (code !== 0) {
         const tail = allStdout.split("\n").slice(-15).join("\n").trim();
         resolve({ success: false, error: (tail || `Exit ${code}`).trim(), log: allStdout });
         return;
+      }
+      // Cache-copy у toolsDir/DP2/Fonts/<name>-<assetsFile>-<pid>.<ext>.
+      try {
+        const cur = await readSettings();
+        let toolsDir = cur.toolsDir;
+        if (!toolsDir) toolsDir = path.join(app.getPath("documents"), "SWERY-Localization-Tool");
+        const cacheDir = path.join(toolsDir, "DP2", "Fonts");
+        await fs.mkdir(cacheDir, { recursive: true });
+        const safeName = (fontName || `font_${pathId}`).replace(/[\\/:\*\?"<>\|]/g, "_");
+        const ext = path.extname(newFontPath).toLowerCase() || ".ttf";
+        const dst = path.join(cacheDir, `${safeName}-${targetAssetsBase}-${pathId}${ext}`);
+        await fs.copyFile(newFontPath, dst);
+      } catch (cacheErr) {
+        allStdout += "\n[cache] " + (cacheErr.message || cacheErr);
       }
       resolve({ success: true, outputPath: targetAssets, log: allStdout });
     });
@@ -719,7 +837,7 @@ ipcMain.handle("dp2:fonts-replace", async (_e, payload) => {
 ipcMain.handle("dp2:fonts-list", async () => {
   const settings = await readSettings();
   if (!settings.toolsDir) return { dir: null, files: [] };
-  const dir = path.join(settings.toolsDir, "dp2-fonts");
+  const dir = path.join(settings.toolsDir, "DP2", "Fonts");
   try {
     const items = await fs.readdir(dir, { withFileTypes: true });
     const files = items
@@ -729,6 +847,31 @@ ipcMain.handle("dp2:fonts-list", async () => {
   } catch {
     return { dir, files: [] };
   }
+});
+
+// Відновлює оригінальні .assets з .bak (для DP2 шрифтів). Корисно коли
+// наш replace зламав byte-data і гра показує fallback.
+ipcMain.handle("dp2:fonts-restore-bak", async () => {
+  const settings = await readSettings();
+  const assetsPath = settings.assetsPath;
+  if (!assetsPath) return { success: false, error: "DP2 game path not set" };
+  const gameDir = path.dirname(assetsPath);
+  const targets = ["sharedassets0.assets", "resources.assets"];
+  const restored = [];
+  const skipped = [];
+  for (const t of targets) {
+    const dst = path.join(gameDir, t);
+    const bak = dst + ".bak";
+    try { await fs.access(bak); }
+    catch { skipped.push({ file: t, reason: "no .bak" }); continue; }
+    try {
+      await fs.copyFile(bak, dst);
+      restored.push(t);
+    } catch (e) {
+      return { success: false, error: `restore ${t} fail: ${e.message || e}`, restored, skipped };
+    }
+  }
+  return { success: true, restored, skipped };
 });
 
 ipcMain.handle("dp2:fonts-read-base64", async (_e, filePath) => {
@@ -754,6 +897,724 @@ ipcMain.handle("dp2:read-locale-file", async (_e, lang) => {
   } catch { return null; }
 });
 
+// ── DP2 text prep: status + extract + copy-to-done ──────────────
+// Користувач не має готових JSON-дампів — програма мусить сама витягти їх
+// з sharedassets0.assets при першому виборі директорії гри. Створюємо у
+// gameDir/TEXT/ORIGINAL (еталон) + gameDir/TEXT/DONE (робочі копії).
+
+// Helper: повертає очікуваний шлях файлу у дереві категорій. Якщо entry без
+// category — кладемо просто в корінь (для backward compat).
+function dp2TextLocate(rootDir, entry) {
+  if (typeof entry === "string") return path.join(rootDir, entry);
+  return entry.category
+    ? path.join(rootDir, entry.category, entry.file)
+    : path.join(rootDir, entry.file);
+}
+
+// Backward-compat cleanup: коли користувач уже мав extract від попередньої
+// версії програми, файли лежали плоско в корені TEXT/ORIGINAL та TEXT/DONE.
+// Нова версія розкладає у subdir-и за категорією — викликаємо це окремо у
+// wizard, щоб видалити старі плоскі дублікати, навіть якщо extract пропускався.
+ipcMain.handle("dp2:text-prep-cleanup-flat", async (_e, payload) => {
+  const { originalDir, doneDir, requiredFiles } = payload || {};
+  if (!Array.isArray(requiredFiles)) return { ok: false, error: "bad args" };
+  let removed = 0;
+  async function tryDelete(p) {
+    try { await fs.unlink(p); removed++; } catch {}
+  }
+  for (const entry of requiredFiles) {
+    if (typeof entry === "string" || !entry.category || !entry.file) continue;
+    for (const root of [originalDir, doneDir].filter(Boolean)) {
+      const flat = path.join(root, entry.file);
+      const sub = path.join(root, entry.category, entry.file);
+      try {
+        await fs.access(sub);
+        await tryDelete(flat);
+        await tryDelete(flat + ".bak");
+      } catch {}
+    }
+  }
+  return { ok: true, removed };
+});
+
+// Helper: TEXT/ORIGINAL та TEXT/DONE лежать у toolsDir (Documents/SWERY-...
+// /dp2-text/), а НЕ у директорії гри. Це робить переклади незалежними від
+// Steam-перевстановлень і дозволяє користувачу легко знайти/бекапити їх.
+async function dp2TextDirs() {
+  const settings = await readSettings();
+  let toolsDir = settings.toolsDir;
+  if (!toolsDir) toolsDir = path.join(app.getPath("documents"), "SWERY-Localization-Tool");
+  const baseDir = path.join(toolsDir, "DP2", "Text");
+  return {
+    baseDir,
+    originalDir: path.join(baseDir, "Original"),
+    doneDir: path.join(baseDir, "Done"),
+  };
+}
+
+// ── Hotel Barcelona prep ──────────────────────────────────────────
+async function hbrTextDirs() {
+  const settings = await readSettings();
+  let toolsDir = settings.toolsDir;
+  if (!toolsDir) toolsDir = path.join(app.getPath("documents"), "SWERY-Localization-Tool");
+  const baseDir = path.join(toolsDir, "HBR", "Text");
+  return {
+    baseDir,
+    originalDir: path.join(baseDir, "Original"),
+    doneDir: path.join(baseDir, "Done"),
+    metaDir: path.join(baseDir, "Meta"),
+    metaFile: path.join(baseDir, "Meta", "hbr-meta.json"),
+  };
+}
+
+ipcMain.handle("dp2:hbr-text-prep-status", async () => {
+  const settings = await readSettings();
+  const { originalDir, doneDir, metaDir, metaFile } = await hbrTextDirs();
+  let metaExists = false;
+  let originalCount = 0;
+  let doneCount = 0;
+  try { await fs.access(metaFile); metaExists = true; } catch {}
+  try {
+    const items = await fs.readdir(originalDir);
+    originalCount = items.filter((n) => n.endsWith(".json")).length;
+  } catch {}
+  try {
+    const items = await fs.readdir(doneDir);
+    doneCount = items.filter((n) => n.endsWith(".json")).length;
+  } catch {}
+  let bundlePath = settings.hbrBundlePath || null;
+  let bundleOk = false;
+  if (bundlePath) {
+    try { await fs.access(bundlePath); bundleOk = true; } catch { bundlePath = null; }
+  }
+  // ok=true якщо bundle є АБО уже витягнуто щось у Original. Так редактор
+  // не вимагає re-extract якщо файли вже на диску після попередньої сесії.
+  const ok = bundleOk || originalCount > 0;
+  return {
+    ok, bundlePath, bundleOk, originalDir, doneDir, metaDir, metaFile,
+    metaExists, originalCount, doneCount,
+    error: ok ? undefined : "hbrBundlePath not set (game root missing in onboarding) and no extracted files yet",
+  };
+});
+
+ipcMain.handle("dp2:hbr-text-prep-extract", async () => {
+  const settings = await readSettings();
+  const bundlePath = settings.hbrBundlePath;
+  if (!bundlePath) return { ok: false, error: "hbrBundlePath not set" };
+  try { await fs.access(bundlePath); }
+  catch { return { ok: false, error: "bundle-not-found: " + bundlePath }; }
+  const { uabeaPath } = settings;
+  if (!uabeaPath) return { ok: false, error: "UABEA not set" };
+  const { originalDir, metaFile } = await hbrTextDirs();
+  try { await fs.mkdir(originalDir, { recursive: true }); } catch (e) {
+    return { ok: false, error: "mkdir fail: " + (e.message || e) };
+  }
+  const pwshLookup = await findPwsh(settings);
+  if (!pwshLookup) return { ok: false, error: "PowerShell 7 not found" };
+  const uabeaDir = path.dirname(uabeaPath);
+  const scriptPath = resolveResource("scripts/hbr-text-export.ps1");
+
+  return await new Promise((resolve) => {
+    const args = [
+      "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass",
+      "-File", scriptPath,
+      "-BundlePath", bundlePath,
+      "-OutDir", originalDir,
+      "-MetaPath", metaFile,
+      "-UabeaDir", uabeaDir,
+    ];
+    const child = spawn(pwshLookup, args, { windowsHide: true });
+    let allStdout = "";
+    let leftover = "";
+    const win = BrowserWindow.getAllWindows()[0];
+    const emit = (chunk) => {
+      allStdout += chunk;
+      leftover += chunk;
+      const lines = leftover.split(/\r?\n/);
+      leftover = lines.pop() || "";
+      for (const ln of lines) {
+        if (!ln.trim()) continue;
+        try { win?.webContents.send("dp2:hbr-text-prep-progress", ln); } catch {}
+      }
+    };
+    child.stdout.on("data", (d) => emit(d.toString()));
+    child.stderr.on("data", (d) => emit(d.toString()));
+    child.on("error", (err) => resolve({ ok: false, error: err.message, log: allStdout }));
+    child.on("exit", (code) => {
+      if (leftover.trim()) {
+        try { win?.webContents.send("dp2:hbr-text-prep-progress", leftover); } catch {}
+      }
+      if (code !== 0) {
+        const tail = allStdout.split("\n").slice(-25).join("\n").trim();
+        resolve({ ok: false, error: tail || `Exit ${code}`, log: allStdout });
+        return;
+      }
+      let summary = null;
+      const m = allStdout.match(/RESULT_JSON:\s*(.+)$/m);
+      if (m) { try { summary = JSON.parse(m[1]); } catch {} }
+      resolve({ ok: true, summary, log: allStdout });
+    });
+  });
+});
+
+// Pack HBR translations back into the game bundle (hbr-text-import.ps1).
+ipcMain.handle("dp2:hbr-pack-into-game", async () => {
+  const settings = await readSettings();
+  const bundlePath = settings.hbrBundlePath;
+  if (!bundlePath) return { ok: false, error: "hbrBundlePath not set" };
+  try { await fs.access(bundlePath); }
+  catch { return { ok: false, error: "bundle-not-found: " + bundlePath }; }
+  const { uabeaPath } = settings;
+  if (!uabeaPath) return { ok: false, error: "UABEA not set" };
+  const { doneDir, metaFile } = await hbrTextDirs();
+  try { await fs.access(doneDir); } catch { return { ok: false, error: "Done dir empty/missing" }; }
+  try { await fs.access(metaFile); } catch { return { ok: false, error: "Meta file missing — run extract first" }; }
+  const pwshLookup = await findPwsh(settings);
+  if (!pwshLookup) return { ok: false, error: "PowerShell 7 not found" };
+  const uabeaDir = path.dirname(uabeaPath);
+  const scriptPath = resolveResource("scripts/hbr-text-import.ps1");
+  return await new Promise((resolve) => {
+    const args = [
+      "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass",
+      "-File", scriptPath,
+      "-BundlePath", bundlePath,
+      "-DoneDir", doneDir,
+      "-MetaPath", metaFile,
+      "-UabeaDir", uabeaDir,
+    ];
+    const child = spawn(pwshLookup, args, { windowsHide: true });
+    let allStdout = "";
+    let leftover = "";
+    let totalFields = 0;
+    const win = BrowserWindow.getAllWindows()[0];
+    const emit = (chunk) => {
+      allStdout += chunk;
+      leftover += chunk;
+      const lines = leftover.split(/\r?\n/);
+      leftover = lines.pop() || "";
+      for (const ln of lines) {
+        if (!ln.trim()) continue;
+        const fm = ln.match(/\[PATCHED\][^\n]*fields=(\d+)/);
+        if (fm) totalFields += parseInt(fm[1], 10) || 0;
+        try { win?.webContents.send("dp2:hbr-pack-progress", ln); } catch {}
+      }
+    };
+    child.stdout.on("data", (d) => emit(d.toString()));
+    child.stderr.on("data", (d) => emit(d.toString()));
+    const finalize = async (result) => {
+      // Persist log to disk — корисно для діагностики, бо консолі юзер не бачить.
+      try {
+        let toolsDir = settings.toolsDir;
+        if (!toolsDir) toolsDir = path.join(app.getPath("documents"), "SWERY-Localization-Tool");
+        const logsDir = path.join(toolsDir, "LOGS", "HBR");
+        await fs.mkdir(logsDir, { recursive: true });
+        const ts = new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19);
+        const logPath = path.join(logsDir, `hbr-pack-${ts}.log`);
+        await fs.writeFile(logPath, allStdout, "utf8");
+        result.logPath = logPath;
+      } catch {}
+      try {
+        const st = await fs.stat(bundlePath);
+        result.bundleSize = st.size;
+        result.bundlePath = bundlePath;
+        try { const sb = await fs.stat(bundlePath + ".bak"); result.bakSize = sb.size; result.bakPath = bundlePath + ".bak"; } catch {}
+      } catch {}
+      result.totalFields = totalFields;
+      resolve(result);
+    };
+    child.on("error", (err) => finalize({ ok: false, error: err.message, log: allStdout }));
+    child.on("exit", (code) => {
+      if (leftover.trim()) { try { win?.webContents.send("dp2:hbr-pack-progress", leftover); } catch {} }
+      if (code !== 0) {
+        const tail = allStdout.split("\n").slice(-25).join("\n").trim();
+        finalize({ ok: false, error: tail || `Exit ${code}`, log: allStdout });
+        return;
+      }
+      let summary = null;
+      const m = allStdout.match(/RESULT_JSON:\s*(.+)$/m);
+      if (m) { try { summary = JSON.parse(m[1]); } catch {} }
+      finalize({ ok: true, summary, log: allStdout });
+    });
+  });
+});
+
+// Backup Done у BACKUPS/HotelBarcelona/<timestamp>/.
+ipcMain.handle("dp2:hbr-backup-done", async () => {
+  const settings = await readSettings();
+  let toolsDir = settings.toolsDir;
+  if (!toolsDir) toolsDir = path.join(app.getPath("documents"), "SWERY-Localization-Tool");
+  const { doneDir } = await hbrTextDirs();
+  try { await fs.access(doneDir); } catch { return { ok: false, error: "Done dir missing" }; }
+  const ts = new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19);
+  const bakRoot = path.join(toolsDir, "BACKUPS", "HotelBarcelona", ts, "Text_Done");
+  async function copyRecursive(src, dst) {
+    await fs.mkdir(dst, { recursive: true });
+    const entries = await fs.readdir(src, { withFileTypes: true });
+    for (const e of entries) {
+      const s = path.join(src, e.name);
+      const d = path.join(dst, e.name);
+      if (e.isDirectory()) await copyRecursive(s, d);
+      else await fs.copyFile(s, d);
+    }
+  }
+  try {
+    await copyRecursive(doneDir, bakRoot);
+    return { ok: true, path: bakRoot };
+  } catch (e) { return { ok: false, error: String(e.message || e) }; }
+});
+
+// Open HBR-related folder у Explorer.
+ipcMain.handle("dp2:hbr-open-folder", async (_e, which) => {
+  const settings = await readSettings();
+  let toolsDir = settings.toolsDir;
+  if (!toolsDir) toolsDir = path.join(app.getPath("documents"), "SWERY-Localization-Tool");
+  const dirs = await hbrTextDirs();
+  const map = {
+    original: dirs.originalDir,
+    done: dirs.doneDir,
+    meta: dirs.metaDir,
+    backups: path.join(toolsDir, "BACKUPS", "HotelBarcelona"),
+    logs: path.join(toolsDir, "LOGS"),
+    game: settings.hbrRoot || (settings.hbrBundlePath ? path.dirname(settings.hbrBundlePath) : null),
+  };
+  const target = map[which];
+  if (!target) return { ok: false, error: "unknown folder: " + which };
+  try { await fs.mkdir(target, { recursive: true }); } catch {}
+  shell.openPath(target);
+  return { ok: true, path: target };
+});
+
+ipcMain.handle("dp2:hbr-text-list", async () => {
+  const { originalDir, doneDir } = await hbrTextDirs();
+  const items = [];
+  try {
+    const files = await fs.readdir(doneDir);
+    for (const f of files) {
+      if (!f.endsWith(".json")) continue;
+      const donePath = path.join(doneDir, f);
+      const origPath = path.join(originalDir, f);
+      let size = 0;
+      try { const st = await fs.stat(donePath); size = st.size; } catch {}
+      items.push({ file: f, donePath, origPath, size });
+    }
+  } catch {}
+  items.sort((a, b) => a.file.localeCompare(b.file));
+  return { ok: true, items, originalDir, doneDir };
+});
+
+ipcMain.handle("dp2:hbr-text-read", async (_e, fullPath) => {
+  try {
+    const raw = await fs.readFile(fullPath, "utf8");
+    return { ok: true, raw };
+  } catch (e) { return { ok: false, error: String(e.message || e) }; }
+});
+
+ipcMain.handle("dp2:hbr-text-write", async (_e, payload) => {
+  const { fullPath, raw } = payload || {};
+  if (!fullPath || typeof raw !== "string") return { ok: false, error: "bad args" };
+  try {
+    const bak = fullPath + ".bak";
+    try { await fs.access(bak); }
+    catch { try { await fs.copyFile(fullPath, bak); } catch {} }
+    await fs.writeFile(fullPath, raw, "utf8");
+    return { ok: true };
+  } catch (e) { return { ok: false, error: String(e.message || e) }; }
+});
+
+// Restore Done/<file>.json from its sibling .bak (created on first save).
+ipcMain.handle("dp2:hbr-text-restore-bak", async (_e, fullPath) => {
+  if (!fullPath || typeof fullPath !== "string") return { ok: false, error: "bad args" };
+  const bak = fullPath + ".bak";
+  try { await fs.access(bak); }
+  catch { return { ok: false, error: "no-bak" }; }
+  try {
+    const raw = await fs.readFile(bak, "utf8");
+    await fs.writeFile(fullPath, raw, "utf8");
+    return { ok: true, raw };
+  } catch (e) { return { ok: false, error: String(e.message || e) }; }
+});
+
+// Compute corpus-wide translation stats for HBR (Done vs Original). Cheap
+// enough to run on Home screen entry — 60 files × ~JSON.parse. Skipped if
+// originalDir is missing (project not extracted yet).
+ipcMain.handle("dp2:hbr-corpus-stats", async () => {
+  try {
+    const { originalDir, doneDir } = await hbrTextDirs();
+    let entries; try { entries = await fs.readdir(originalDir); }
+    catch { return { ok: false, error: "no extracted text" }; }
+    let total = 0; let translated = 0; let files = 0;
+    for (const fname of entries) {
+      if (!fname.endsWith(".json")) continue;
+      const origPath = path.join(originalDir, fname);
+      const donePath = path.join(doneDir, fname);
+      let origRaw; let doneRaw;
+      try { origRaw = await fs.readFile(origPath, "utf8"); } catch { continue; }
+      try { doneRaw = await fs.readFile(donePath, "utf8"); } catch { doneRaw = origRaw; }
+      try {
+        const orig = JSON.parse(origRaw);
+        const done = JSON.parse(doneRaw);
+        const origList = (orig && orig._List && orig._List.Array) || [];
+        const doneList = (done && done._List && done._List.Array) || [];
+        for (let i = 0; i < doneList.length; i++) {
+          const dTexts = (doneList[i] && doneList[i]._Texts && doneList[i]._Texts.Array) || [];
+          const oTexts = (origList[i] && origList[i]._Texts && origList[i]._Texts.Array) || [];
+          for (let j = 0; j < dTexts.length; j++) {
+            total++;
+            const d = (dTexts[j] && dTexts[j]._Text) || "";
+            const o = (oTexts[j] && oTexts[j]._Text) || d;
+            if (d !== o && d.trim().length > 0) translated++;
+          }
+        }
+        files++;
+      } catch {}
+    }
+    return { ok: true, files, total, translated };
+  } catch (e) { return { ok: false, error: String(e.message || e) }; }
+});
+
+// ── HBR external tool: CatalogTool.exe ─────────────────────────────
+// Downloads a small helper exe into Documents/SWERY-Localization-Tool/
+// so we can patch catalog.json/.bin during the pack step.
+const CATALOG_TOOL_URL = "https://hikarosato.github.io/guide/tools/CatalogTool.exe";
+function hbrCatalogToolPath() {
+  const docs = app.getPath("documents");
+  return path.join(docs, "SWERY-Localization-Tool", "CatalogTool.exe");
+}
+ipcMain.handle("dp2:hbr-tools-status", async () => {
+  const dest = hbrCatalogToolPath();
+  try {
+    const st = await fs.stat(dest);
+    return { ok: true, present: true, path: dest, size: st.size };
+  } catch {
+    return { ok: true, present: false, path: dest };
+  }
+});
+ipcMain.handle("dp2:hbr-tools-download", async () => {
+  const dest = hbrCatalogToolPath();
+  try {
+    try {
+      const st = await fs.stat(dest);
+      if (st.size > 0) {
+        try {
+          mainWindow?.webContents.send("dp2:hbr-tools-progress", {
+            phase: "done", i18nKey: "hbr.tools.alreadyHave",
+            total: st.size, downloaded: st.size, percent: 100, bytesPerSec: 0,
+          });
+        } catch {}
+        return { ok: true, path: dest, alreadyExisted: true };
+      }
+    } catch {}
+    let lastEmit = 0;
+    let startedAt = Date.now();
+    let lastBytes = 0;
+    try {
+      mainWindow?.webContents.send("dp2:hbr-tools-progress", {
+        phase: "download", i18nKey: "hbr.tools.downloading",
+        i18nParams: { name: "CatalogTool.exe" },
+        total: 0, downloaded: 0, percent: 0, bytesPerSec: 0,
+      });
+    } catch {}
+    const res = await setupTools.downloadFile(CATALOG_TOOL_URL, dest, (p) => {
+      const now = Date.now();
+      const dt = (now - (lastEmit || startedAt)) / 1000;
+      const bps = dt > 0 ? (p.downloaded - lastBytes) / dt : 0;
+      lastEmit = now;
+      lastBytes = p.downloaded;
+      try {
+        mainWindow?.webContents.send("dp2:hbr-tools-progress", {
+          phase: "download", i18nKey: "hbr.tools.downloading",
+          i18nParams: { name: "CatalogTool.exe" },
+          total: p.total, downloaded: p.downloaded, percent: p.percent,
+          bytesPerSec: bps,
+        });
+      } catch {}
+    }, { skipIfExists: false });
+    try {
+      mainWindow?.webContents.send("dp2:hbr-tools-progress", {
+        phase: "done", i18nKey: "hbr.tools.downloaded",
+        total: res.bytes, downloaded: res.bytes, percent: 100, bytesPerSec: 0,
+      });
+    } catch {}
+    return { ok: true, path: res.destPath, bytes: res.bytes, alreadyExisted: !!res.alreadyExisted };
+  } catch (e) {
+    try {
+      mainWindow?.webContents.send("dp2:hbr-tools-progress", {
+        phase: "error", message: String(e.message || e),
+        total: 0, downloaded: 0, percent: 0, bytesPerSec: 0,
+      });
+    } catch {}
+    return { ok: false, error: String(e.message || e) };
+  }
+});
+
+// Locate <hbrRoot>/HOTEL BARCELONA_Data/StreamingAssets/aa/ — directory that
+// holds catalog.json. We need it to drag&drop catalog onto CatalogTool.exe.
+async function hbrAaDir() {
+  const settings = await readSettings();
+  let aaDir = null;
+  if (settings.hbrRoot) {
+    aaDir = path.join(settings.hbrRoot, "HOTEL BARCELONA_Data", "StreamingAssets", "aa");
+  } else if (settings.hbrBundlePath) {
+    // aa = parent of StandaloneWindows64
+    const parent = path.dirname(path.dirname(settings.hbrBundlePath));
+    if (path.basename(parent) === "aa") aaDir = parent;
+  }
+  return aaDir;
+}
+ipcMain.handle("dp2:hbr-catalog-status", async () => {
+  const aaDir = await hbrAaDir();
+  if (!aaDir) return { ok: false, error: "aa directory not resolved (hbrRoot missing)" };
+  const catalogJson = path.join(aaDir, "catalog.json");
+  const catalogOld  = path.join(aaDir, "catalog.json.old");
+  let hasCatalog = false; let hasOld = false;
+  try { await fs.access(catalogJson); hasCatalog = true; } catch {}
+  try { await fs.access(catalogOld); hasOld = true; } catch {}
+  return { ok: true, aaDir, catalogJson, catalogOld, hasCatalog, hasOld };
+});
+ipcMain.handle("dp2:hbr-catalog-patch", async () => {
+  const aaDir = await hbrAaDir();
+  if (!aaDir) return { ok: false, error: "aa directory not resolved (hbrRoot missing)" };
+  const catalogJson = path.join(aaDir, "catalog.json");
+  const catalogOld  = path.join(aaDir, "catalog.json.old");
+  try { await fs.access(catalogJson); }
+  catch { return { ok: false, error: "catalog.json not found: " + catalogJson }; }
+  // Already patched — nothing to do.
+  try {
+    await fs.access(catalogOld);
+    return { ok: true, alreadyPatched: true, catalogJson, catalogOld };
+  } catch {}
+  const toolSrc = hbrCatalogToolPath();
+  try { await fs.access(toolSrc); }
+  catch { return { ok: false, error: "CatalogTool.exe not downloaded yet" }; }
+  const toolDst = path.join(aaDir, "CatalogTool.exe");
+  try { await fs.copyFile(toolSrc, toolDst); }
+  catch (e) { return { ok: false, error: "copy tool to aa fail: " + (e.message || e) }; }
+  // Drag&drop = launch the exe with the file path as argv[1]. Run with
+  // cwd=aaDir so any relative writes (catalog.json.old) land next to it.
+  const cp = require("child_process");
+  const exitInfo = await new Promise((resolve) => {
+    let settled = false;
+    const ps = cp.spawn(toolDst, [catalogJson], { cwd: aaDir, windowsHide: true });
+    ps.on("error", (err) => { if (!settled) { settled = true; resolve({ ok: false, error: String(err.message || err) }); } });
+    ps.on("close", (code) => { if (!settled) { settled = true; resolve({ ok: true, code }); } });
+  });
+  // Whatever the exit code — try to verify the artifact and clean up.
+  let patched = false;
+  try { await fs.access(catalogOld); patched = true; } catch {}
+  try { await fs.unlink(toolDst); } catch {}
+  if (!exitInfo.ok) return { ok: false, error: exitInfo.error || "CatalogTool launch fail" };
+  if (!patched) return { ok: false, error: "CatalogTool ran (exit " + exitInfo.code + ") but catalog.json.old not produced" };
+  return { ok: true, alreadyPatched: false, catalogJson, catalogOld };
+});
+
+ipcMain.handle("dp2:hbr-text-prep-mirror", async (_e, payload) => {
+  const { overwrite } = payload || {};
+  const { originalDir, doneDir } = await hbrTextDirs();
+  try { await fs.mkdir(doneDir, { recursive: true }); } catch (e) {
+    return { ok: false, error: "mkdir fail: " + (e.message || e) };
+  }
+  let files = [];
+  try { files = await fs.readdir(originalDir); } catch { return { ok: false, error: "Original not found" }; }
+  const copied = []; const skipped = [];
+  for (const f of files) {
+    if (!f.endsWith(".json")) continue;
+    const src = path.join(originalDir, f);
+    const dst = path.join(doneDir, f);
+    let dstExists = false;
+    try { await fs.access(dst); dstExists = true; } catch {}
+    if (dstExists && !overwrite) { skipped.push(f); continue; }
+    try { await fs.copyFile(src, dst); copied.push(f); }
+    catch (e) { return { ok: false, error: `copy fail (${f}): ${e.message || e}`, copied, skipped }; }
+  }
+  return { ok: true, copied, skipped, doneDir };
+});
+
+ipcMain.handle("dp2:text-prep-status", async (_e, payload) => {
+  const { assetsPath, requiredFiles } = payload || {};
+  if (!assetsPath || !Array.isArray(requiredFiles)) {
+    return { ok: false, error: "bad args" };
+  }
+  try {
+    await fs.access(assetsPath);
+  } catch {
+    return { ok: false, error: "assets-not-found", assetsPath };
+  }
+  const { originalDir, doneDir } = await dp2TextDirs();
+  const gameDir = path.dirname(assetsPath);
+  const result = {
+    ok: true,
+    gameDir,
+    originalDir,
+    doneDir,
+    originalExisting: [],
+    originalMissing: [],
+    doneExisting: [],
+    doneMissing: [],
+  };
+  for (const entry of requiredFiles) {
+    const name = typeof entry === "string" ? entry : entry.file;
+    const orig = dp2TextLocate(originalDir, entry);
+    const done = dp2TextLocate(doneDir, entry);
+    try { await fs.access(orig); result.originalExisting.push(name); }
+    catch { result.originalMissing.push(name); }
+    try { await fs.access(done); result.doneExisting.push(name); }
+    catch { result.doneMissing.push(name); }
+  }
+  return result;
+});
+
+ipcMain.handle("dp2:text-prep-extract", async (_e, payload) => {
+  const { assetsPath, pathIds, entries } = payload || {};
+  if (!assetsPath || !Array.isArray(pathIds) || pathIds.length === 0) {
+    return { ok: false, error: "bad args" };
+  }
+  try { await fs.access(assetsPath); }
+  catch { return { ok: false, error: "assets-not-found: " + assetsPath }; }
+
+  const settings = await readSettings();
+  const { uabeaPath } = settings;
+  if (!uabeaPath) return { ok: false, error: "UABEA не задано (Налаштування)" };
+
+  const { originalDir: outDir } = await dp2TextDirs();
+  try {
+    await fs.mkdir(outDir, { recursive: true });
+  } catch (e) {
+    return { ok: false, error: "Не вдалося створити TEXT/ORIGINAL: " + (e.message || e) };
+  }
+  // Mapping pathId → category для післе-extract sort у підпапки.
+  const pidToEntry = new Map();
+  if (Array.isArray(entries)) {
+    for (const e of entries) if (e && e.pathId != null) pidToEntry.set(Number(e.pathId), e);
+  }
+
+  const pwshLookup = await findPwsh(settings);
+  if (!pwshLookup) return { ok: false, error: "PowerShell 7 не знайдено" };
+  const uabeaDir = path.dirname(uabeaPath);
+  const scriptPath = resolveResource("scripts/dp2-text-export.ps1");
+
+  return await new Promise((resolve) => {
+    const args = [
+      "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass",
+      "-File", scriptPath,
+      "-AssetsPath", assetsPath,
+      "-OutDir", outDir,
+      "-UabeaDir", uabeaDir,
+      "-PathIds", pathIds.join(","),
+    ];
+    const child = spawn(pwshLookup, args, { windowsHide: true });
+    let allStdout = "";
+    let leftover = "";
+    const win = BrowserWindow.getAllWindows()[0];
+    const emit = (chunk) => {
+      allStdout += chunk;
+      leftover += chunk;
+      const lines = leftover.split(/\r?\n/);
+      leftover = lines.pop() || "";
+      for (const ln of lines) {
+        if (!ln.trim()) continue;
+        try { win?.webContents.send("dp2:text-prep-progress", ln); } catch {}
+      }
+    };
+    child.stdout.on("data", (d) => emit(d.toString()));
+    child.stderr.on("data", (d) => emit(d.toString()));
+    child.on("error", (err) => resolve({ ok: false, error: err.message, log: allStdout }));
+    child.on("exit", async (code) => {
+      if (leftover.trim()) {
+        try { win?.webContents.send("dp2:text-prep-progress", leftover); } catch {}
+      }
+      if (code !== 0) {
+        const tail = allStdout.split("\n").slice(-20).join("\n").trim();
+        resolve({ ok: false, error: tail || `Exit ${code}`, log: allStdout, outDir });
+        return;
+      }
+      let summary = null;
+      const m = allStdout.match(/RESULT_JSON:\s*(.+)$/m);
+      if (m) { try { summary = JSON.parse(m[1]); } catch {} }
+      // Розкладаємо по підпапках за категорією: <outDir>/<category>/<file>.
+      if (summary && Array.isArray(summary.exported) && pidToEntry.size > 0) {
+        for (const it of summary.exported) {
+          const entry = pidToEntry.get(Number(it.pathId));
+          if (!entry || !entry.category) continue;
+          try {
+            const subDir = path.join(outDir, entry.category);
+            await fs.mkdir(subDir, { recursive: true });
+            const dst = path.join(subDir, entry.file);
+            await fs.rename(it.file, dst);
+            it.file = dst;
+          } catch {}
+        }
+      }
+      // Backward-compat cleanup: видаляємо будь-які JSON-файли, що лежать у
+      // корені outDir з очікуваним іменем (попередні версії клали плоско),
+      // якщо їхня категоризована копія вже існує у subdir.
+      if (pidToEntry.size > 0) {
+        for (const entry of pidToEntry.values()) {
+          if (!entry || !entry.category || !entry.file) continue;
+          const flat = path.join(outDir, entry.file);
+          const inSub = path.join(outDir, entry.category, entry.file);
+          try {
+            await fs.access(inSub);
+            // Якщо субдиректорна копія є — старий плоский файл і його .bak
+            // безпечно видалити.
+            try { await fs.unlink(flat); } catch {}
+            try { await fs.unlink(flat + ".bak"); } catch {}
+          } catch {}
+        }
+      }
+      resolve({ ok: true, outDir, summary, log: allStdout });
+    });
+  });
+});
+
+ipcMain.handle("dp2:text-prep-copy-to-done", async (_e, payload) => {
+  const { originalDir, doneDir, requiredFiles, overwrite } = payload || {};
+  if (!originalDir || !doneDir || !Array.isArray(requiredFiles)) {
+    return { ok: false, error: "bad args" };
+  }
+  try {
+    await fs.mkdir(doneDir, { recursive: true });
+  } catch (e) {
+    return { ok: false, error: "mkdir fail: " + (e.message || e) };
+  }
+  const copied = [];
+  const skipped = [];
+  const missingSource = [];
+  for (const entry of requiredFiles) {
+    const name = typeof entry === "string" ? entry : entry.file;
+    const src = dp2TextLocate(originalDir, entry);
+    const dst = dp2TextLocate(doneDir, entry);
+    try { await fs.access(src); }
+    catch { missingSource.push(name); continue; }
+    let dstExists = false;
+    try { await fs.access(dst); dstExists = true; } catch {}
+    if (dstExists && !overwrite) { skipped.push(name); continue; }
+    try {
+      await fs.mkdir(path.dirname(dst), { recursive: true });
+      await fs.copyFile(src, dst);
+      copied.push(name);
+    } catch (e) {
+      return { ok: false, error: `copy fail (${name}): ${e.message || e}`, copied, skipped };
+    }
+  }
+  // Backward-compat cleanup: видаляємо плоскі дублікати у корені doneDir
+  // (попередня версія програми клала файли без підпапок) — щоб вони не
+  // дублювалися в дереві файлів editor-а.
+  for (const entry of requiredFiles) {
+    if (typeof entry === "string" || !entry.category || !entry.file) continue;
+    const flatDone = path.join(doneDir, entry.file);
+    const flatOrig = path.join(originalDir, entry.file);
+    const subDone = path.join(doneDir, entry.category, entry.file);
+    try {
+      await fs.access(subDone);
+      try { await fs.unlink(flatDone); } catch {}
+      try { await fs.unlink(flatDone + ".bak"); } catch {}
+      try { await fs.unlink(flatOrig); } catch {}
+      try { await fs.unlink(flatOrig + ".bak"); } catch {}
+    } catch {}
+  }
+  return { ok: true, copied, skipped, missingSource };
+});
+
 // ── IPC: build .assets via PowerShell + AssetsTools.NET ─────────
 // Один клік — отримуємо локалізований .assets файл поруч з оригіналом.
 // Викликає import-to-assets.ps1, який імпортує всі JSON-дампи з теки
@@ -761,9 +1622,9 @@ ipcMain.handle("dp2:read-locale-file", async (_e, lang) => {
 ipcMain.handle("dp2:build-assets", async () => {
   const settings = await readSettings();
   const { uabeaPath, assetsPath, lastFolder } = settings;
-  if (!assetsPath) return { success: false, error: "Не задано шлях до .assets файла (Налаштування)" };
+  if (!assetsPath) return { success: false, error: "DP2 game path not set — open the prep wizard first" };
   if (!lastFolder) return { success: false, error: "Спочатку відкрий теку з JSON-дампами" };
-  if (!uabeaPath)  return { success: false, error: "Не задано шлях до UABEA (для DLL та classdata.tpk)" };
+  if (!uabeaPath)  return { success: false, error: "UABEA path not set (DLLs + classdata.tpk required)" };
 
   const uabeaDir = path.dirname(uabeaPath);
   const scriptPath = resolveResource("scripts/import-to-assets.ps1");
@@ -862,8 +1723,8 @@ ipcMain.handle("dp2:textures-export", async (_e, payload) => {
   const { uabeaPath } = settings;
   const assetsFile = (payload && payload.assetsFile) || "resources.assets";
   const pathIds = (payload && Array.isArray(payload.pathIds)) ? payload.pathIds : null;
-  if (!settings.assetsPath) return { success: false, error: "Не задано шлях до .assets файла (Налаштування)" };
-  if (!uabeaPath) return { success: false, error: "Не задано шлях до UABEA" };
+  if (!settings.assetsPath) return { success: false, error: "DP2 game path not set — open the prep wizard first" };
+  if (!uabeaPath) return { success: false, error: "UABEA path not set" };
 
   // resources.assets лежить у тій самій теці, що sharedassets0.assets
   // (settings.assetsPath). Тож беремо parent dir + assetsFile.
@@ -874,7 +1735,7 @@ ipcMain.handle("dp2:textures-export", async (_e, payload) => {
 
   let toolsDir = settings.toolsDir;
   if (!toolsDir) {
-    toolsDir = path.join(app.getPath("documents"), "DP2-Localization-Tools");
+    toolsDir = path.join(app.getPath("documents"), "SWERY-Localization-Tool");
     await writeSettings({ ...settings, toolsDir });
   }
   const pwshLookup = await findPwsh(settings);
@@ -882,7 +1743,7 @@ ipcMain.handle("dp2:textures-export", async (_e, payload) => {
 
   const uabeaDir = path.dirname(uabeaPath);
   const scriptPath = resolveResource("scripts/textures-export.ps1");
-  const outDir = path.join(toolsDir, "dp2-textures");
+  const outDir = path.join(toolsDir, "DP2", "Textures");
   await fs.mkdir(outDir, { recursive: true });
 
   const args = [
@@ -922,8 +1783,8 @@ ipcMain.handle("dp2:textures-replace", async (_e, payload) => {
   const pathId = payload && payload.pathId;
   const assetsFile = (payload && payload.assetsFile) || "resources.assets";
   const newPngPath = payload && payload.newPngPath;
-  if (!settings.assetsPath) return { success: false, error: "Не задано шлях до .assets файла" };
-  if (!uabeaPath) return { success: false, error: "Не задано шлях до UABEA" };
+  if (!settings.assetsPath) return { success: false, error: "DP2 game path not set" };
+  if (!uabeaPath) return { success: false, error: "UABEA path not set" };
   if (!pathId || !newPngPath) return { success: false, error: "Не задано pathId або PNG-шлях" };
 
   const gameDir = path.dirname(settings.assetsPath);
@@ -986,7 +1847,7 @@ ipcMain.handle("dp2:textures-replace", async (_e, payload) => {
 ipcMain.handle("dp2:textures-list", async () => {
   const settings = await readSettings();
   if (!settings.toolsDir) return { dir: null, files: [] };
-  const dir = path.join(settings.toolsDir, "dp2-textures");
+  const dir = path.join(settings.toolsDir, "DP2", "Textures");
   try {
     const items = await fs.readdir(dir, { withFileTypes: true });
     const files = items
@@ -1102,7 +1963,7 @@ ipcMain.handle("dp2:tgl-fonts-list", async () => {
     }
   }
   if (settings.toolsDir) {
-    const extractDir = path.join(settings.toolsDir, "tgl-fonts");
+    const extractDir = path.join(settings.toolsDir, "TGL", "Fonts");
     try {
       await fs.access(extractDir);
       const dirEntries = await fs.readdir(extractDir, { withFileTypes: true });
@@ -1162,11 +2023,11 @@ ipcMain.handle("dp2:tgl-fonts-extract", async (_e, payload) => {
 
   let toolsDir = settings.toolsDir;
   if (!toolsDir) {
-    toolsDir = path.join(app.getPath("documents"), "DP2-Localization-Tools");
+    toolsDir = path.join(app.getPath("documents"), "SWERY-Localization-Tool");
   }
   // Запам'ятовуємо cabPath, щоб наступного разу не запитувати — toolsDir теж.
   try { await writeSettings({ ...settings, toolsDir, tglCabPath: cabPath }); } catch {}
-  const outDir = path.join(toolsDir, "tgl-fonts");
+  const outDir = path.join(toolsDir, "TGL", "Fonts");
   await fs.mkdir(outDir, { recursive: true });
 
   const pwshLookup = await findPwsh(settings);
@@ -1188,7 +2049,14 @@ ipcMain.handle("dp2:tgl-fonts-extract", async (_e, payload) => {
     child.on("error", (err) => resolve({ ok: false, error: err.message }));
     child.on("exit", (code) => {
       if (code !== 0) {
+        // pwsh показав help → один з аргументів не дійшов. Повертаємо
+        // фактичну командну строку, щоб бачити що саме передавалось.
+        const cmdline = `${pwshLookup} ${args.map((a) => /\s/.test(a) ? `"${a}"` : a).join(" ")}`;
         const tail = allStdout.split("\n").slice(-20).join("\n").trim();
+        if (/Usage:|pwsh\[\.exe\]/.test(allStdout)) {
+          resolve({ ok: false, error: `PowerShell не зрозумів параметри. Перевір налаштування шляху до pwsh.exe.\n\nКомандна строка:\n${cmdline}\n\n${tail}`, log: allStdout });
+          return;
+        }
         resolve({ ok: false, error: tail || `Exit ${code}`, log: allStdout });
         return;
       }
@@ -1350,7 +2218,7 @@ ipcMain.handle("dp2:dp1-pack", async (_event, payload) => {
   const settings = await readSettings();
   const toolPath = settings.dp1ToolPath;
   const gameDir = settings.dp1GameDir;
-  if (!toolPath) return { error: "Не задано шлях до DPMsgTool.exe (Налаштування DP1)" };
+  if (!toolPath) return { error: "DPMsgTool.exe path not set (DP1 Settings)" };
   try { await fs.access(toolPath); } catch { return { error: "DPMsgTool.exe не знайдено: " + toolPath }; }
 
   // 1) Завантажити _ua_done.json

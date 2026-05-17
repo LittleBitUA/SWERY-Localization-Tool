@@ -13,7 +13,7 @@ export interface TreeNode {
 declare global {
   interface Window {
     dp2: {
-      pickFolder: () => Promise<string | null>;
+      pickFolder: (opts?: { title?: string }) => Promise<string | null>;
       pickFile: (opts?: { title?: string; filters?: { name: string; extensions: string[] }[] }) => Promise<string | null>;
       pickSaveFile: (opts?: { title?: string; defaultPath?: string; filters?: { name: string; extensions: string[] }[] }) => Promise<string | null>;
       listFiles: (folder: string) => Promise<string[]>;

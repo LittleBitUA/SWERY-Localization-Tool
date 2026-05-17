@@ -45,6 +45,31 @@ export function TglFontsEditor({ onHome }: Props) {
 
   useEffect(() => { init(); }, [init]);
 
+  // Auto-extract: якщо TGL bundle (tglCabPath) відомий зі settings (а ми
+  // автоматично резолвимо його з tglRoot у readSettings()), і список items
+  // ще порожній — одразу запускаємо extract без UI-кліку.
+  const autoExtractTriedRef = useRef(false);
+  useEffect(() => {
+    if (loading || items.length > 0 || autoExtractTriedRef.current) return;
+    autoExtractTriedRef.current = true;
+    (async () => {
+      try {
+        const settings: any = await window.dp2.getSettings();
+        const cabPath: string | undefined = settings?.tglCabPath;
+        if (!cabPath) return;
+        const res: any = await window.dp2.tglFontsExtract({ cabPath });
+        if (res?.ok) {
+          await init();
+          const fresh = useTglFontsStore.getState().items;
+          if (fresh.length === 1) {
+            await selectFont(fresh[0]);
+            setActiveCp(null);
+          }
+        }
+      } catch {}
+    })();
+  }, [loading, items.length, init, selectFont]);
+
   // Delete клавіша — видалити активний гліф (запис + ділянка атласу).
   useEffect(() => {
     function onKey(e: KeyboardEvent) {

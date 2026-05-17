@@ -984,6 +984,19 @@ function tglTxtToLines(txt) {
 async function taskTglLoad(binPath) {
   const parsed = tglDecodeBin(binPath);
   const workPath = binPath + '.txt';
+  // ORIGINALS зчитуємо з .bak якщо існує — інакше прогрес рахується некоректно
+  // після першого pack у гру (бо binPath тоді містить UA-переклад як r.en, і
+  // порівняння `ua === original` завжди true → 0%).
+  const bakPath = binPath + '.bak';
+  let records = parsed.records;
+  try {
+    await fs.access(bakPath);
+    const bakParsed = tglDecodeBin(bakPath);
+    if (bakParsed && bakParsed.records && bakParsed.records.length === parsed.records.length) {
+      // Підміняємо r.en на eng-original з .bak. Інші поля (key, тощо) лишаємо.
+      records = parsed.records.map((r, i) => ({ ...r, en: bakParsed.records[i].en }));
+    }
+  } catch {}
   let ua = parsed.records.map((r) => r.en);
   let workfileMismatch = null;
   try {
@@ -995,7 +1008,7 @@ async function taskTglLoad(binPath) {
       workfileMismatch = { binLines: parsed.records.length, txtLines: lines.length };
     }
   } catch {}
-  return { records: parsed.records, ua, originalSize: parsed.originalSize, workPath, workfileMismatch };
+  return { records, ua, originalSize: parsed.originalSize, workPath, workfileMismatch };
 }
 
 async function taskTglSaveWorkfile(binPath, ua) {

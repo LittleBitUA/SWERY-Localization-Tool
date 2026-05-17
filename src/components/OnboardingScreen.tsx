@@ -19,12 +19,18 @@ function humanBytes(n?: number): string {
   return `${(n / 1024 / 1024 / 1024).toFixed(2)} GB`;
 }
 
-type WizardStep = "welcome" | "tools";
+type WizardStep = "welcome" | "tools" | "paths";
 
 export function OnboardingScreen({ status, onComplete }: OnboardingScreenProps) {
   const t = useT();
   const [step, setStep] = useState<WizardStep>("welcome");
   const [toolsDir, setToolsDir] = useState(status.settings.toolsDir || status.defaults.toolsDir);
+  // Step 3: корінні теки ігор. Із них автоматично резолвимо assetsPath
+  // (DP2: DeadlyPremonition2_Data/sharedassets0.assets) та tglBinPath тощо.
+  const [dp2Root, setDp2Root] = useState<string>((status.settings as any).dp2Root || "");
+  const [tglRoot, setTglRoot] = useState<string>((status.settings as any).tglRoot || "");
+  const [dp1Root, setDp1Root] = useState<string>((status.settings as any).dp1Root || "");
+  const [hbrRoot, setHbrRoot] = useState<string>((status.settings as any).hbrRoot || "");
 
   // Чекбокси download'у: за замовч. вмикаємо, якщо інструмента ще немає.
   // Якщо обидва уже валідні — show "everything is up to date" і дозволяємо
@@ -35,31 +41,36 @@ export function OnboardingScreen({ status, onComplete }: OnboardingScreenProps) 
   const [running, setRunning] = useState(false);
   const [progress, setProgress] = useState<SetupProgress | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [logLines, setLogLines] = useState<string[]>([]);
+  // Зберігаємо лог як ОБ'ЄКТИ, а не готові рядки — інакше якщо користувач
+  // перемикає мову після того як рядок уже записано, він залишається старою
+  // мовою у стейті. При зміні мови ререндер сам перекладе через t().
+  const [logEntries, setLogEntries] = useState<Array<{ tag: string; i18nKey?: string; i18nParams?: Record<string, string | number>; message?: string }>>([]);
   const [allValid, setAllValid] = useState(status.validity.uabeaPath && status.validity.pwshPath);
 
   useEffect(() => {
     const off = window.dp2.onSetupProgress((p) => {
       setProgress(p);
-      // Локалізований текст через i18nKey, інакше fallback на raw message.
-      const text = p.i18nKey ? t(p.i18nKey, p.i18nParams) : (p.message || "");
       const tag = `[${p.phase}${p.tool ? ":" + p.tool : ""}]`;
-      const line = `${tag} ${text}`;
-      // De-flood: download phase шле сотні однакових рядків (raz na 100ms) —
-      // якщо tag/text повторюється — оновлюємо ОСТАННІЙ рядок замість push.
-      setLogLines((prev) => {
+      // De-flood: однакові tag-и підряд (download phase шле сотні разів) —
+      // оновлюємо ОСТАННІЙ запис замість push.
+      setLogEntries((prev) => {
+        const entry = { tag, i18nKey: p.i18nKey, i18nParams: p.i18nParams, message: p.message };
         const last = prev[prev.length - 1];
-        if (last && last.startsWith(tag)) {
+        if (last && last.tag === tag) {
           const copy = prev.slice();
-          copy[copy.length - 1] = line;
+          copy[copy.length - 1] = entry;
           return copy;
         }
-        return [...prev.slice(-60), line];
+        return [...prev.slice(-60), entry];
       });
     });
     return off;
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  // Перекладаємо на render-time — реагуємо на зміну мови.
+  const logLines = logEntries.map((e) =>
+    `${e.tag} ${e.i18nKey ? t(e.i18nKey, e.i18nParams) : (e.message || "")}`
+  );
 
   const progressText = progress
     ? (progress.i18nKey ? t(progress.i18nKey, progress.i18nParams) : (progress.message || ""))
@@ -99,14 +110,14 @@ export function OnboardingScreen({ status, onComplete }: OnboardingScreenProps) 
     }
   }
   async function pickToolsDir() {
-    const f = await window.dp2.pickFolder();
+    const f = await window.dp2.pickFolder({ title: t("onb.tools.pickDirTitle") });
     if (f) setToolsDir(f);
   }
 
   async function runDownload() {
     setError(null);
     setRunning(true);
-    setLogLines([]);
+    setLogEntries([]);
     try {
       const res = await window.dp2.setupRun({
         toolsDir,
@@ -125,9 +136,20 @@ export function OnboardingScreen({ status, onComplete }: OnboardingScreenProps) 
     }
   }
 
+  async function pickGameRoot(setter: (v: string) => void) {
+    const f = await window.dp2.pickFolder({ title: t("onb.paths.pickRootTitle") });
+    if (f) setter(f);
+  }
+
   async function finish() {
-    // Позначаємо first-run як виконаний — і йдемо на Home.
-    await window.dp2.saveSettings({ setupCompleted: true });
+    // Зберігаємо корені ігор + setupCompleted. main.cjs далі автоматично
+    // обчислює конкретні шляхи (sharedassets0.assets, loc/English) при потребі.
+    const patch: Record<string, unknown> = { setupCompleted: true };
+    if (dp1Root.trim()) patch.dp1Root = dp1Root.trim();
+    if (dp2Root.trim()) patch.dp2Root = dp2Root.trim();
+    if (tglRoot.trim()) patch.tglRoot = tglRoot.trim();
+    if (hbrRoot.trim()) patch.hbrRoot = hbrRoot.trim();
+    await window.dp2.saveSettings(patch);
     onComplete();
   }
 
@@ -153,33 +175,35 @@ export function OnboardingScreen({ status, onComplete }: OnboardingScreenProps) 
         <LangToggle />
       </div>
 
-      <div className="relative z-[1] min-h-full flex flex-col items-center justify-center px-6 py-10">
-        <div className="text-center mb-6">
+      <div className="relative z-[1] min-h-full flex flex-col items-center justify-center px-6 py-4">
+        <div className="text-center mb-3">
           <span className="v2-bureau-mark">{t("home.v2.bureau")}</span>
-          <h1 className="v2-hub-title">Localization Tool</h1>
-          <p className="v2-hub-subtitle">{t("onb.welcome.subtitle")}</p>
+          <h1 className="v2-hub-title text-[28px] leading-tight">Localization Tool</h1>
+          <p className="v2-hub-subtitle text-[12px]">{t("onb.welcome.subtitle")}</p>
         </div>
         <div className="dp-card w-[860px] max-w-full flex flex-col">
           {/* Step indicator */}
-          <header className="px-6 py-5 border-b border-[var(--border-soft)]">
-            <div className="flex items-center justify-center gap-2 mb-3">
+          <header className="px-6 py-3 border-b border-[var(--border-soft)]">
+            <div className="flex items-center justify-center gap-2 mb-2">
               <StepDot active={step === "welcome"} done={step !== "welcome"} label="1" />
-              <span className="h-px w-12 bg-[var(--border-soft)]" />
-              <StepDot active={step === "tools"} done={false} label="2" />
+              <span className="h-px w-10 bg-[var(--border-soft)]" />
+              <StepDot active={step === "tools"} done={step === "paths"} label="2" />
+              <span className="h-px w-10 bg-[var(--border-soft)]" />
+              <StepDot active={step === "paths"} done={false} label="3" />
             </div>
-            <p className="text-[11px] font-semibold uppercase tracking-[0.2em] text-[var(--text-faint)] text-center mb-1">
-              {step === "welcome" ? t("onb.step.welcome") : t("onb.step.tools")}
+            <p className="text-[10.5px] font-semibold uppercase tracking-[0.2em] text-[var(--text-faint)] text-center mb-0.5">
+              {step === "welcome" ? t("onb.step.welcome") : step === "tools" ? t("onb.step.tools") : t("onb.step.paths")}
             </p>
-            <h1 className="text-[22px] font-bold text-[var(--text-strong)] tracking-tight text-center">
-              {step === "welcome" ? t("onb.welcome.title") : t("onb.tools.title")}
+            <h1 className="text-[18px] font-bold text-[var(--text-strong)] tracking-tight text-center">
+              {step === "welcome" ? t("onb.welcome.title") : step === "tools" ? t("onb.tools.title") : t("onb.paths.title")}
             </h1>
-            <p className="text-[13px] text-[var(--text-muted)] text-center mt-2">
-              {step === "welcome" ? t("onb.welcome.subtitle") : t("onb.tools.subtitle")}
+            <p className="text-[12px] text-[var(--text-muted)] text-center mt-1">
+              {step === "welcome" ? t("onb.welcome.subtitle") : step === "tools" ? t("onb.tools.subtitle") : t("onb.paths.subtitle")}
             </p>
           </header>
 
           {step === "welcome" && (
-            <div className="p-6 space-y-4">
+            <div className="px-6 py-4 space-y-3">
               <p className="text-[13px] text-[var(--text-muted)] leading-relaxed">
                 {t("onb.welcome.intro")}
               </p>
@@ -212,7 +236,7 @@ export function OnboardingScreen({ status, onComplete }: OnboardingScreenProps) 
           )}
 
           {step === "tools" && (
-            <div className="p-6 space-y-5">
+            <div className="px-6 py-4 space-y-3">
               <p className="text-[12.5px] text-[var(--text-muted)] leading-relaxed">
                 {t("onb.tools.intro")}
               </p>
@@ -275,7 +299,7 @@ export function OnboardingScreen({ status, onComplete }: OnboardingScreenProps) 
                     />
                   </div>
                   {logLines.length > 0 && (
-                    <pre className="mt-2 max-h-[140px] overflow-y-auto text-[10.5px] font-mono text-[var(--text-faint)] leading-snug">
+                    <pre className="mt-2 max-h-[90px] overflow-y-auto text-[10px] font-mono text-[var(--text-faint)] leading-snug">
                       {logLines.join("\n")}
                     </pre>
                   )}
@@ -297,9 +321,58 @@ export function OnboardingScreen({ status, onComplete }: OnboardingScreenProps) 
             </div>
           )}
 
+          {step === "paths" && (
+            <div className="px-6 py-4 space-y-3">
+              <p className="text-[12.5px] text-[var(--text-muted)] leading-relaxed">
+                {t("onb.paths.intro")}
+              </p>
+              <GameRootPicker
+                label="Deadly Premonition 2 — A Blessing in Disguise"
+                hint={t("onb.paths.dp2.hint")}
+                value={dp2Root}
+                onChange={setDp2Root}
+                onPick={() => pickGameRoot(setDp2Root)}
+                pickLabel={t("onb.btn.pickFolder")}
+                placeholder="…\steamapps\common\Deadly Premonition 2"
+              />
+              <GameRootPicker
+                label="The Good Life"
+                hint={t("onb.paths.tgl.hint")}
+                value={tglRoot}
+                onChange={setTglRoot}
+                onPick={() => pickGameRoot(setTglRoot)}
+                pickLabel={t("onb.btn.pickFolder")}
+                placeholder="…\steamapps\common\The Good Life"
+              />
+              <GameRootPicker
+                label="Deadly Premonition (Director's Cut)"
+                hint={t("onb.paths.dp1.hint")}
+                value={dp1Root}
+                onChange={setDp1Root}
+                onPick={() => pickGameRoot(setDp1Root)}
+                pickLabel={t("onb.btn.pickFolder")}
+                placeholder="…\steamapps\common\Deadly Premonition The Director's Cut"
+              />
+              <GameRootPicker
+                label="Hotel Barcelona"
+                hint={t("onb.paths.hbr.hint")}
+                value={hbrRoot}
+                onChange={setHbrRoot}
+                onPick={() => pickGameRoot(setHbrRoot)}
+                pickLabel={t("onb.btn.pickFolder")}
+                placeholder="…\steamapps\common\Hotel Barcelona"
+              />
+              <div className="rounded-md border border-[var(--border-soft)] bg-[var(--bg)] px-4 py-3">
+                <p className="text-[12px] text-[var(--text-muted)] leading-relaxed">
+                  {t("onb.paths.optional")}
+                </p>
+              </div>
+            </div>
+          )}
+
           {/* Footer with navigation */}
           <footer className="px-6 py-4 border-t border-[var(--border-soft)] flex items-center justify-between gap-2">
-            {step === "welcome" ? (
+            {step === "welcome" && (
               <>
                 <span className="text-[11px] text-[var(--text-faint)]">{t("onb.welcome.requireToolsHint")}</span>
                 <button
@@ -309,36 +382,80 @@ export function OnboardingScreen({ status, onComplete }: OnboardingScreenProps) 
                   {t("onb.btn.next")} →
                 </button>
               </>
-            ) : (
+            )}
+            {step === "tools" && (
               <>
                 <button className="dp-btn dp-btn--ghost" onClick={() => setStep("welcome")} disabled={running}>
                   ← {t("onb.btn.back")}
                 </button>
-                <div className="flex gap-2">
-                  {!allValid && (
-                    <button
-                      className="dp-btn dp-btn--primary"
-                      onClick={runDownload}
-                      disabled={running || (!downloadUabea && !downloadPwsh) || !toolsDir.trim()}
-                    >
-                      {running ? t("onb.btn.running") : nothingToDo ? t("onb.btn.run") : t("onb.btn.runDownload")}
-                    </button>
-                  )}
+                {/* Одна кнопка: до завантаження — "Завантажити" (стартує
+                    runDownload), після успіху — "Далі" (переходить на step
+                    paths). Це усуває одночасну плутанину двох CTA. */}
+                {allValid ? (
                   <button
-                    className="dp-btn dp-btn--success"
-                    onClick={finish}
-                    disabled={!allValid || running}
-                    title={!allValid ? t("onb.btn.finish.disabledHint") : undefined}
+                    className="dp-btn dp-btn--primary"
+                    onClick={() => setStep("paths")}
+                    disabled={running}
                   >
-                    {t("onb.btn.finish")} ✓
+                    {t("onb.btn.next")} →
                   </button>
-                </div>
+                ) : (
+                  <button
+                    className="dp-btn dp-btn--primary"
+                    onClick={runDownload}
+                    disabled={running || (!downloadUabea && !downloadPwsh) || !toolsDir.trim()}
+                  >
+                    {running ? t("onb.btn.running") : nothingToDo ? t("onb.btn.run") : t("onb.btn.runDownload")}
+                  </button>
+                )}
+              </>
+            )}
+            {step === "paths" && (
+              <>
+                <button className="dp-btn dp-btn--ghost" onClick={() => setStep("tools")} disabled={running}>
+                  ← {t("onb.btn.back")}
+                </button>
+                <button
+                  className="dp-btn dp-btn--success"
+                  onClick={finish}
+                  disabled={running}
+                >
+                  {t("onb.btn.finish")} ✓
+                </button>
               </>
             )}
           </footer>
         </div>
       </div>
     </div>
+  );
+}
+
+function GameRootPicker({ label, hint, value, onChange, onPick, pickLabel, placeholder }: {
+  label: string;
+  hint: string;
+  value: string;
+  onChange: (v: string) => void;
+  onPick: () => void;
+  pickLabel: string;
+  placeholder?: string;
+}) {
+  return (
+    <section>
+      <h3 className="text-[12px] font-semibold uppercase tracking-wider text-[var(--text-muted)] mb-1.5">
+        {label}
+      </h3>
+      <div className="flex gap-2 mb-1">
+        <input
+          className="dp-input flex-1 font-mono text-[12px]"
+          value={value}
+          onChange={(e) => onChange(e.target.value)}
+          placeholder={placeholder}
+        />
+        <button className="dp-btn" onClick={onPick}>{pickLabel}</button>
+      </div>
+      <p className="text-[11px] text-[var(--text-faint)] leading-relaxed">{hint}</p>
+    </section>
   );
 }
 

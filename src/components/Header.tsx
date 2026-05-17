@@ -1,5 +1,7 @@
 import { useState } from "react";
 import { useStore } from "../lib/store";
+// SettingsModal: тільки Display-таб (шляхи — у onboarding). Тримаємо щоб
+// користувач міг перемикати wrap-mode таблиці й мову UI.
 import { SettingsModal } from "./SettingsModal";
 import { LogViewer } from "./LogViewer";
 import { CorpusStatsModal } from "./CorpusStatsModal";

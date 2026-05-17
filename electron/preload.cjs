@@ -2,7 +2,7 @@
 const { contextBridge, ipcRenderer } = require("electron");
 
 contextBridge.exposeInMainWorld("dp2", {
-  pickFolder: () => ipcRenderer.invoke("dp2:pick-folder"),
+  pickFolder: (opts) => ipcRenderer.invoke("dp2:pick-folder", opts),
   pickFile: (opts) => ipcRenderer.invoke("dp2:pick-file", opts),
   pickSaveFile: (opts) => ipcRenderer.invoke("dp2:pick-save-file", opts),
   listFiles: (folder) => ipcRenderer.invoke("dp2:list-files", folder),
@@ -30,6 +30,7 @@ contextBridge.exposeInMainWorld("dp2", {
   buildAssets: () => ipcRenderer.invoke("dp2:build-assets"),
   fontsExport: () => ipcRenderer.invoke("dp2:fonts-export"),
   fontsReplace: (payload) => ipcRenderer.invoke("dp2:fonts-replace", payload),
+  fontsRestoreBak: () => ipcRenderer.invoke("dp2:fonts-restore-bak"),
   fontsList: () => ipcRenderer.invoke("dp2:fonts-list"),
   fontsReadBase64: (filePath) => ipcRenderer.invoke("dp2:fonts-read-base64", filePath),
   onFontsExportProgress: (cb) => {
@@ -79,4 +80,45 @@ contextBridge.exposeInMainWorld("dp2", {
     return () => ipcRenderer.removeListener("dp2:tgl-fonts-import-progress", h);
   },
   readLocaleFile: (lang) => ipcRenderer.invoke("dp2:read-locale-file", lang),
+
+  // DP2 text prep — extract MonoBehaviour text dumps from sharedassets0.assets
+  // into TEXT/ORIGINAL, then mirror to TEXT/DONE for editing.
+  hbrTextPrepStatus: () => ipcRenderer.invoke("dp2:hbr-text-prep-status"),
+  hbrTextPrepExtract: () => ipcRenderer.invoke("dp2:hbr-text-prep-extract"),
+  hbrTextPrepMirror: (payload) => ipcRenderer.invoke("dp2:hbr-text-prep-mirror", payload),
+  hbrTextList: () => ipcRenderer.invoke("dp2:hbr-text-list"),
+  hbrTextRead: (fullPath) => ipcRenderer.invoke("dp2:hbr-text-read", fullPath),
+  hbrTextWrite: (payload) => ipcRenderer.invoke("dp2:hbr-text-write", payload),
+  hbrTextRestoreBak: (fullPath) => ipcRenderer.invoke("dp2:hbr-text-restore-bak", fullPath),
+  hbrToolsStatus: () => ipcRenderer.invoke("dp2:hbr-tools-status"),
+  hbrToolsDownload: () => ipcRenderer.invoke("dp2:hbr-tools-download"),
+  hbrCatalogStatus: () => ipcRenderer.invoke("dp2:hbr-catalog-status"),
+  hbrCatalogPatch: () => ipcRenderer.invoke("dp2:hbr-catalog-patch"),
+  hbrCorpusStats: () => ipcRenderer.invoke("dp2:hbr-corpus-stats"),
+  onHbrPackProgress: (cb) => {
+    const h = (_e, line) => cb(line);
+    ipcRenderer.on("dp2:hbr-pack-progress", h);
+    return () => ipcRenderer.removeListener("dp2:hbr-pack-progress", h);
+  },
+  onHbrToolsProgress: (cb) => {
+    const h = (_e, payload) => cb(payload);
+    ipcRenderer.on("dp2:hbr-tools-progress", h);
+    return () => ipcRenderer.removeListener("dp2:hbr-tools-progress", h);
+  },
+  hbrPackIntoGame: () => ipcRenderer.invoke("dp2:hbr-pack-into-game"),
+  hbrBackupDone: () => ipcRenderer.invoke("dp2:hbr-backup-done"),
+  hbrOpenFolder: (which) => ipcRenderer.invoke("dp2:hbr-open-folder", which),
+  onHbrTextPrepProgress: (cb) => {
+    const h = (_e, line) => cb(line);
+    ipcRenderer.on("dp2:hbr-text-prep-progress", h);
+    return () => ipcRenderer.removeListener("dp2:hbr-text-prep-progress", h);
+  },
+  textPrepStatus: (payload) => ipcRenderer.invoke("dp2:text-prep-status", payload),
+  textPrepExtract: (payload) => ipcRenderer.invoke("dp2:text-prep-extract", payload),
+  textPrepCopyToDone: (payload) => ipcRenderer.invoke("dp2:text-prep-copy-to-done", payload),
+  onTextPrepProgress: (cb) => {
+    const h = (_e, line) => cb(line);
+    ipcRenderer.on("dp2:text-prep-progress", h);
+    return () => ipcRenderer.removeListener("dp2:text-prep-progress", h);
+  },
 });

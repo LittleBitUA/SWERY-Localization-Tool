@@ -108,104 +108,11 @@ export function SettingsModal({ open, onClose }: Props) {
           </button>
         </div>
 
-        {/* Tabs */}
-        <div className="px-5 pt-3 border-b border-[var(--border-soft)] flex gap-1">
-          <button
-            className={`px-3 py-1.5 text-[12px] font-semibold border-b-2 -mb-px transition-colors ${
-              tab === "paths"
-                ? "text-[var(--text-strong)] border-[var(--accent)]"
-                : "text-[var(--text-muted)] border-transparent hover:text-[var(--text)]"
-            }`}
-            onClick={() => setTab("paths")}
-          >
-            {t("set.tab.paths")}
-          </button>
-          <button
-            className={`px-3 py-1.5 text-[12px] font-semibold border-b-2 -mb-px transition-colors ${
-              tab === "display"
-                ? "text-[var(--text-strong)] border-[var(--accent)]"
-                : "text-[var(--text-muted)] border-transparent hover:text-[var(--text)]"
-            }`}
-            onClick={() => setTab("display")}
-          >
-            {t("set.tab.display")}
-          </button>
-        </div>
+        {/* Paths-tab прибрано (шляхи задаються в onboarding step 3). Лишається
+            тільки Display, тому tab-bar не показуємо. */}
 
         {/* Content */}
         <div className="p-5 space-y-4 max-h-[60vh] overflow-y-auto">
-          {tab === "paths" && (
-            <>
-              <div>
-                <label className="text-[11px] font-semibold uppercase tracking-wider text-[var(--text-muted)] block mb-1.5">
-                  {t("set.uabea.label")}
-                </label>
-                <div className="flex gap-2">
-                  <input
-                    className="dp-input flex-1"
-                    value={uabeaPath}
-                    onChange={(e) => setUabeaPath(e.target.value)}
-                    onBlur={persistPaths}
-                    placeholder="E:\Localization\DP2\UABEA\UABEANext4.Desktop.exe"
-                  />
-                  <button onClick={pickUabea} className="dp-btn">{t("set.browse")}</button>
-                </div>
-                <p className="text-[11px] text-[var(--text-faint)] mt-1.5 leading-relaxed">{t("set.uabea.hint")}</p>
-              </div>
-
-              <div>
-                <label className="text-[11px] font-semibold uppercase tracking-wider text-[var(--text-muted)] block mb-1.5">
-                  {t("set.assets.label")}
-                </label>
-                <div className="flex gap-2">
-                  <input
-                    className="dp-input flex-1"
-                    value={assetsPath}
-                    onChange={(e) => setAssetsPath(e.target.value)}
-                    onBlur={persistPaths}
-                    placeholder="E:\SteamLibrary\...\DeadlyPremonition2_Data"
-                  />
-                  <button onClick={pickAssets} className="dp-btn">{t("set.browse")}</button>
-                </div>
-                <p className="text-[11px] text-[var(--text-faint)] mt-1.5 leading-relaxed">{t("set.assets.hint")}</p>
-              </div>
-
-              <div>
-                <label className="text-[11px] font-semibold uppercase tracking-wider text-[var(--text-muted)] block mb-1.5">
-                  {t("set.pwsh.label")}
-                </label>
-                <div className="flex gap-2">
-                  <input
-                    className="dp-input flex-1"
-                    value={pwshPath}
-                    onChange={(e) => setPwshPath(e.target.value)}
-                    onBlur={persistPaths}
-                    placeholder="C:\Program Files\PowerShell\7\pwsh.exe"
-                  />
-                  <button onClick={pickPwsh} className="dp-btn">{t("set.browse")}</button>
-                </div>
-                <p className="text-[11px] text-[var(--text-faint)] mt-1.5 leading-relaxed">{t("set.pwsh.hint")}</p>
-              </div>
-
-              <div>
-                <label className="text-[11px] font-semibold uppercase tracking-wider text-[var(--text-muted)] block mb-1.5">
-                  {t("set.toolsDir.label")}
-                </label>
-                <div className="flex gap-2">
-                  <input
-                    className="dp-input flex-1"
-                    value={toolsDir}
-                    onChange={(e) => setToolsDir(e.target.value)}
-                    onBlur={persistPaths}
-                    placeholder="C:\Users\you\Documents\DP2-Localization-Tools"
-                  />
-                  <button onClick={pickToolsDir} className="dp-btn">{t("set.browse")}</button>
-                </div>
-                <p className="text-[11px] text-[var(--text-faint)] mt-1.5 leading-relaxed">{t("set.toolsDir.hint")}</p>
-              </div>
-            </>
-          )}
-
           {tab === "display" && (
             <>
               <div>

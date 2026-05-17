@@ -15,6 +15,9 @@ import { Dp1Editor } from "./games/dp1/Dp1Editor";
 import { Dp1SettingsModal } from "./games/dp1/Dp1SettingsModal";
 import { Dp2FontsEditor } from "./games/dp2/Dp2FontsEditor";
 import { Dp2TexturesEditor } from "./games/dp2/Dp2TexturesEditor";
+import { Dp2TextPrepWizard } from "./games/dp2/Dp2TextPrepWizard";
+import { HbrEditor } from "./games/hbr/HbrEditor";
+import { dp2TextRequiredEntries } from "./games/dp2/required-text-files";
 import { TglEditor } from "./games/tgl/TglEditor";
 import { TglFontsEditor } from "./games/tgl/fonts/TglFontsEditor";
 import { SettingsModal } from "./components/SettingsModal";
@@ -26,8 +29,8 @@ import type { SetupStatus } from "./lib/ipc";
 import { DialogHost } from "./lib/dialogs";
 import { ToastProvider } from "./components/ToastProvider";
 
-type Stage = "loading" | "onboarding" | "home" | "editor-dp2" | "editor-dp1" | "editor-tgl" | "fonts-dp2" | "textures-dp2" | "fonts-tgl";
-type ActiveGame = "dp1" | "dp2" | "tgl" | null;
+type Stage = "loading" | "onboarding" | "home" | "prep-dp2" | "editor-dp2" | "editor-dp1" | "editor-tgl" | "fonts-dp2" | "textures-dp2" | "fonts-tgl" | "editor-hbr";
+type ActiveGame = "dp1" | "dp2" | "tgl" | "hbr" | null;
 
 export default function App() {
   const [findOpen, setFindOpen] = useState(false);
@@ -50,6 +53,7 @@ export default function App() {
 
   const [stage, setStage] = useState<Stage>("loading");
   const [setupStatus, setSetupStatus] = useState<SetupStatus | null>(null);
+  const [dp2PrepOpen, setDp2PrepOpen] = useState(false);
 
   const init = useStore((s) => s.init);
   const folder = useStore((s) => s.folder);
@@ -67,9 +71,37 @@ export default function App() {
     if (!s.completed) {
       setStage("onboarding");
     } else if (activeGame === "dp2") {
+      // Усі DP2-режими потребують assetsPath. Якщо ще не задано (перший
+      // запуск) — кидаємо у prep-wizard який сам попросить теку гри і
+      // витягне тексти у TEXT/ORIGINAL + TEXT/DONE.
+      const ap: string | undefined = s.settings?.assetsPath;
+      if (!ap) { setStage("prep-dp2"); return s; }
       if (dp2Mode === "fonts") setStage("fonts-dp2");
       else if (dp2Mode === "textures") setStage("textures-dp2");
-      else setStage("editor-dp2");
+      else {
+        // Text mode: ще перевіряємо чи готовий TEXT/DONE.
+        const required = dp2TextRequiredEntries();
+        try {
+          const w = window.dp2 as unknown as { textPrepStatus: (p: { assetsPath: string; requiredFiles: unknown[] }) => Promise<{ doneMissing?: string[]; doneDir?: string }> };
+          const st = await w.textPrepStatus({ assetsPath: ap, requiredFiles: required });
+          const missing = st.doneMissing?.length ?? 0;
+          if (missing > 0) {
+            setStage("prep-dp2");
+          } else {
+            // Авто-виставляємо TEXT/DONE як lastFolder, якщо ще не задано
+            // (інакше editor покаже порожній FileList і знову проситиме папку).
+            const currentLast = s.settings?.lastFolder as string | undefined;
+            if (st.doneDir && !currentLast) {
+              try { await window.dp2.saveSettings({ lastFolder: st.doneDir }); } catch {}
+              const fresh = await window.dp2.setupStatus();
+              setSetupStatus(fresh);
+            }
+            setStage("editor-dp2");
+          }
+        } catch {
+          setStage("prep-dp2");
+        }
+      }
     } else if (activeGame === "dp1") {
       setStage("editor-dp1");
     } else if (activeGame === "tgl") {
@@ -89,6 +121,47 @@ export default function App() {
   useEffect(() => {
     if (stage === "editor-dp2") init();
   }, [stage, init]);
+
+  // При вході в editor-dp2 перевіряємо, чи готовий TEXT/DONE. Якщо файлів
+  // нема або не задано assetsPath — показуємо модалку prep ПОВЕРХ editor.
+  useEffect(() => {
+    if (stage !== "editor-dp2") { setDp2PrepOpen(false); return; }
+    let cancelled = false;
+    (async () => {
+      const s = await window.dp2.setupStatus();
+      const ap = (s.settings as { assetsPath?: string })?.assetsPath;
+      if (!ap) { if (!cancelled) setDp2PrepOpen(true); return; }
+      const required = dp2TextRequiredEntries();
+      try {
+        const w = window.dp2 as unknown as { textPrepStatus: (p: { assetsPath: string; requiredFiles: unknown[] }) => Promise<{ doneMissing?: string[]; doneDir?: string }> };
+        const st = await w.textPrepStatus({ assetsPath: ap, requiredFiles: required });
+        const missing = st.doneMissing?.length ?? 0;
+        if (missing > 0) { if (!cancelled) setDp2PrepOpen(true); return; }
+        // Все готово — авто-виставляємо lastFolder, якщо ще не задано.
+        const currentLast = (s.settings as { lastFolder?: string })?.lastFolder;
+        if (st.doneDir && !currentLast) {
+          await window.dp2.saveSettings({ lastFolder: st.doneDir });
+          const fresh = await window.dp2.setupStatus();
+          if (!cancelled) setSetupStatus(fresh);
+        }
+        if (!cancelled) setDp2PrepOpen(false);
+      } catch {
+        if (!cancelled) setDp2PrepOpen(true);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [stage]);
+
+  // У prep-dp2 stage для fonts/textures режимів з готовим assetsPath
+  // одразу пропускаємо wizard і йдемо у відповідний редактор.
+  useEffect(() => {
+    if (stage !== "prep-dp2") return;
+    if (dp2Mode === "text") return;
+    const ap = setupStatus?.settings?.assetsPath;
+    if (!ap) return;
+    if (dp2Mode === "fonts") setStage("fonts-dp2");
+    else if (dp2Mode === "textures") setStage("textures-dp2");
+  }, [stage, dp2Mode, setupStatus]);
 
   useEffect(() => {
     if (!folder) {
@@ -168,8 +241,12 @@ export default function App() {
 
   if (stage === "home") {
     const homeProps = {
-      onPickGame: (id: "dp1" | "dp2" | "tgl", mode?: "text" | "fonts" | "textures") => {
+      onPickGame: (id: "dp1" | "dp2" | "tgl" | "hbr", mode?: "text" | "fonts" | "textures") => {
         setActiveGame(id);
+        if (id === "hbr") {
+          setStage("editor-hbr");
+          return;
+        }
         if (id === "dp1") {
           setStage("editor-dp1");
         } else if (id === "tgl") {
@@ -179,6 +256,9 @@ export default function App() {
         } else {
           const m: "text" | "fonts" | "textures" = mode === "fonts" ? "fonts" : mode === "textures" ? "textures" : "text";
           setDp2Mode(m);
+          // Йдемо одразу в потрібний DP2-стейдж. Якщо це text-mode і TEXT/DONE
+          // неповний — поверх editor-dp2 покажемо модалку prep, яка зробить
+          // extract і відкриє редактор по кнопці.
           setStage(m === "fonts" ? "fonts-dp2" : m === "textures" ? "textures-dp2" : "editor-dp2");
         }
       },
@@ -191,7 +271,8 @@ export default function App() {
         setActiveGame("dp2");
         setStage("editor-dp2");
       },
-      onOpenRecent: async (game: "dp1" | "dp2" | "tgl", path: string) => {
+      onOpenRecent: async (game: "dp1" | "dp2" | "tgl" | "hbr", path: string) => {
+        if (game === "hbr") return;
         if (game === "dp1") {
           await window.dp2.saveSettings({ dp1EngPath: path });
           setActiveGame("dp1");
@@ -234,6 +315,23 @@ export default function App() {
             onOpenSettings={() => setDp1SettingsOpen(true)}
           />
           <Dp1SettingsModal open={dp1SettingsOpen} onClose={() => setDp1SettingsOpen(false)} />
+        </div>
+        <DialogHost /><ToastProvider />
+      </>
+    );
+  }
+
+  if (stage === "editor-hbr") {
+    return (
+      <>
+        <div className="h-screen flex flex-col">
+          <HbrEditor
+            onHome={() => {
+              setActiveGame(null);
+              setStage("home");
+              window.dp2.setupStatus().then(setSetupStatus);
+            }}
+          />
         </div>
         <DialogHost /><ToastProvider />
       </>
@@ -370,6 +468,29 @@ export default function App() {
         }}
       />
       <DialogHost /><ToastProvider />
+      {dp2PrepOpen && (
+        <Dp2TextPrepWizard
+          assetsPath={(setupStatus?.settings as { assetsPath?: string })?.assetsPath ?? null}
+          onAssetsPathPicked={async (newPath) => {
+            await window.dp2.saveSettings({ assetsPath: newPath });
+            const fresh = await window.dp2.setupStatus();
+            setSetupStatus(fresh);
+          }}
+          onDone={async (doneDir) => {
+            try { await window.dp2.saveSettings({ lastFolder: doneDir }); } catch {}
+            const fresh = await window.dp2.setupStatus();
+            setSetupStatus(fresh);
+            setDp2PrepOpen(false);
+            init();
+          }}
+          onCancel={() => {
+            setDp2PrepOpen(false);
+            setActiveGame(null);
+            setStage("home");
+            window.dp2.setupStatus().then(setSetupStatus);
+          }}
+        />
+      )}
     </div>
   );
 }

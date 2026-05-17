@@ -5,7 +5,7 @@ import bgImage from "./assets/dp-board.jpg";
 import "./theme.css";
 
 export type GameMode = "text" | "fonts" | "textures";
-export type GameId = "dp1" | "dp2" | "tgl";
+export type GameId = "dp1" | "dp2" | "tgl" | "hbr";
 
 interface Props {
   onPickGame: (id: GameId, mode?: GameMode) => void;
@@ -57,6 +57,16 @@ const CASES: CaseDef[] = [
     format: "loc/English (binary)",
     noteKey: "home.v2.tgl.note",
   },
+  {
+    id: "hbr",
+    caseNo: "004",
+    subjectKey: "home.hbr.title",
+    altnameKey: "home.hbr.altname",
+    regionKey: "home.v2.hbr.region",
+    platform: "PC · Steam",
+    format: "—",
+    noteKey: "home.v2.hbr.note",
+  },
 ];
 
 export function HomeV2({ onPickGame, onOpenSetup, onOpenFolder, onOpenRecent }: Props) {
@@ -69,6 +79,7 @@ export function HomeV2({ onPickGame, onOpenSetup, onOpenFolder, onOpenRecent }: 
     dp1: { hasPath: false, progress: null },
     dp2: { hasPath: false, progress: null },
     tgl: { hasPath: false, progress: null },
+    hbr: { hasPath: false, progress: null },
   });
   // Уніфіковані recents: DP1 eng.json, DP2 lastFolder + recentFolders[], TGL bin.
   const [recentItems, setRecentItems] = useState<Array<{ game: GameId; path: string }>>([]);
@@ -82,6 +93,7 @@ export function HomeV2({ onPickGame, onOpenSetup, onOpenFolder, onOpenRecent }: 
           dp1: { hasPath: !!settings.dp1EngPath, progress: null },
           dp2: { hasPath: !!settings.lastFolder, progress: null },
           tgl: { hasPath: !!settings.tglBinPath, progress: null },
+          hbr: { hasPath: !!settings.hbrBundlePath, progress: null },
         });
         // Уніфікований список останніх: DP1 eng.json, DP2 lastFolder
         // (+ старий recentFolders[]), TGL bin. Dedup і обмеження 8.
@@ -113,6 +125,21 @@ export function HomeV2({ onPickGame, onOpenSetup, onOpenFolder, onOpenRecent }: 
             })
             .catch(() => {});
         }
+        // HBR corpus stats — рахуємо за наявності витягнутих файлів (Done/).
+        // Може не виконатись, поки користувач не пройшов prep-wizard'у вперше.
+        const wHbr = window.dp2 as unknown as { hbrCorpusStats?: () => Promise<{ ok: boolean; files: number; total: number; translated: number }> };
+        if (wHbr.hbrCorpusStats) {
+          wHbr.hbrCorpusStats().then((r) => {
+            if (!r || !r.ok) return;
+            setState((prev) => ({
+              ...prev,
+              hbr: {
+                hasPath: true,
+                progress: { done: r.translated, total: r.total },
+              },
+            }));
+          }).catch(() => {});
+        }
       } catch {}
     })();
   }, []);
@@ -136,14 +163,14 @@ export function HomeV2({ onPickGame, onOpenSetup, onOpenFolder, onOpenRecent }: 
       <div className="relative z-[1] min-h-full flex flex-col items-center justify-center px-6 py-14">
         <div className="max-w-[1080px] w-full">
           {/* Header — Federal Bureau of Localization */}
-          <header className="text-center mb-14">
+          <header className="text-center mb-6">
             <span className="v2-bureau-mark">{t("home.v2.bureau")}</span>
             <h1 className="v2-hub-title">Deadly Premonition</h1>
             <p className="v2-hub-subtitle">{t("home.v2.tagline")}</p>
           </header>
 
           {/* Картки-теки */}
-          <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-x-8 gap-y-8 mb-14">
+          <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-x-5 gap-y-5 mb-8">
             {CASES.map((c) => {
               const s = state[c.id];
               const pct = s.progress && s.progress.total > 0
@@ -165,13 +192,12 @@ export function HomeV2({ onPickGame, onOpenSetup, onOpenFolder, onOpenRecent }: 
 
               const isDp2 = c.id === "dp2";
               const isTgl = c.id === "tgl";
+              const isHbr = c.id === "hbr";
               const hasActions = isDp2 || isTgl;
               return (
                 <div
                   key={c.id}
                   className={`v2-folder${hasActions ? " v2-folder--with-actions" : ""}`}
-                  // DP1 — клік по всій картці відкриває редактор.
-                  // DP2/TGL — лише через окремі action-кнопки внизу.
                   onClick={!hasActions ? () => onPickGame(c.id, "text") : undefined}
                   style={{ cursor: hasActions ? "default" : "pointer" }}
                 >
