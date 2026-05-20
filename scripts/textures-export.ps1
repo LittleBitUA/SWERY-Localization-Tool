@@ -13,7 +13,10 @@ param(
     [Parameter(Mandatory=$true)] [string]$AssetsPath,
     [Parameter(Mandatory=$true)] [string]$OutDir,
     [Parameter(Mandatory=$true)] [string]$UabeaDir,
-    [string]$PathIds = ""
+    [string]$PathIds = "",
+    # Pipe-separated regex для m_Name (приклад: "^stamp|^new_01$"). Якщо вказано,
+    # додатково до PathIds експортуються всі Texture2D, чия m_Name матчить.
+    [string]$NamePatterns = ""
 )
 
 $ErrorActionPreference = "Stop"
@@ -126,6 +129,20 @@ if ($PathIds.Trim() -ne "") {
     Write-Diag ("PathId filter: {0}" -f (($wantedSet) -join ","))
 }
 
+# Parse pipe-separated regex для m_Name.
+$namePatternRegex = $null
+if ($NamePatterns.Trim() -ne "") {
+    try {
+        $namePatternRegex = [regex]::new($NamePatterns, [System.Text.RegularExpressions.RegexOptions]::IgnoreCase)
+        Write-Diag ("Name filter (regex): {0}" -f $NamePatterns)
+    } catch {
+        Write-Warning "Invalid -NamePatterns regex: $($_.Exception.Message)"
+    }
+}
+# Якщо є хоч один фільтр (PathIds АБО NamePatterns) — обмежуємо вибірку
+# до тих textures, що проходять ХОЧ ОДИН фільтр (логічне АБО).
+$hasFilter = ($null -ne $wantedSet) -or ($null -ne $namePatternRegex)
+
 Write-Step "Loading $AssetsPath ..."
 $manager = New-Object AssetsTools.NET.Extra.AssetsManager
 $tpkPath = Join-Path $UabeaDir "classdata.tpk"
@@ -140,11 +157,23 @@ $assetBaseName = [System.IO.Path]::GetFileNameWithoutExtension($AssetsPath) + [S
 
 foreach ($info in $assetsInst.file.AssetInfos) {
     if ($info.TypeId -ne 28) { continue }
-    if ($null -ne $wantedSet -and -not $wantedSet.Contains([Int64]$info.PathId)) { continue }
 
     try {
         $base = $manager.GetBaseField($assetsInst, $info)
         if ($null -eq $base) { continue }
+
+        # Якщо є фільтр — приймаємо текстуру лише якщо PathID матчиться АБО
+        # m_Name матчить regex. Без фільтра — беремо всі.
+        if ($hasFilter) {
+            $byPid  = ($null -ne $wantedSet) -and $wantedSet.Contains([Int64]$info.PathId)
+            $byName = $false
+            if ($null -ne $namePatternRegex) {
+                $nameTry = ""
+                try { $nameTry = $base["m_Name"].AsString } catch {}
+                if ($nameTry -and $namePatternRegex.IsMatch($nameTry)) { $byName = $true }
+            }
+            if (-not ($byPid -or $byName)) { continue }
+        }
 
         $pngBytes = [TexExport]::DecodePng($assetsInst, $base)
         $w = [TexExport]::LastWidth

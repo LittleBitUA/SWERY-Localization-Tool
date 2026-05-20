@@ -61,7 +61,7 @@ interface TglState {
   updateActive: (text: string) => void;
   saveWorkfile: () => Promise<void>;
   autosave: () => Promise<void>;
-  pack: () => Promise<{ outputPath?: string; bakPath?: string; translated?: number; error?: string }>;
+  pack: () => Promise<{ outputPath?: string; bakPath?: string; translated?: number; fallback?: number; size?: number; error?: string }>;
 
   setEntryStatus: (i: number, status: StatusKind | undefined) => Promise<void>;
   toggleEntryBookmark: (i: number) => Promise<void>;
@@ -70,7 +70,16 @@ interface TglState {
   bulkTrim: (indices: number[]) => void;
 
   exportTxt: () => { fileName: string; content: string } | null;
-  importTxtContent: (raw: string) => Promise<{ applied: number; mismatch?: { txtLines: number; binLines: number } }>;
+  importTxtContent: (raw: string) => Promise<{
+    applied: number;
+    mismatch?: {
+      txtLines: number;
+      binLines: number;
+      // Декілька рядків навколо першої різниці: i — позиція у тексті,
+      // txt — рядок з .txt (якщо є), bin — оригінал з bin (якщо є).
+      diffSamples: Array<{ i: number; txt?: string; bin?: string }>;
+    };
+  }>;
 
   // Undo для масових операцій
   undoStack: Array<{ label: string; uaTexts: string[]; entries: TglEntry[] }>;
@@ -200,7 +209,15 @@ export const useTglStore = create<TglState>((set, get) => ({
   async pack() {
     const { binPath, uaTexts } = get();
     if (!binPath) return { error: t("tgl.err.notLoaded") };
-    try { await get().saveWorkfile(); } catch {}
+    // КРИТИЧНО: pack читає workfile з диска. Якщо saveWorkfile впав
+    // (locked file, antivirus, no space) — pack відправить у бін СТАРИЙ
+    // вміст і ми ніколи цього не помітимо. Раніше catch{} ковтав помилку
+    // і пакувало stale workfile → битий патч у гру.
+    try {
+      await get().saveWorkfile();
+    } catch (e) {
+      return { error: `Не вдалося зберегти workfile перед паком: ${e instanceof Error ? e.message : String(e)}` };
+    }
     const res = await window.dp2.tglPack({ binPath, ua: uaTexts });
     return res;
   },
@@ -299,7 +316,28 @@ export const useTglStore = create<TglState>((set, get) => ({
     if (!records.length) return { applied: 0 };
     const lines = tglTxtToLines(raw);
     if (lines.length !== records.length) {
-      return { applied: 0, mismatch: { txtLines: lines.length, binLines: records.length } };
+      // Підбираємо кілька прикладів навколо першої точки розбіжності, щоб
+      // користувач міг побачити, ЯКИЙ рядок у .txt не той (зазвичай
+      // розщеплений на два newline'ом усередині перекладу).
+      const diffSamples: Array<{ i: number; txt?: string; bin?: string }> = [];
+      const maxLen = Math.max(lines.length, records.length);
+      let firstDiff = -1;
+      for (let i = 0; i < maxLen; i++) {
+        const txt = i < lines.length ? tglUnescapeFromTxt(lines[i]) : undefined;
+        const bin = i < records.length ? records[i].en : undefined;
+        if (txt === undefined || bin === undefined || txt !== bin) { firstDiff = i; break; }
+      }
+      if (firstDiff < 0) firstDiff = Math.min(lines.length, records.length);
+      const from = Math.max(0, firstDiff - 1);
+      const to = Math.min(maxLen, firstDiff + 5);
+      for (let i = from; i < to; i++) {
+        diffSamples.push({
+          i,
+          txt: i < lines.length ? tglUnescapeFromTxt(lines[i]) : undefined,
+          bin: i < records.length ? records[i].en : undefined,
+        });
+      }
+      return { applied: 0, mismatch: { txtLines: lines.length, binLines: records.length, diffSamples } };
     }
     get().pushUndo("import-txt");
     const nextUa = uaTexts.slice();

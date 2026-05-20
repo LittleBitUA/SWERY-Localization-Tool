@@ -7,12 +7,11 @@ import { useT } from "../lib/i18n";
 interface TmPanelProps {
   glossary: GlossaryEntry[];
   onOpenGlossary: () => void;
-  /** Опційні prop'и — щоб панель працювала і для DP1, не лише DP2. */
+  /** Опційні prop'и — щоб панель працювала і поза DP2 editor'ом. */
   query?: string;
   excludeTgt?: string;
   onApply?: (tgt: string) => void;
   dp2Folder?: string | null;
-  dp1EngPath?: string | null;
   /** Тригер ре-білду TM (наприклад saveTick з відповідного store). */
   refreshKey?: number;
 }
@@ -24,7 +23,6 @@ export function TmPanel({
   excludeTgt: excludeTgtProp,
   onApply: onApplyProp,
   dp2Folder: dp2FolderProp,
-  dp1EngPath: dp1EngPathProp,
   refreshKey,
 }: TmPanelProps) {
   const t = useT();
@@ -41,28 +39,17 @@ export function TmPanel({
   const useStoreFallback = queryProp === undefined;
   const dp2Folder = dp2FolderProp !== undefined ? dp2FolderProp : (useStoreFallback ? dp2StoreFolder : null);
 
-  // dp1EngPath — або з пропсу, або з settings.
-  const [dp1Settings, setDp1Settings] = useState<string | null>(null);
-  useEffect(() => {
-    if (dp1EngPathProp !== undefined) return;
-    window.dp2.getSettings().then((s) => {
-      const p = (s as any).dp1EngPath as string | undefined;
-      setDp1Settings(p && p.trim() ? p : null);
-    });
-  }, [dp1EngPathProp]);
-  const dp1EngPath = dp1EngPathProp !== undefined ? dp1EngPathProp : dp1Settings;
-
   const trigger = refreshKey ?? saveTick;
   useEffect(() => {
-    if (!dp2Folder && !dp1EngPath) {
+    if (!dp2Folder) {
       setTm([]);
       return;
     }
     setLoading(true);
-    buildTm(dp2Folder, dp1EngPath)
+    buildTm(dp2Folder)
       .then(setTm)
       .finally(() => setLoading(false));
-  }, [dp2Folder, dp1EngPath, trigger]);
+  }, [dp2Folder, trigger]);
 
   // Активний запис для DP2 fallback.
   const dp2Active = useStoreFallback && activeIndex !== null ? entries[activeIndex] : null;
@@ -88,7 +75,7 @@ export function TmPanel({
     if (dp2Active) updateActive(dp2Active.charaName ?? "", tgt);
   }
 
-  if (!dp2Folder && !dp1EngPath) return null;
+  if (!dp2Folder) return null;
 
   return (
     <aside className="h-full shrink-0 border-l border-[var(--border-soft)] bg-[var(--bg-surface)] flex flex-col">
@@ -169,7 +156,7 @@ export function TmPanel({
                     >
                       {isExact ? "100%" : `${Math.round(m.score * 100)}%`}
                     </span>
-                    <span className="dp-pill" title={m.entry.source === "dp1" ? "Deadly Premonition" : "Deadly Premonition 2"}>
+                    <span className="dp-pill" title="Deadly Premonition 2">
                       {m.entry.source.toUpperCase()}
                     </span>
                   </div>

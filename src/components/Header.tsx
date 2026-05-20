@@ -10,6 +10,8 @@ import { NameConsistencyModal } from "./NameConsistencyModal";
 import { useT } from "../lib/i18n";
 import { confirm as showConfirm, alert as showAlert } from "../lib/dialogs";
 import { showToast, dismissToast } from "./Toast";
+import { SaveStatusBadge } from "./SaveStatusBadge";
+import { LangToggle } from "./LangToggle";
 
 interface HeaderProps {
   onFindReplace?: () => void;
@@ -41,6 +43,7 @@ export function Header({
   const saveFile = useStore((s) => s.saveFile);
   const selectedFilePath = useStore((s) => s.selectedFilePath);
   const lastAutosaveAt = useStore((s) => s.lastAutosaveAt);
+  const lastSaveError = useStore((s) => s.lastSaveError);
   const previewTmExact = useStore((s) => s.previewTmExact);
   const applyTmExact = useStore((s) => s.applyTmExact);
 
@@ -97,10 +100,8 @@ export function Header({
     if (!folder || !selectedFilePath) return;
     setTmApplying(true);
     try {
-      const settings: any = await window.dp2.getSettings();
       const tm = await window.dp2.buildTmWorker({
         dp2Folder: folder,
-        dp1EngPath: settings.dp1EngPath ?? null,
       });
       const { matches } = previewTmExact(tm);
       if (matches.length === 0) {
@@ -223,6 +224,8 @@ export function Header({
           </svg>
           {t("header.folder")}
         </button>
+
+        <LangToggle compact />
 
         <button className="dp-btn dp-btn--ghost shrink-0" onClick={() => setSettingsOpen(true)} title={t("header.settings")}>
           <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
@@ -347,15 +350,13 @@ export function Header({
             із shrink-0, який не входить у wrap-логіку лівого боку. Лог-кнопка
             та autosave-індикатор також тут, щоб не порушувати позицію Save. */}
         <div className="flex items-center gap-2 shrink-0">
-        {dirty && lastAutosaveAt && (
-          <span
-            className="text-[10.5px] text-[var(--text-faint)] tabular-nums whitespace-nowrap"
-            title={t("autosave.savedAt", {
-              time: new Date(lastAutosaveAt).toLocaleTimeString(),
-            })}
-          >
-            ● {t("autosave.saved")}
-          </span>
+        {selectedFilePath && (
+          <SaveStatusBadge
+            dirty={dirty}
+            lastAutosaveAt={lastAutosaveAt}
+            saveError={lastSaveError}
+            fileName={selectedFilePath.split(/[\\/]/).pop()}
+          />
         )}
 
         <button

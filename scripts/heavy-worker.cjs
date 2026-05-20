@@ -1,9 +1,9 @@
 'use strict';
 
-// Heavy worker: парсинг JSON-корпусу DP1+DP2 виноситься у Node worker_threads,
+// Heavy worker: парсинг JSON-корпусу DP2 виноситься у Node worker_threads,
 // щоб не блокувати ні main, ні renderer. Завдання:
 //   • 'scan-all'    — pre-flight перевірки (validate.ts)
-//   • 'build-tm'    — пам'ять перекладів з обох ігор (tm.ts)
+//   • 'build-tm'    — пам'ять перекладів (tm.ts)
 //   • 'search-all'  — глобальний пошук по корпусу (search.ts)
 //
 // API: parentPort приймає { id, type, payload }, відповідає { id, ok, result | error }.
@@ -215,7 +215,7 @@ function needsTranslation(e) {
 }
 
 // ── Task: build-tm ──────────────────────────────────────────────────────
-async function taskBuildTm(dp2Folder, dp1EngPath) {
+async function taskBuildTm(dp2Folder) {
   const out = [];
 
   if (dp2Folder) {
@@ -234,38 +234,6 @@ async function taskBuildTm(dp2Folder, dp1EngPath) {
           charaName: e.charaName,
         });
       }
-    }
-  }
-
-  if (dp1EngPath) {
-    let engRaw;
-    try { engRaw = await fs.readFile(dp1EngPath, 'utf8'); }
-    catch { return out; }
-    let engRecords;
-    try { engRecords = JSON.parse(engRaw); } catch { return out; }
-    if (!Array.isArray(engRecords)) return out;
-    const donePath = dp1EngPath.replace(/\.json$/i, '_ua_done.json');
-    let doneRecords = null;
-    try {
-      const raw = await fs.readFile(donePath, 'utf8');
-      const parsed = JSON.parse(raw);
-      if (Array.isArray(parsed)) doneRecords = parsed;
-    } catch {}
-    const fileName = (dp1EngPath.split(/[\\/]/).pop() || dp1EngPath).replace(/\.json$/i, '');
-    const hasCyr = /[Ѐ-ӿ]/;
-    for (let i = 0; i < engRecords.length; i++) {
-      const er = engRecords[i] || {};
-      if (er.EmptyRecord) continue;
-      const src = String(er.Text != null ? er.Text : '').trim();
-      const tgt = doneRecords
-        ? String((doneRecords[i] && doneRecords[i].Text) != null ? doneRecords[i].Text : '').trim()
-        : src;
-      if (!src) continue;
-      if (!tgt || tgt === src) continue;
-      if (!hasCyr.test(tgt)) continue;
-      out.push({
-        source: 'dp1', src, tgt, jp: '', filePath: donePath || dp1EngPath, fileName,
-      });
     }
   }
 
@@ -1087,6 +1055,290 @@ async function taskTglPack(binPath, ua) {
   };
 }
 
+// ── DP1 / HBR / MISSING tasks ──────────────────────────────────────────
+// Виносимо важкі JSON.parse + аггрегації з main process, бо вони блокують
+// UI на 0.5-3с при відкритті Home або DP1 editor. Worker тримає кеш через
+// getCached(), тож повторні виклики на тих самих файлах майже миттєві.
+
+function dp1ComputeFsl(text) {
+  if (!text) return 0;
+  const re = /\{NEXT_SEGMENT\}|\{NEXT_FRAME\b[^}]*\}/;
+  const m = text.match(re);
+  const head = m ? text.slice(0, m.index) : text;
+  return head.replace(/\{[^{}]*\}/g, '').length;
+}
+function dp1StringifyRecords(records) {
+  // 2-space indent + CRLF — байт-у-байт як DPMsgTool by MrIkso.
+  return JSON.stringify(records, null, 2).replace(/\n/g, '\r\n');
+}
+
+async function taskDp1TextLoad(payload) {
+  const { originalJson, doneJson, metaFile } = payload;
+  const [origRaw, doneRaw] = await Promise.all([
+    fs.readFile(originalJson, 'utf8'),
+    fs.readFile(doneJson, 'utf8'),
+  ]);
+  const original = JSON.parse(origRaw);
+  const done = JSON.parse(doneRaw);
+  if (!Array.isArray(original) || !Array.isArray(done)) {
+    throw new Error('Mes JSON має бути масивом');
+  }
+  if (original.length !== done.length) {
+    throw new Error(`Кількість записів Original/Done не збігається (${original.length} vs ${done.length}). Зробіть повторний extract.`);
+  }
+  let meta = null;
+  try { meta = JSON.parse(await fs.readFile(metaFile, 'utf8')); } catch {}
+  return { original, done, meta };
+}
+
+async function taskDp1TextSave(payload) {
+  const { originalJson, doneJson, metaFile, records } = payload;
+  if (!Array.isArray(records)) throw new Error('records must be array');
+  const origRaw = await fs.readFile(originalJson, 'utf8');
+  const original = JSON.parse(origRaw);
+  if (!Array.isArray(original) || original.length !== records.length) {
+    throw new Error('Mismatched length vs Original');
+  }
+  const out = records.map((r, i) => {
+    const o = original[i] || {};
+    const sameText = r.Text === o.Text;
+    const fsl = sameText
+      ? (o.FirstSegmentLenght ?? r.FirstSegmentLenght ?? 0)
+      : dp1ComputeFsl(r.Text ?? '');
+    return {
+      Id1: r.Id1, Id2: r.Id2,
+      Flag1: r.Flag1, Flag2: r.Flag2,
+      FirstSegmentLenght: fsl,
+      Text: r.Text ?? '',
+      EmptyRecord: !!r.EmptyRecord,
+    };
+  });
+  const serialized = dp1StringifyRecords(out);
+  await fs.writeFile(doneJson, serialized, 'utf8');
+  try {
+    let meta = {};
+    try { meta = JSON.parse(await fs.readFile(metaFile, 'utf8')); } catch {}
+    let translated = 0;
+    for (let i = 0; i < out.length; i++) {
+      const o = original[i] || {};
+      if (o.EmptyRecord) continue;
+      if ((out[i].Text ?? '') !== (o.Text ?? '')) translated++;
+    }
+    meta.lastSavedAt = Date.now();
+    meta.translatedCount = translated;
+    await fs.writeFile(metaFile, JSON.stringify(meta, null, 2), 'utf8');
+  } catch {}
+  return { bytesWritten: Buffer.byteLength(serialized) };
+}
+
+async function taskDp1CorpusStats(payload) {
+  const { originalJson, doneJson } = payload;
+  const [origRaw, doneRaw] = await Promise.all([
+    fs.readFile(originalJson, 'utf8'),
+    fs.readFile(doneJson, 'utf8'),
+  ]);
+  const original = JSON.parse(origRaw);
+  const done = JSON.parse(doneRaw);
+  if (!Array.isArray(original) || !Array.isArray(done)) {
+    throw new Error('Mes JSON має бути масивом');
+  }
+  const HAS_CYR = /[Ѐ-ӿ]/;
+  let total = 0, translated = 0;
+  let uaWords = 0, enWords = 0, uaChars = 0, enChars = 0;
+  const countWords = (s) => {
+    if (!s) return 0;
+    const t = s.trim();
+    return t ? t.split(/\s+/).filter(Boolean).length : 0;
+  };
+  for (let i = 0; i < original.length; i++) {
+    const o = original[i] || {};
+    if (o.EmptyRecord) continue;
+    total++;
+    const d = done[i] || {};
+    const origText = String(o.Text ?? '');
+    const doneText = String(d.Text ?? '');
+    if (doneText !== origText && HAS_CYR.test(doneText)) {
+      translated++;
+      uaWords += countWords(doneText);
+      uaChars += doneText.length;
+    } else {
+      enWords += countWords(origText);
+      enChars += origText.length;
+    }
+  }
+  const percent = total ? +(translated / total * 100).toFixed(2) : 0;
+  return {
+    files: 1, totalEntries: total, translatedEntries: translated, percent,
+    uaWords, enWords, uaChars, enChars,
+    topFiles: [{ fileName: 'mes_all.json', filePath: doneJson, total, translated, percent }],
+  };
+}
+
+async function taskDp1LintMarkers(payload) {
+  const { originalJson, doneJson } = payload;
+  const [origRaw, doneRaw] = await Promise.all([
+    fs.readFile(originalJson, 'utf8'),
+    fs.readFile(doneJson, 'utf8'),
+  ]);
+  const original = JSON.parse(origRaw);
+  const done = JSON.parse(doneRaw);
+  const violations = [];
+  const tokenRe = /\{[^{}]+\}/g;
+  const norm = (m) => m.replace(/=\d+/g, '=N');
+  for (let i = 0; i < original.length; i++) {
+    const o = original[i] || {};
+    if (o.EmptyRecord) continue;
+    const d = done[i] || {};
+    const oText = String(o.Text ?? '');
+    const dText = String(d.Text ?? '');
+    if (oText === dText) continue;
+    const oTokens = (oText.match(tokenRe) || []).map(norm).sort();
+    const dTokens = (dText.match(tokenRe) || []).map(norm).sort();
+    const oCounts = new Map(); for (const t of oTokens) oCounts.set(t, (oCounts.get(t) || 0) + 1);
+    const dCounts = new Map(); for (const t of dTokens) dCounts.set(t, (dCounts.get(t) || 0) + 1);
+    const missing = [];
+    const extra = [];
+    for (const [t, n] of oCounts) {
+      const dn = dCounts.get(t) || 0;
+      if (dn < n) missing.push(`${t}${n - dn > 1 ? `×${n - dn}` : ''}`);
+    }
+    for (const [t, n] of dCounts) {
+      const on = oCounts.get(t) || 0;
+      if (n > on) extra.push(`${t}${n - on > 1 ? `×${n - on}` : ''}`);
+    }
+    if (missing.length || extra.length) {
+      violations.push({ index: i, id1: o.Id1, id2: o.Id2, missing, extra, original: oText, current: dText });
+    }
+  }
+  return { violations, scannedRows: original.length };
+}
+
+async function taskHbrCorpusStats(payload) {
+  const { originalDir, doneDir } = payload;
+  let entries;
+  try { entries = await fs.readdir(originalDir); }
+  catch { return { ok: false, error: 'no extracted text' }; }
+  const countWords = (s) => {
+    if (!s) return 0;
+    const trimmed = s.trim();
+    if (!trimmed) return 0;
+    return trimmed.split(/\s+/).filter(Boolean).length;
+  };
+  const isSystemRow = (s) => {
+    if (!s) return true;
+    const stripped = String(s).replace(/<[^>]+>/g, '').trim();
+    if (stripped.length === 0) return true;
+    if (/^-+$/.test(stripped)) return true;
+    return false;
+  };
+  let total = 0; let translated = 0; let files = 0;
+  let uaWords = 0; let enWords = 0; let uaChars = 0; let enChars = 0;
+  const topFiles = [];
+  for (const fname of entries) {
+    if (!fname.endsWith('.json')) continue;
+    const origPath = path.join(originalDir, fname);
+    const donePath = path.join(doneDir, fname);
+    let origRaw; let doneRaw;
+    try { origRaw = await fs.readFile(origPath, 'utf8'); } catch { continue; }
+    try { doneRaw = await fs.readFile(donePath, 'utf8'); } catch { doneRaw = origRaw; }
+    try {
+      const orig = JSON.parse(origRaw);
+      const done = JSON.parse(doneRaw);
+      const origList = (orig && orig._List && orig._List.Array) || [];
+      const doneList = (done && done._List && done._List.Array) || [];
+      let fileTotal = 0; let fileTranslated = 0;
+      for (let i = 0; i < doneList.length; i++) {
+        const dTexts = (doneList[i] && doneList[i]._Texts && doneList[i]._Texts.Array) || [];
+        const oTexts = (origList[i] && origList[i]._Texts && origList[i]._Texts.Array) || [];
+        for (let j = 0; j < dTexts.length; j++) {
+          total++; fileTotal++;
+          const d = (dTexts[j] && dTexts[j]._Text) || '';
+          const o = (oTexts[j] && oTexts[j]._Text) || d;
+          const isTranslated = isSystemRow(o) || (d !== o && d.trim().length > 0);
+          if (isTranslated) {
+            translated++; fileTranslated++;
+            uaWords += countWords(d);
+            uaChars += d.length;
+          } else {
+            enWords += countWords(o);
+            enChars += o.length;
+          }
+        }
+      }
+      files++;
+      const niceName = fname.replace(/-_resources_assets_all_[a-f0-9]+--?\d+\.json$/i, '').replace(/\.json$/i, '');
+      topFiles.push({
+        fileName: niceName, filePath: donePath,
+        total: fileTotal, translated: fileTranslated,
+        percent: fileTotal ? +(fileTranslated / fileTotal * 100).toFixed(2) : 0,
+      });
+    } catch {}
+  }
+  topFiles.sort((a, b) => b.total - a.total);
+  return {
+    ok: true,
+    files, totalEntries: total, translatedEntries: translated,
+    percent: total ? +(translated / total * 100).toFixed(2) : 0,
+    uaWords, enWords, uaChars, enChars,
+    topFiles: topFiles.slice(0, 15),
+  };
+}
+
+const MISSING_PLACEHOLDER_RE = /^[A-Z_0-9]+_en$|^V_[A-Z]{2}_\d{3}$/;
+const MISSING_HAS_CYR = /[Ѐ-ӿ]/;
+function missingParseMsgCounts(buf) {
+  let script = buf;
+  if (buf.length >= 4 && (buf[0] !== 0x4D || buf[1] !== 0x53 || buf[2] !== 0x47)) {
+    for (let i = 0; i < Math.min(buf.length - 4, 256); i++) {
+      if (buf[i] === 0x4D && buf[i+1] === 0x53 && buf[i+2] === 0x47 && buf[i+3] === 0x2E) {
+        script = buf.subarray(i);
+        break;
+      }
+    }
+  }
+  if (script.length < 0x40) return { strings: [] };
+  const dv = new DataView(script.buffer, script.byteOffset, script.byteLength);
+  const sto = dv.getUint32(0x10, true);
+  const sb  = dv.getUint32(0x14, true);
+  const sc  = dv.getUint32(0x30, true);
+  const strings = [];
+  for (let i = 0; i < sc; i++) {
+    const off = dv.getInt32(sto + i * 4, true);
+    let end = sb + off;
+    if (end < 0 || end > script.length) { strings.push(''); continue; }
+    while (end < script.length && script[end] !== 0) end++;
+    strings.push(Buffer.from(script.subarray(sb + off, end)).toString('utf8'));
+  }
+  return { strings };
+}
+async function taskMissingCorpusStatsQuick(payload) {
+  const { originalDir, doneDir } = payload;
+  let total = 0, translated = 0;
+  let files = 0;
+  let entries;
+  try { entries = await fs.readdir(originalDir); }
+  catch { return { total: 0, translated: 0, files: 0, hasData: false }; }
+  for (const fn of entries) {
+    if (!/\.dat$/i.test(fn)) continue;
+    files++;
+    try {
+      const origBuf = await fs.readFile(path.join(originalDir, fn));
+      const orig = missingParseMsgCounts(origBuf);
+      let doneBuf = null;
+      try { doneBuf = await fs.readFile(path.join(doneDir, fn)); } catch {}
+      const done = doneBuf ? missingParseMsgCounts(doneBuf) : orig;
+      for (let i = 0; i < orig.strings.length; i++) {
+        const o = orig.strings[i] || '';
+        if (!o || MISSING_PLACEHOLDER_RE.test(o)) continue;
+        total++;
+        const d = (done.strings[i] || '');
+        if (d !== o && d.trim().length > 0 && MISSING_HAS_CYR.test(d)) translated++;
+      }
+    } catch {}
+  }
+  return { total, translated, files, hasData: files > 0 };
+}
+
 // ── Dispatcher ──────────────────────────────────────────────────────────
 parentPort.on('message', async (msg) => {
   const id = msg && msg.id;
@@ -1095,7 +1347,7 @@ parentPort.on('message', async (msg) => {
     const payload = msg && msg.payload;
     let result;
     if (type === 'build-tm') {
-      result = await taskBuildTm(payload.dp2Folder, payload.dp1EngPath);
+      result = await taskBuildTm(payload.dp2Folder);
     } else if (type === 'search-all') {
       result = await taskSearchAll(payload.folder, payload.opts);
     } else if (type === 'corpus-stats') {
@@ -1120,6 +1372,18 @@ parentPort.on('message', async (msg) => {
       result = await taskTglPack(payload.binPath, payload.ua);
     } else if (type === 'tgl-font-parse') {
       result = await taskTglFontParse(payload.jsonPath);
+    } else if (type === 'dp1-text-load') {
+      result = await taskDp1TextLoad(payload);
+    } else if (type === 'dp1-text-save') {
+      result = await taskDp1TextSave(payload);
+    } else if (type === 'dp1-corpus-stats') {
+      result = await taskDp1CorpusStats(payload);
+    } else if (type === 'dp1-lint-markers') {
+      result = await taskDp1LintMarkers(payload);
+    } else if (type === 'hbr-corpus-stats') {
+      result = await taskHbrCorpusStats(payload);
+    } else if (type === 'missing-corpus-stats-quick') {
+      result = await taskMissingCorpusStatsQuick(payload);
     } else {
       throw new Error('Unknown task type: ' + type);
     }

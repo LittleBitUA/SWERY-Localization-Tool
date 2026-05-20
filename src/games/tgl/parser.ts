@@ -35,7 +35,19 @@ export function flattenTgl(records: TglRecord[], uaTexts?: string[]): TglEntry[]
   }));
 }
 
+// «Системний» рядок — placeholder-прочерк (`-`, `--`, `---` тощо) або
+// тільки Unity-теги. Гра ставить такі як no-op-розділювачі — їх неможливо
+// перекласти, тому рахуємо як готові одразу.
+export function isTglSystemRow(original: string): boolean {
+  if (!original) return true;
+  const stripped = original.replace(/<[^>]+>/g, "").trim();
+  if (stripped.length === 0) return true;
+  if (/^-+$/.test(stripped)) return true;
+  return false;
+}
+
 export function isTglTranslated(e: TglEntry): boolean {
+  if (isTglSystemRow(e.original)) return true;
   if (!e.ua || e.ua === e.original) return false;
   return HAS_CYR.test(e.ua);
 }

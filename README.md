@@ -2,10 +2,10 @@
 
 <img src="ico.png" alt="Deadly Premonition Localization Tool" width="96" height="96" />
 
-# Deadly Premonition Localization Tool
+# SWERY Localization Tool
 
-**Універсальний редактор українізації для серії *Deadly Premonition* і *The Good Life*** &nbsp;·&nbsp;
-**A unified Ukrainian-localization editor for the *Deadly Premonition* series and *The Good Life***
+**Універсальний редактор українізації для ігор Swery / White Owls** &nbsp;·&nbsp;
+**A unified Ukrainian-localization editor for Swery / White Owls games**
 
 [![Latest Release](https://img.shields.io/github/v/release/LittleBitUA/Deadly-Premonition-Localization-Tool?style=flat-square&color=58a6ff&label=release)](https://github.com/LittleBitUA/Deadly-Premonition-Localization-Tool/releases/latest)
 [![Downloads](https://img.shields.io/github/downloads/LittleBitUA/Deadly-Premonition-Localization-Tool/total?style=flat-square&color=3fb950)](https://github.com/LittleBitUA/Deadly-Premonition-Localization-Tool/releases)
@@ -24,12 +24,13 @@
 
 ## 🇺🇦 Українська
 
-**Deadly Premonition Localization Tool** — настільний редактор з відкритим кодом для українізації трьох ігор Swery / White Owls: **Deadly Premonition** (Director's Cut), **Deadly Premonition 2: A Blessing in Disguise** та **The Good Life**. Один інструмент замість п'яти — від редагування JSON-дампів до запаковки готового патчу, з вбудованим редактором шрифтів і текстур.
+**SWERY Localization Tool** — настільний редактор з відкритим кодом для українізації **п'яти** ігор Swery Suehiro / White Owls: **Deadly Premonition** (Director's Cut), **Deadly Premonition 2: A Blessing in Disguise**, **The Good Life**, **Hotel Barcelona** і **THE MISSING: J.J. Macfield and the Island of Memories**. Один інструмент замість п'яти — від редагування JSON-дампів і бінарних `MSG.*` контейнерів до запаковки готового патчу, з вбудованим редактором шрифтів, текстур і per-string box-sizes.
 
 ### ✨ Можливості
 
 **Робота з текстом**
-- 🎮 **Три гри в одному хабі**: Deadly Premonition (DPMsgTool by MrIkso), Deadly Premonition 2 (UABEA-формат) і **The Good Life** (власний бінарний формат `loc/English`). Тематичний головний екран у стилі FBI-дозьє з лічильниками прогресу.
+- 🎮 **П'ять ігор в одному хабі**: Deadly Premonition (DPMsgTool by MrIkso), Deadly Premonition 2 (UABEA-формат), **The Good Life** (власний бінарний `loc/English`), **Hotel Barcelona** (Unity Addressables bundle) і **THE MISSING** (`MSG.*` payload з length-table). Тематичний головний екран у стилі FBI-дозьє з лічильниками прогресу для кожної гри.
+- 🎯 **THE MISSING — повний цикл**: парсинг/збірка `msg*en.dat` із збереженням offset-table, length-table з захистом від int16-overflow, окремий редактор `IMHeightInfo` (box-sizes) із **Auto-fit** алгоритмом (ratio × padding, idempotent проти повторних apply), на льоту lint placeholder/voice-key рядків.
 - 💾 **Запаковка одним кліком**: для DP1 — підстановка кириличних гліфів і `DPMsgTool.exe from-json`; для DP2 — `import-to-assets.ps1` через PowerShell 7 + UABEA. Готовий файл одразу у директорії гри.
 - 🧠 **Пам'ять перекладів (TM)** з обох корпусів — cross-search DP1↔DP2, Jaccard fuzzy. **Bulk TM auto-fill (1:1)** — авто-заповнення неперекладених рядків з exact-match source (без substring-замін).
 - 📖 **Спільний глосарій** + **перевірка термінологічної консистентності** — всюди де `src` зустрічається, `tgt` має бути присутній.
@@ -44,6 +45,25 @@
 - 🔤 **DP1 glyph audit**: позначає символи поза мапою підміни (74 гліфи) у редакторі + загальний аудит — production-баги до запаковки.
 - 📺 **In-game preview**: рендерить активний рядок у стилі реальних субтитрів DP2 — використовується **справжній шрифт гри** (`FOT-NewCinemaAStd-D`), з курсивом `[i]…[/i]`, плейсхолдер-чіпами і ▽-маркером.
 - 📊 **Огляд готовності корпусу**: підсумок % завершеності, UA/EN слова й символи, топ-15 файлів за обсягом.
+
+**Hotel Barcelona**
+- 🏨 **Повний цикл**: extract → edit → repack для Unity Addressables-бандла (`_resources_assets_all_<hash>.bundle`). Auto-resolve хешу при patching гри (хеш міняється з кожним апдейтом).
+- 🛠️ **Patch migration**: коли White Owls випустили новий патч, програма автоматично переносить переклади зі старого хешу на новий + банер у редакторі попереджує перед збереженням якщо bundle оновлено.
+- 🛡️ **Integrity check**: перевірка що кількість `_Text` у raw збігається з items.length перед записом — захист від silent byte-shift корупції коли структура змінилася між extract і save.
+
+**THE MISSING**
+- 📐 **Per-string box-sizes editor**: GUI для редагування `IMHeightInfo` MonoBehaviour (W × H × 4 language slots × тисячі рядків). Side-by-side preview + Auto-fit з multiplier-слайдером (×1.00 — ×1.50), мін. запас у пікселях, idempotent reference-based ratio (не наростає при повторному apply).
+- 🔐 **int16-overflow guard**: довжина рядка у `MSG.*` length-table — signed int16 (max 32767 байтів). Програма ловить overflow при build і кидає toast з кнопкою "Перейти →" що стрибає на проблемний рядок — замість silent `len & 0xFFFF` корупції.
+- 🎨 **MsgEnum-based стабільні ID**: глобальний enum `msgBase × 10000 + i` — у combined.txt і у logs ID не зсувається при росту/скороченні рядків.
+
+**Спільне для всіх редакторів**
+- 🧊 **Glassmorphic update banner**: новий стиль (macOS-like) — `backdrop-blur` + матове скло з рамкою-highlight. Прогрес-бар скачування + швидкість.
+- 🟢 **SaveStatusBadge у Header**: кольорова крапка показує стан файла (⚪ збережено, 🟡 dirty, 🟢 autosaved, 🔴 помилка) з tooltip-ом + ім'я файла.
+- 📏 **Monaco font-size**: `[-] [size] [+]` у footer редактора, синхронізовано між DP2/HBR/MISSING/DP1.
+- 🔀 **Diff EN↔UA modal**: Monaco DiffEditor у side-by-side fullscreen — миттєво видно зайві крапки, втрачені теги, різницю whitespace.
+- 📊 **EditorFooter**: статус-бар з лічильниками `Видно / Усього / Перекладено % / Позиція / Незбережено` для DP1/HBR/MISSING.
+- 🦺 **Race-free saves**: per-path write-queue у Electron main — `saveFile` + `autosave` не race-аться на створенні `.bak`.
+- 🚪 **Path-traversal guard + settings allow-list**: renderer не може писати у системні директорії; `dp2:save-settings` приймає тільки whitelisted-ключі.
 
 **Робота зі шрифтами (DP2)**
 - 🔠 **Font workshop**: окрема вкладка "Шрифти" на DP2-картці — експорт 7 ассетних шрифтів (`FOT-NewRodinProN-DB`, `FOT-NewCezannePro-DB`, `FOT-NewCezannePro-M`, `FOT-NewCinemaAStd-D`, `FOT-Wentworth`, `FOT-UDKakugo_LargePro-R`, `FOT-MatisseProN-UB`) з `resources.assets` і `sharedassets0.assets` як TTF/OTF, заміна на свій + repack у відповідний `.assets` файл із `.bak`.
@@ -111,12 +131,13 @@ npm run build:exe    # Portable .exe → release/
 
 ## 🇬🇧 English
 
-**Deadly Premonition Localization Tool** is an open-source desktop editor that bundles the entire translation workflow for three Swery / White Owls titles: **Deadly Premonition** (Director's Cut), **Deadly Premonition 2: A Blessing in Disguise** and **The Good Life**. One app instead of five — from editing JSON dumps to packing the final patch, with a built-in font and texture workshop.
+**SWERY Localization Tool** is an open-source desktop editor that bundles the entire translation workflow for **five** Swery Suehiro / White Owls titles: **Deadly Premonition** (Director's Cut), **Deadly Premonition 2: A Blessing in Disguise**, **The Good Life**, **Hotel Barcelona**, and **THE MISSING: J.J. Macfield and the Island of Memories**. One app instead of five — from editing JSON dumps and binary `MSG.*` containers to packing the final patch, with built-in font, texture and per-string box-size editors.
 
 ### ✨ Features
 
 **Text workflow**
-- 🎮 **Three games in one hub**: Deadly Premonition (via [DPMsgTool by MrIkso](https://github.com/MrIkso/DPMsgTool)), Deadly Premonition 2 (UABEA format) and **The Good Life** (custom binary `loc/English` container). Themed FBI-dossier home screen with progress counters.
+- 🎮 **Five games in one hub**: Deadly Premonition (via [DPMsgTool by MrIkso](https://github.com/MrIkso/DPMsgTool)), Deadly Premonition 2 (UABEA format), **The Good Life** (custom binary `loc/English` container), **Hotel Barcelona** (Unity Addressables bundle), and **THE MISSING** (`MSG.*` payload with length-table + IMHeightInfo). Themed FBI-dossier home screen with per-game progress counters.
+- 🎯 **THE MISSING — full cycle**: parse/build `msg*en.dat` with stable offset-table, length-table with int16-overflow protection, dedicated `IMHeightInfo` (box-sizes) editor with **Auto-fit** algorithm (ratio × padding, idempotent against repeated apply), on-the-fly lint for placeholder / voice-key rows.
 - 💾 **One-click packing**: DP1 — cyrillic glyph substitution + `DPMsgTool.exe from-json`; DP2 — `import-to-assets.ps1` via PowerShell 7 + UABEA. Output goes straight into the game directory.
 - 🧠 **Translation Memory (TM)** across both corpora — DP1↔DP2 cross-search with Jaccard fuzzy match. **Bulk TM auto-fill (1:1)** — auto-applies exact source matches (no substring guesswork).
 - 📖 **Shared glossary** + **terminology consistency check**: where `src` appears, `tgt` must be present.
@@ -131,6 +152,25 @@ npm run build:exe    # Portable .exe → release/
 - 🔤 **DP1 glyph audit**: flags characters outside the 74-glyph substitution map in the editor + corpus-wide audit — catches production bugs before packing.
 - 📺 **In-game preview**: renders the active row in DP2 subtitle style — uses the **real game font** (`FOT-NewCinemaAStd-D`) with italic `[i]…[/i]`, placeholder chips and ▽ marker.
 - 📊 **Corpus readiness overview**: % completion, UA/EN word & char counts, top-15 files by volume.
+
+**Hotel Barcelona**
+- 🏨 **Full cycle**: extract → edit → repack for the Unity Addressables bundle (`_resources_assets_all_<hash>.bundle`). Auto-resolves hash when patching the game (hash changes with each update).
+- 🛠️ **Patch migration**: when White Owls ship a new patch, the toolkit ports translations from the old hash to the new one automatically + an editor banner warns before saving if the bundle changed.
+- 🛡️ **Integrity check**: verifies that `_Text` count in raw matches `items.length` before write — protects against silent byte-shift corruption when bundle structure changes between extract and save.
+
+**THE MISSING**
+- 📐 **Per-string box-sizes editor**: GUI for editing the `IMHeightInfo` MonoBehaviour (W × H × 4 language slots × thousands of rows). Side-by-side preview + Auto-fit with a multiplier slider (×1.00 — ×1.50), min-padding in pixels, idempotent reference-based ratio (no runaway growth on repeated apply).
+- 🔐 **int16-overflow guard**: row length in the `MSG.*` length-table is a signed int16 (max 32767 bytes). The toolkit catches overflows at build time and surfaces a toast with a "Jump →" action that lands the editor on the offending row — instead of the silent `len & 0xFFFF` corruption found in older tools.
+- 🎨 **MsgEnum-based stable IDs**: a global enum `msgBase × 10000 + i` — IDs in combined.txt and logs no longer shift when strings grow or shrink.
+
+**Cross-editor essentials**
+- 🧊 **Glassmorphic update banner**: macOS-like style — `backdrop-blur` with a highlighted-edge frame. Download speed + percent shown live.
+- 🟢 **SaveStatusBadge in Header**: a colour dot reflects file state (⚪ saved, 🟡 dirty, 🟢 autosaved, 🔴 error) with a tooltip + filename.
+- 📏 **Monaco font-size**: `[-] [size] [+]` in editor footer, synced across DP2 / HBR / MISSING / DP1.
+- 🔀 **Diff EN↔UA modal**: Monaco DiffEditor full-screen side-by-side — instantly catch extra dots, missing tags, whitespace drift.
+- 📊 **EditorFooter**: status bar with `Shown / Total / Translated % / Position / Unsaved` counters across DP1/HBR/MISSING.
+- 🦺 **Race-free saves**: per-path write queue in Electron main — `saveFile` + `autosave` never race on `.bak` creation.
+- 🚪 **Path-traversal guard + settings allow-list**: the renderer cannot write into system directories; `dp2:save-settings` accepts only whitelisted keys.
 
 **Font workshop (DP2)**
 - 🔠 **Font workshop**: dedicated "Fonts" tab on the DP2 card — export 7 asset fonts (`FOT-NewRodinProN-DB`, `FOT-NewCezannePro-DB`, `FOT-NewCezannePro-M`, `FOT-NewCinemaAStd-D`, `FOT-Wentworth`, `FOT-UDKakugo_LargePro-R`, `FOT-MatisseProN-UB`) from `resources.assets` and `sharedassets0.assets` as TTF/OTF, replace with your own + repack into the matching `.assets` file with `.bak`.
@@ -198,7 +238,10 @@ Requires Node.js 18+ and Windows for the portable `.exe` artifact.
 
 ## 📚 Modding notes
 
-- [`docs/TGL-modding-notes.txt`](docs/TGL-modding-notes.txt) — reverse-engineering write-up for The Good Life: text container layout (`loc/English`), font bundle structure (`c0718fc478f6943d`), the `flipped` + negative-`uv.height` convention that catches every home-grown tool, atlas write-back pipeline, 64-bit PathID precision pitfalls, and Unity 2020.1.17f1 specifics. Useful even if you don't use this app — written for anyone building their own modding tools.
+- [`docs/TGL-modding-notes.txt`](docs/TGL-modding-notes.txt) — reverse-engineering write-up for The Good Life: text container layout (`loc/English`), font bundle structure (`c0718fc478f6943d`), the `flipped` + negative-`uv.height` convention that catches every home-grown tool, atlas write-back pipeline, 64-bit PathID precision pitfalls, and Unity 2020.1.17f1 specifics.
+- [`docs/THE-MISSING-modding-notes.txt`](docs/THE-MISSING-modding-notes.txt) — full write-up for THE MISSING: the `MSG.*` payload layout, length-table semantics, the int16 overflow trap that breaks Cyrillic translations, `IMHeightInfo` MonoBehaviour box-sizes structure, the 4-language slot convention, Auto-fit algorithm with idempotency notes, write-back pipeline through UABEANext, six common pitfalls (PathID drift, CR/LF, NULL-pad, section 2, UABEA Edit Asset vs Edit Data, antivirus locks), and why we did NOT reuse TranslationFramework2 source code.
+
+Both write-ups are useful even if you don't use this app — they're written for anyone building their own modding tools.
 
 ## 🧱 Tech Stack
 

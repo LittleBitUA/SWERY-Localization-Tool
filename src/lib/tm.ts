@@ -1,8 +1,8 @@
-// Translation Memory: збирає перекладені пари EN→UA з обох корпусів (DP2 + DP1)
-// у Node worker_thread, потім зберігає в renderer-кеші. Збіги шукаються вже
+// Translation Memory: збирає перекладені пари EN→UA з DP2-корпусу у Node
+// worker_thread, потім зберігає в renderer-кеші. Збіги шукаються вже
 // в-пам'яті у renderer.
 
-export type TmSource = "dp2" | "dp1";
+export type TmSource = "dp2";
 
 export interface TmEntry {
   source: TmSource;
@@ -21,13 +21,12 @@ export interface TmMatch {
 
 interface CacheKey {
   dp2Folder: string | null;
-  dp1EngPath: string | null;
 }
 
 let cache: { key: CacheKey; entries: TmEntry[] } | null = null;
 
 function sameKey(a: CacheKey, b: CacheKey) {
-  return a.dp2Folder === b.dp2Folder && a.dp1EngPath === b.dp1EngPath;
+  return a.dp2Folder === b.dp2Folder;
 }
 
 function tokenize(s: string): Set<string> {
@@ -50,12 +49,11 @@ function jaccard(a: Set<string>, b: Set<string>): number {
 
 export async function buildTm(
   dp2Folder: string | null,
-  dp1EngPath: string | null,
   force = false
 ): Promise<TmEntry[]> {
-  const key: CacheKey = { dp2Folder, dp1EngPath };
+  const key: CacheKey = { dp2Folder };
   if (!force && cache && sameKey(cache.key, key)) return cache.entries;
-  const raw = await window.dp2.buildTmWorker({ dp2Folder, dp1EngPath });
+  const raw = await window.dp2.buildTmWorker({ dp2Folder });
   const entries: TmEntry[] = raw.map((r) => ({
     source: r.source,
     src: r.src,

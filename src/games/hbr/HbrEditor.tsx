@@ -1,9 +1,85 @@
-import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { memo, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { useT } from "../../lib/i18n";
 import { alert as showAlert } from "../../lib/dialogs";
-import { applyCombinedToParsed, applyHbrEdits, formatHbrCombinedTxt, parseHbrCombinedTxt, parseHbrJson, validatePlaceholders, type HbrParsedFile, type HbrTextItem } from "./parser";
+import { applyCombinedToParsed, applyHbrEdits, formatHbrCombinedTxt, isHbrSystemRow, parseHbrCombinedTxt, parseHbrJson, validatePlaceholders, type HbrParsedFile, type HbrTextItem } from "./parser";
+import { EditorFooter } from "../../components/EditorFooter";
+import { LangToggle } from "../../components/LangToggle";
 import { confirm as showConfirm } from "../../lib/dialogs";
 import hbrHero from "../../ui-v2/assets/hbr-hero.jpg";
+import { HbrItemEditor } from "./HbrItemEditor";
+import { CorpusStatsModal } from "../../components/CorpusStatsModal";
+import { readStatusFile, writeStatusFile, pruneEntry, type StatusFile, type StatusKind } from "../../lib/status";
+import { HbrFindReplaceModal } from "./HbrFindReplaceModal";
+
+// HbrRow — top-level memo. Раніше рядок жив inline у `filteredItems.map` і
+// перерендеровувався на кожному keystroke по всьому списку (1000+ DOM-вузлів).
+// Тепер при оновленні одного рядка React міняє reference тільки для змінено-
+// го `it`, інші HbrRow пропускають render через memo-порівняння пропсів.
+interface HbrRowProps {
+  it: HbrTextItem;
+  realIdx: number;
+  active: boolean;
+  // Статус і закладка з sidecar — додатковий візуал поверх default border.
+  status?: "draft" | "review" | "approved";
+  bookmark?: boolean;
+  onSelect: (realIdx: number) => void;
+  onContextMenu: (e: React.MouseEvent, realIdx: number) => void;
+}
+const HbrRow = memo(function HbrRow({ it, realIdx, active, status, bookmark, onSelect, onContextMenu }: HbrRowProps) {
+  const isSystem = isHbrSystemRow(it.original);
+  const isSame = it.current === it.original;
+  const isEmpty = !it.current || it.current.trim().length === 0;
+  // System-row (тільки теги/прочерки) рахуємо як «перекладений» автоматично.
+  const isTranslated = isSystem || (!isSame && !isEmpty);
+  // Border підсвічує лише ПРОБЛЕМНІ або ЯВНО-ПОМІЧЕНІ рядки, щоб око
+  // ловило саме їх. Звичайний translated default (більшість рядків) — без
+  // border, інакше всі рядки виглядають однаково зеленими і індикатор
+  // marketвсе нічого.
+  //   approved → 3px solid success
+  //   review   → 3px solid accent
+  //   draft    → 3px dashed warning
+  //   empty    → 2px solid danger
+  //   isSame (не торкнули) → 2px solid warning
+  //   system / translated default → без border (transparent)
+  const borderClass = status === "approved"
+    ? "border-l-[3px] border-l-[var(--success)]"
+    : status === "review"
+      ? "border-l-[3px] border-l-[var(--accent)]"
+      : status === "draft"
+        ? "border-l-[3px] border-l-dashed border-l-[var(--warning,#d97706)]"
+        : isEmpty
+          ? "border-l-2 border-l-[var(--danger)]"
+          : !isTranslated
+            ? "border-l-2 border-l-[var(--warning,#d97706)]"
+            : "border-l-2 border-l-transparent";
+  return (
+    <tr
+      data-hbr-row={`${it.textId}::${it.variantIdx}`}
+      className={`border-b border-[var(--border-soft)] align-top cursor-pointer ${borderClass} ${
+        active ? "bg-[var(--accent)]/15" : "hover:bg-[var(--row-hover)]"
+      }`}
+      // CSS-level virtualization: для off-screen рядків браузер skip-ує
+      // layout+paint, а contain-intrinsic-size резервує висоту, щоб скрол
+      // не стрибав. ~5000 рядків HBR-файлу — 2-3x швидше за прямий render.
+      style={{
+        contentVisibility: "auto",
+        containIntrinsicSize: "auto 32px",
+      }}
+      onClick={() => onSelect(realIdx)}
+      onContextMenu={(e) => onContextMenu(e, realIdx)}
+    >
+      <td className="px-2 py-1 font-mono text-[11px] text-[var(--text-muted)]">
+        {bookmark && <span className="mr-1 text-[var(--accent)]" title="bookmark">🔖</span>}
+        {it.textId}
+      </td>
+      <td className="px-2 py-1 font-mono text-[11px] text-[var(--text-faint)] tabular-nums">{it.variantIdx}</td>
+      <td className="px-2 py-1 text-[var(--text-muted)] whitespace-pre-wrap break-words">{it.original}</td>
+      <td className="px-2 py-1 whitespace-pre-wrap break-words text-[var(--text-muted)]">
+        {it.current || <span className="text-[var(--text-faint)] italic">—</span>}
+      </td>
+    </tr>
+  );
+});
 
 interface Props {
   onHome: () => void;
@@ -188,7 +264,23 @@ export function HbrEditor({ onHome }: Props) {
   const [activeFile, setActiveFile] = useState<FileItem | null>(null);
   const [parsed, setParsed] = useState<HbrParsedFile | null>(null);
   const [dirty, setDirty] = useState(false);
+  // Patch-міграція: bundle на диску має новий hash → пропонуємо перемігрувати,
+  // зберігши переклади. Заповнюється на mount через hbrPatchMigrateCheck.
+  const [migrateInfo, setMigrateInfo] = useState<{
+    needed: boolean; newBundle: string; oldBundle: string; metaItemsCount: number; doneCount: number;
+  } | null>(null);
+  const [migrating, setMigrating] = useState(false);
   const [search, setSearch] = useState("");
+  // `search` оновлюється з debounce 150мс — інакше на 5000-рядкових файлах
+  // кожне натискання клавіші triger'ить filter+ререндер всієї таблиці
+  // і ввід «лагає». Власне поле input живе в `searchDraft` — миттєво
+  // друкує, дебаунс лише накочує реальний фільтр.
+  const [searchDraft, setSearchDraft] = useState("");
+  useEffect(() => {
+    if (searchDraft === search) return;
+    const id = setTimeout(() => setSearch(searchDraft), 150);
+    return () => clearTimeout(id);
+  }, [searchDraft, search]);
   const [progressLines, setProgressLines] = useState<string[]>([]);
   const [extractedCount, setExtractedCount] = useState(0);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
@@ -207,6 +299,41 @@ export function HbrEditor({ onHome }: Props) {
   type CtxRow = { kind: "row"; x: number; y: number; itemIndex: number };
   type CtxFile = { kind: "file"; x: number; y: number; file: FileItem };
   const [ctxMenu, setCtxMenu] = useState<CtxRow | CtxFile | null>(null);
+  // Якщо встановлено — при відкритті файлу скролимо до цього рядка
+  // (використовується глобальним пошуком). Має бути ОГОЛОШЕНО ПЕРЕД
+  // useEffect нижче, інакше TDZ під час mount.
+  const [pendingScrollTextId, setPendingScrollTextId] = useState<{ textId: string; variantIdx: number } | null>(null);
+  // Індекс активного рядка в `parsed.items` — для Monaco-редактора у правому
+  // sidebar (DP2-style). null = редактор сховано, працюємо лише з таблицею.
+  const [activeItemIndex, setActiveItemIndex] = useState<number | null>(null);
+  const [statsOpen, setStatsOpen] = useState(false);
+  // Sidecar `Documents\…\HBR\Text\Done\.hbr-status.json` зберігає статуси
+  // (draft/review/approved) і закладки для рядків. Ключ — стабільний:
+  // `<filename>::<textId>::<variantIdx>`. Sidecar не зачіпає ігрові JSON.
+  const [statusFile, setStatusFile] = useState<StatusFile>({ version: 1, entries: {} });
+  const statusPathRef = useRef<string | null>(null);
+  const statusKey = useCallback((fileName: string, textId: string, variantIdx: number) =>
+    `${fileName}::${textId}::${variantIdx}`, []);
+  // Гарна модалка результату Pack (замінює простий showAlert).
+  const [packSuccess, setPackSuccess] = useState<null | {
+    applied: number;
+    failed: number;
+    totalFields: number;
+    bundlePath?: string;
+    bundleSize?: number;
+    bakPath?: string;
+    logPath?: string;
+    failedRows?: Array<{ name: string; reason: string }>;
+  }>(null);
+  // Модалка результату «Імпорт TXT»: показує скільки додано, загальну
+  // готовність проєкту та конкретні файли (з кількістю оновлених записів).
+  const [importDone, setImportDone] = useState<null | {
+    records: number;
+    files: Array<{ name: string; updated: number }>;
+    errors: string[];
+    overall: { translated: number; total: number };
+  }>(null);
+  const [findReplaceOpen, setFindReplaceOpen] = useState(false);
   useEffect(() => {
     if (!ctxMenu) return;
     const close = () => setCtxMenu(null);
@@ -279,6 +406,60 @@ export function HbrEditor({ onHome }: Props) {
   }
   const triedRef = useRef(false);
 
+  // Status-sidecar: завантажуємо при ready (через hbrTextPrepStatus → doneDir).
+  useEffect(() => {
+    if (phase !== "ready") return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const s = await window.dp2.hbrTextPrepStatus();
+        if (cancelled) return;
+        if (!s.doneDir) return;
+        const sidecar = s.doneDir.replace(/[\\/]$/, "") + (s.doneDir.includes("\\") ? "\\" : "/") + ".hbr-status.json";
+        statusPathRef.current = sidecar;
+        const f = await readStatusFile(sidecar);
+        if (!cancelled) setStatusFile(f);
+      } catch { /* silent */ }
+    })();
+    return () => { cancelled = true; };
+  }, [phase]);
+
+  // Debounced save sidecar — 500мс після останньої зміни.
+  useEffect(() => {
+    if (!statusPathRef.current) return;
+    const id = setTimeout(() => {
+      const path = statusPathRef.current;
+      if (!path) return;
+      writeStatusFile(path, statusFile).catch(() => {});
+    }, 500);
+    return () => clearTimeout(id);
+  }, [statusFile]);
+
+  // Helpers — оновлюємо запис в map. Якщо в результаті він порожній,
+  // pruneEntry викидає його (щоб sidecar не пухнув).
+  function setRowStatus(realIdx: number, status: StatusKind | undefined) {
+    if (!parsed || !activeFile) return;
+    const it = parsed.items[realIdx];
+    if (!it) return;
+    const key = statusKey(activeFile.file, it.textId, it.variantIdx);
+    setStatusFile((f) => {
+      const cur = f.entries[key] ?? {};
+      const next: StatusFile = { ...f, entries: { ...f.entries, [key]: { ...cur, status } } };
+      return pruneEntry(next, key);
+    });
+  }
+  function toggleRowBookmark(realIdx: number) {
+    if (!parsed || !activeFile) return;
+    const it = parsed.items[realIdx];
+    if (!it) return;
+    const key = statusKey(activeFile.file, it.textId, it.variantIdx);
+    setStatusFile((f) => {
+      const cur = f.entries[key] ?? {};
+      const next: StatusFile = { ...f, entries: { ...f.entries, [key]: { ...cur, bookmark: cur.bookmark ? undefined : true } } };
+      return pruneEntry(next, key);
+    });
+  }
+
   // Live прогрес.
   useEffect(() => {
     const w = window.dp2 as unknown as { onHbrTextPrepProgress?: (cb: (l: string) => void) => () => void };
@@ -298,6 +479,24 @@ export function HbrEditor({ onHome }: Props) {
     return () => { if (typeof off === "function") off(); };
   }, []);
 
+  // Скрол до рядка з global-search hit після того, як файл парситься.
+  useEffect(() => {
+    if (!parsed || !pendingScrollTextId) return;
+    const sel = `[data-hbr-row="${CSS.escape(pendingScrollTextId.textId)}::${pendingScrollTextId.variantIdx}"]`;
+    const tryScroll = () => {
+      const el = document.querySelector(sel) as HTMLElement | null;
+      if (el) {
+        el.scrollIntoView({ block: "center", behavior: "smooth" });
+        el.style.outline = "2px solid var(--accent)";
+        setTimeout(() => { el.style.outline = ""; }, 1600);
+        setPendingScrollTextId(null);
+      }
+    };
+    // Чекаємо тік щоб React відрендерив <tbody>.
+    const id = setTimeout(tryScroll, 50);
+    return () => clearTimeout(id);
+  }, [parsed, pendingScrollTextId]);
+
   // Прогрес паку у гру — той же файл-лог + live.
   useEffect(() => {
     const w = window.dp2 as unknown as { onHbrPackProgress?: (cb: (l: string) => void) => () => void };
@@ -306,10 +505,49 @@ export function HbrEditor({ onHome }: Props) {
     return () => { if (typeof off === "function") off(); };
   }, []);
 
+  async function reExtractFromGame() {
+    const ok = await showConfirm(
+      t("hbr.reextract.title"),
+      t("hbr.reextract.body"),
+      { tone: "danger", okLabel: t("hbr.reextract.ok") }
+    );
+    if (!ok) return;
+    try {
+      // Видаляємо meta — статус повернеться у "ні original'у", це примусить
+      // повторний extract + mirror, без видалення Done/ (там переклади).
+      const w = window.dp2 as unknown as {
+        hbrOpenFolder?: (which: string) => Promise<{ ok: boolean; path?: string }>;
+        hbrTextPrepExtract: () => Promise<{ ok: boolean; error?: string }>;
+        hbrTextPrepMirror: (p: { overwrite?: boolean }) => Promise<{ ok: boolean; error?: string }>;
+      };
+      setPhase("preparing");
+      setStep("tool", "skipped");
+      setStep("catalog", "skipped");
+      setStep("extract", "running");
+      setExtractedCount(0);
+      setProgressLines([]);
+      const r = await w.hbrTextPrepExtract();
+      if (!r.ok) { setErrorMsg(r.error || "extract fail"); setPhase("error"); return; }
+      setStep("extract", "done");
+      setStep("mirror", "running");
+      const mr = await w.hbrTextPrepMirror({ overwrite: false });
+      if (!mr.ok) { setErrorMsg(mr.error || "mirror fail"); setPhase("error"); return; }
+      setStep("mirror", "done");
+      await refreshFiles();
+      setPhase("ready");
+    } catch (e: unknown) {
+      setErrorMsg(String((e as Error)?.message ?? e));
+      setPhase("error");
+    }
+  }
+
   async function refreshFiles() {
     const w = window.dp2 as unknown as { hbrTextList: () => Promise<{ ok: boolean; items: FileItem[] }> };
     const r = await w.hbrTextList();
-    if (r.ok) setFiles(r.items);
+    if (!r.ok) return;
+    // Подвійний захист: відсіюємо dot-файли (`.hbr-status.json`,
+    // `.preimport.bak.json` тощо), якщо їх не відсіяв main-process.
+    setFiles(r.items.filter((it) => !it.file.startsWith(".")));
   }
 
   async function runFlow() {
@@ -324,18 +562,30 @@ export function HbrEditor({ onHome }: Props) {
         hbrCatalogStatus: () => Promise<{ ok: boolean; hasCatalog?: boolean; hasOld?: boolean; error?: string }>;
         hbrCatalogPatch: () => Promise<{ ok: boolean; alreadyPatched?: boolean; error?: string }>;
       };
-      setPhase("preparing");
+      // Status-перевірка перед будь-яким UI — якщо ВСЕ вже зроблено
+      // (originalCount > 0 і doneCount = originalCount), одразу відкриваємо
+      // редактор, без блимання майстра з трьома галочками.
       let s = await w.hbrTextPrepStatus();
       setStatus(s);
       if (!s.ok) { setErrorMsg(s.error || "status fail"); setPhase("error"); return; }
+      const fullyReady =
+        !!s.originalCount && (s.doneCount ?? 0) >= (s.originalCount ?? 0);
+      if (fullyReady) {
+        setSteps({ tool: "skipped", catalog: "skipped", extract: "skipped", mirror: "skipped" });
+        await refreshFiles();
+        setPhase("ready");
+        return;
+      }
 
-      // Якщо текст уже витягнуто з минулого запуску — позначаємо перші три
-      // кроки як skipped і одразу йдемо у mirroring/ready.
+      setPhase("preparing");
+
+      // Якщо текст уже витягнуто, але Done не повний (рідкісний випадок) —
+      // переходимо одразу на крок mirror.
       if (s.originalCount) {
         setSteps({
           tool: "skipped", catalog: "skipped",
           extract: "skipped",
-          mirror: ((s.doneCount ?? 0) >= (s.originalCount ?? 0)) ? "skipped" : "pending",
+          mirror: "pending",
         });
       } else {
         // Step 1 — CatalogTool.exe.
@@ -401,22 +651,51 @@ export function HbrEditor({ onHome }: Props) {
   }, []);
 
   async function openFile(f: FileItem) {
-    if (dirty) {
-      const ok = await new Promise<boolean>((resolve) => {
-        showAlert(t("hbr.editor.unsavedTitle"), t("hbr.editor.unsavedBody"), { tone: "danger" }).then(() => resolve(true));
-      });
-      if (!ok) return;
+    // Авто-save при перемиканні файлу: якщо буфер dirty — тихо записуємо.
+    // Раніше тут показувався showAlert, що користувача дратував.
+    if (dirty && activeFile && parsed) {
+      try { await saveActive(); } catch { /* ignore — не блокуємо переключення */ }
     }
     setActiveFile(f);
     setParsed(null);
     setDirty(false);
+    setActiveItemIndex(null);
     try {
       const w = window.dp2 as unknown as { hbrTextRead: (p: string) => Promise<{ ok: boolean; raw?: string; error?: string }> };
       const doneRes = await w.hbrTextRead(f.donePath);
       if (!doneRes.ok || !doneRes.raw) throw new Error(doneRes.error || "read fail");
       const origRes = await w.hbrTextRead(f.origPath);
-      const p = parseHbrJson(doneRes.raw, origRes.ok ? origRes.raw! : null, f.donePath, f.origPath);
+
+      // Crash-recovery: чи є autosave-чернетка свіжіша за Done? Якщо так —
+      // питаємо у користувача чи відновити з неї. На «Викинути» autosave
+      // видаляється, щоб prompt не повертався.
+      let rawForParse = doneRes.raw;
+      try {
+        const auto = await window.dp2.readAutosave(f.donePath);
+        if (auto && auto.content && auto.autosaveMtime > auto.originalMtime + 500) {
+          const fmt = new Date(auto.autosaveMtime).toLocaleString();
+          const recover = await showConfirm(
+            t("hbr.recover.title"),
+            t("hbr.recover.body", { file: f.file, at: fmt }),
+            { okLabel: t("hbr.recover.restore"), cancelLabel: t("hbr.recover.discard") },
+          );
+          if (recover) {
+            rawForParse = auto.content;
+            setDirty(true);
+          } else {
+            await window.dp2.deleteAutosave(f.donePath);
+          }
+        }
+      } catch { /* silent */ }
+
+      const p = parseHbrJson(rawForParse, origRes.ok ? origRes.raw! : null, f.donePath, f.origPath);
       setParsed(p);
+      // DP2-parity: одразу робимо активним перший рядок, щоб HbrItemEditor
+      // показав редактор без додаткового кліку. pendingScrollTextId
+      // (глобальний пошук) має пріоритет — обробляється в окремому useEffect.
+      if (p.items.length > 0 && !pendingScrollTextId) {
+        setActiveItemIndex(0);
+      }
     } catch (e: unknown) {
       await showAlert(t("hbr.editor.readErrTitle"), String((e as Error)?.message ?? e), { tone: "danger" });
     }
@@ -443,6 +722,9 @@ export function HbrEditor({ onHome }: Props) {
       const newRaw = applyHbrEdits(r.raw, parsed.items);
       const wr = await w.hbrTextWrite({ fullPath: activeFile.donePath, raw: newRaw });
       if (!wr.ok) throw new Error(wr.error || "write fail");
+      // Успішний save → прибираємо autosave-чернетку, щоб recovery-prompt
+      // не з'явився при наступному відкритті.
+      try { await window.dp2.deleteAutosave(activeFile.donePath); } catch {}
       setDirty(false);
     } catch (e: unknown) {
       await showAlert(t("hbr.editor.saveErrTitle"), String((e as Error)?.message ?? e), { tone: "danger" });
@@ -451,23 +733,142 @@ export function HbrEditor({ onHome }: Props) {
     }
   }
 
-  // Ctrl+S
+  // Debounce-інтервал autosave у мс. Зчитується з settings.autosaveIntervalMin
+  // (default 1 хв, мін 0.25 хв = 15 с). Оновлюється на mount + при переході
+  // у новий файл, тож можна змінити "на льоту" з App Settings.
+  const [autosaveMs, setAutosaveMs] = useState(60_000);
+  useEffect(() => {
+    let cancelled = false;
+    window.dp2.getSettings().then((s) => {
+      if (cancelled) return;
+      const min = (s as { autosaveIntervalMin?: number }).autosaveIntervalMin;
+      const clamped = typeof min === "number" && isFinite(min) ? Math.max(0.25, Math.min(60, min)) : 1;
+      setAutosaveMs(Math.round(clamped * 60_000));
+    }).catch(() => {});
+    return () => { cancelled = true; };
+  }, [activeFile]);
+
+  // Debounced autosave — пишемо raw-JSON поточного `parsed` у autosave-файл
+  // (sidecar або у вказану директорію — main.cjs сам обирає). Якщо процес
+  // впаде до явного Save — openFile запропонує відновити чернетку.
+  useEffect(() => {
+    if (!dirty || !parsed || !activeFile) return;
+    const id = setTimeout(async () => {
+      try {
+        const w = window.dp2 as unknown as {
+          hbrTextRead: (p: string) => Promise<{ ok: boolean; raw?: string }>;
+        };
+        const r = await w.hbrTextRead(activeFile.donePath);
+        if (!r.ok || !r.raw) return;
+        const draft = applyHbrEdits(r.raw, parsed.items);
+        await window.dp2.writeAutosave(activeFile.donePath, draft);
+      } catch { /* silent — autosave не має блокувати UI */ }
+    }, autosaveMs);
+    return () => clearTimeout(id);
+  }, [parsed, dirty, activeFile, autosaveMs]);
+
+  // Знайти наступний неперекладений рядок у `parsed.items`, починаючи з
+  // (from+1). isTranslated = (current !== original) AND (current.trim() !== "").
+  // Якщо немає — повертає null, тоді нічого не міняємо.
+  function findNextUntranslated(from: number | null): number | null {
+    if (!parsed) return null;
+    const start = (from ?? -1) + 1;
+    for (let i = start; i < parsed.items.length; i++) {
+      const it = parsed.items[i];
+      // System-row (тільки теги/прочерк) пропускаємо — там нема чого перекладати.
+      if (isHbrSystemRow(it.original)) continue;
+      const isSame = it.current === it.original;
+      const isEmpty = !it.current || it.current.trim().length === 0;
+      if (isSame || isEmpty) return i;
+    }
+    return null;
+  }
+
+  // Auto-save при перемиканні активного рядка. Зберігає буфер ДО зміни.
+  // Тримаємо в ref попередній індекс, аби засейвити саме його стан.
+  const prevActiveIndexRef = useRef<number | null>(null);
+  useEffect(() => {
+    const prev = prevActiveIndexRef.current;
+    if (prev !== null && prev !== activeItemIndex && dirty && parsed && activeFile && !saving) {
+      saveActive();
+    }
+    prevActiveIndexRef.current = activeItemIndex;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeItemIndex]);
+
+  // Глобальні шорткати редактора (DP2-парітет):
+  //  Ctrl+S        — save active file
+  //  Ctrl+Enter    — save + jump to next untranslated
+  //  Ctrl+J        — jump to next untranslated (без save)
+  //  Ctrl+D        — copy original → translation
+  //  Alt+↑/↓       — попередній/наступний рядок
   useEffect(() => {
     function onKey(e: KeyboardEvent) {
-      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "s") {
+      const ctrl = e.ctrlKey || e.metaKey;
+      const k = e.key;
+      if (ctrl && !e.shiftKey && !e.altKey && k.toLowerCase() === "s") {
         e.preventDefault();
         saveActive();
+        return;
+      }
+      if (ctrl && !e.shiftKey && !e.altKey && k === "Enter") {
+        e.preventDefault();
+        (async () => {
+          await saveActive();
+          const next = findNextUntranslated(activeItemIndex);
+          if (next !== null) setActiveItemIndex(next);
+        })();
+        return;
+      }
+      if (ctrl && !e.shiftKey && !e.altKey && k.toLowerCase() === "j") {
+        e.preventDefault();
+        const next = findNextUntranslated(activeItemIndex);
+        if (next !== null) setActiveItemIndex(next);
+        return;
+      }
+      if (ctrl && !e.shiftKey && !e.altKey && k.toLowerCase() === "d") {
+        e.preventDefault();
+        if (parsed && activeItemIndex !== null) {
+          const it = parsed.items[activeItemIndex];
+          patchItem(activeItemIndex, it.original);
+        }
+        return;
+      }
+      if (ctrl && !e.shiftKey && !e.altKey && k.toLowerCase() === "h") {
+        e.preventDefault();
+        if (parsed && parsed.items.length > 0) setFindReplaceOpen(true);
+        return;
+      }
+      if (ctrl && !e.shiftKey && !e.altKey && k.toLowerCase() === "b") {
+        e.preventDefault();
+        if (activeItemIndex !== null) toggleRowBookmark(activeItemIndex);
+        return;
+      }
+      if (e.altKey && !ctrl && !e.shiftKey && (k === "ArrowUp" || k === "ArrowDown")) {
+        e.preventDefault();
+        if (parsed && activeItemIndex !== null) {
+          const delta = k === "ArrowDown" ? 1 : -1;
+          const target = activeItemIndex + delta;
+          if (target >= 0 && target < parsed.items.length) setActiveItemIndex(target);
+        }
+        return;
       }
     }
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [parsed, activeFile, saving]);
+  }, [parsed, activeFile, saving, activeItemIndex]);
 
   // Загальні лічильники по всьому проекту (Done vs Original).
   const [projectStats, setProjectStats] = useState<{ files: number; total: number; translated: number } | null>(null);
   const [packLog, setPackLog] = useState<string[]>([]);
   const [packing, setPacking] = useState(false);
+  const [packMenuOpen, setPackMenuOpen] = useState(false);
+  // Глобальний пошук по всіх Done/*.json файлах.
+  const [globalQuery, setGlobalQuery] = useState("");
+  const [globalSearching, setGlobalSearching] = useState(false);
+  interface GlobalHit { file: FileItem; textId: string; variantIdx: number; snippet: string; }
+  const [globalHits, setGlobalHits] = useState<GlobalHit[] | null>(null);
   async function refreshProjectStats() {
     if (!files.length) { setProjectStats(null); setFileStats({}); return; }
     const w = window.dp2 as unknown as { hbrTextRead: (p: string) => Promise<{ ok: boolean; raw?: string }> };
@@ -490,6 +891,111 @@ export function HbrEditor({ onHome }: Props) {
   useEffect(() => { if (phase === "ready") refreshProjectStats();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [phase, files.length]);
+
+  // Перевірка patch-міграції: коли редактор стає ready, питаємо main чи bundle
+  // на диску ще відповідає тому, з якого ми робили extract. Якщо ні — піднімаємо
+  // банер з кнопкою "Перемігрувати".
+  useEffect(() => {
+    if (phase !== "ready") return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const w = window.dp2 as unknown as {
+          hbrPatchMigrateCheck: () => Promise<{ ok: boolean; needed?: boolean; newBundle?: string; oldBundle?: string; metaItemsCount?: number; doneCount?: number }>;
+        };
+        const r = await w.hbrPatchMigrateCheck();
+        if (cancelled || !r.ok) return;
+        if (r.needed) {
+          setMigrateInfo({
+            needed: true,
+            newBundle: r.newBundle || "?",
+            oldBundle: r.oldBundle || "?",
+            metaItemsCount: r.metaItemsCount || 0,
+            doneCount: r.doneCount || 0,
+          });
+        } else {
+          setMigrateInfo(null);
+        }
+      } catch {}
+    })();
+    return () => { cancelled = true; };
+  }, [phase, files.length]);
+
+  async function runPatchMigrate() {
+    if (migrating) return;
+    const ok = await showConfirm(
+      t("hbr.migrate.confirmTitle"),
+      t("hbr.migrate.confirmBody"),
+      { tone: "warning", okLabel: t("hbr.migrate.confirmOk"), cancelLabel: t("btn.cancel") }
+    );
+    if (!ok) return;
+    setMigrating(true);
+    try {
+      const w = window.dp2 as unknown as {
+        hbrPatchMigrate: () => Promise<{ ok: boolean; error?: string; mergedFiles?: number; translated?: number; newCells?: number; backup?: string }>;
+      };
+      const r = await w.hbrPatchMigrate();
+      if (!r.ok) {
+        await showAlert(t("hbr.migrate.errTitle"), r.error || "?", { tone: "danger" });
+        return;
+      }
+      await showAlert(
+        t("hbr.migrate.doneTitle"),
+        t("hbr.migrate.doneBody", {
+          merged: String(r.mergedFiles ?? 0),
+          translated: String(r.translated ?? 0),
+          newCells: String(r.newCells ?? 0),
+          backup: r.backup ?? "?",
+        }),
+        { tone: "success" }
+      );
+      setMigrateInfo(null);
+      await refreshFiles();
+    } finally {
+      setMigrating(false);
+    }
+  }
+
+  async function runGlobalSearch() {
+    const q = globalQuery.trim().toLowerCase();
+    if (!q) { setGlobalHits(null); return; }
+    setGlobalSearching(true);
+    try {
+      const w = window.dp2 as unknown as { hbrTextRead: (p: string) => Promise<{ ok: boolean; raw?: string }> };
+      const hits: GlobalHit[] = [];
+      for (const f of files) {
+        try {
+          const doneRes = await w.hbrTextRead(f.donePath);
+          if (!doneRes.ok || !doneRes.raw) continue;
+          const origRes = await w.hbrTextRead(f.origPath);
+          const p = parseHbrJson(doneRes.raw, origRes.ok ? origRes.raw! : null, f.donePath, f.origPath);
+          for (const it of p.items) {
+            const inId = it.textId.toLowerCase().includes(q);
+            const inOrig = it.original.toLowerCase().includes(q);
+            const inCur = it.current.toLowerCase().includes(q);
+            if (!inId && !inOrig && !inCur) continue;
+            const snippetSrc = inCur ? it.current : (inOrig ? it.original : it.textId);
+            const idx = snippetSrc.toLowerCase().indexOf(q);
+            const start = Math.max(0, idx - 28);
+            const end = Math.min(snippetSrc.length, idx + q.length + 36);
+            const snippet = (start > 0 ? "…" : "") + snippetSrc.slice(start, end).replace(/\s+/g, " ") + (end < snippetSrc.length ? "…" : "");
+            hits.push({ file: f, textId: it.textId, variantIdx: it.variantIdx, snippet });
+            if (hits.length > 500) break;
+          }
+          if (hits.length > 500) break;
+        } catch {}
+      }
+      setGlobalHits(hits);
+    } finally { setGlobalSearching(false); }
+  }
+
+  async function jumpToHit(h: GlobalHit) {
+    setSearch("");
+    setSearchDraft("");
+    setRowFilter("all");
+    setPendingScrollTextId({ textId: h.textId, variantIdx: h.variantIdx });
+    await openFile(h.file);
+  }
 
   async function loadAllParsed(): Promise<HbrParsedFile[]> {
     const w = window.dp2 as unknown as { hbrTextRead: (p: string) => Promise<{ ok: boolean; raw?: string }> };
@@ -547,7 +1053,8 @@ export function HbrEditor({ onHome }: Props) {
         await showAlert(t("hbr.combined.importErrTitle"), parsed.warnings.join("\n") || "no blocks", { tone: "danger" });
         return;
       }
-      let okFiles = 0, totalUpdated = 0;
+      let totalUpdated = 0;
+      const updatedFiles: Array<{ name: string; updated: number }> = [];
       const errors: string[] = [...parsed.warnings];
       for (const block of parsed.blocks) {
         const fileItem = files.find((x) => x.file === block.fileName);
@@ -559,10 +1066,19 @@ export function HbrEditor({ onHome }: Props) {
         const apply = applyCombinedToParsed(parsedFile, block.records);
         for (const k of apply.missing) errors.push(`[${block.fileName}] запис не знайдено: ${k}`);
         if (apply.updated > 0) {
-          const newRaw = applyHbrEdits(doneRes.raw, parsedFile.items);
+          // applyHbrEdits тепер кидає при невідповідності кількості _Text у raw vs items.
+          // Це сигналізує що bundle оновлено між extract і import — пропускаємо файл,
+          // не псуючи інші.
+          let newRaw: string;
+          try {
+            newRaw = applyHbrEdits(doneRes.raw, parsedFile.items);
+          } catch (e) {
+            errors.push(`[${block.fileName}] integrity check failed: ${(e as Error).message}`);
+            continue;
+          }
           const wr = await w.hbrTextWrite({ fullPath: fileItem.donePath, raw: newRaw });
           if (!wr.ok) { errors.push(`Не вдалося записати ${block.fileName}: ${wr.error}`); continue; }
-          okFiles++;
+          updatedFiles.push({ name: block.fileName, updated: apply.updated });
           totalUpdated += apply.updated;
         }
       }
@@ -575,17 +1091,50 @@ export function HbrEditor({ onHome }: Props) {
           setParsed(parseHbrJson(refresh.raw, origRes2.ok ? origRes2.raw! : null, activeFile.donePath, activeFile.origPath));
         }
       }
-      const tone: "danger" | "success" = errors.length > 0 ? "danger" : "success";
-      const body = `${t("hbr.combined.importDoneBody", { files: okFiles, records: totalUpdated })}${errors.length ? "\n\n" + errors.slice(0, 30).join("\n") : ""}`;
-      await showAlert(t("hbr.combined.importDoneTitle"), body, { tone });
+      // Беремо актуальні підсумкові цифри (refreshProjectStats уже відпрацював).
+      const fresh = await window.dp2.hbrCorpusStats();
+      setImportDone({
+        records: totalUpdated,
+        files: updatedFiles,
+        errors,
+        overall: {
+          translated: fresh.ok ? (fresh.translatedEntries ?? 0) : 0,
+          total: fresh.ok ? (fresh.totalEntries ?? 0) : 0,
+        },
+      });
     } catch (e: unknown) {
       await showAlert(t("hbr.combined.importErrTitle"), String((e as Error)?.message ?? e), { tone: "danger" });
     } finally { setSaving(false); }
   }
 
-  async function packIntoGame() {
-    const ok = await showConfirm(t("hbr.pack.confirmTitle"), t("hbr.pack.confirmBody"), { tone: "danger", okLabel: t("hbr.pack.confirmOk") });
+  async function packIntoGame(mode: "game" | "release" = "game") {
+    const titleKey = mode === "release" ? "hbr.pack.confirmTitleRelease" : "hbr.pack.confirmTitle";
+    const bodyKey = mode === "release" ? "hbr.pack.confirmBodyRelease" : "hbr.pack.confirmBody";
+    const ok = await showConfirm(t(titleKey), t(bodyKey), { tone: "danger", okLabel: t("hbr.pack.confirmOk") });
     if (!ok) return;
+
+    // Pre-pack lint: сканування плейсхолдерів. Якщо хоч один рядок має missing/
+    // extra {n}/${var}/<tag>/[ctl] — попереджаємо. Це не блокує pack — лише
+    // дає шанс відкатитись, бо такий білд може зламати UI/диалоги у грі.
+    try {
+      const lint = await window.dp2.hbrTextLintPlaceholders();
+      const v = lint.violations ?? [];
+      if (v.length > 0) {
+        const preview = v.slice(0, 8).map((x) => {
+          const bits = [];
+          if (x.missing.length) bits.push(t("hbr.lint.missing", { tags: x.missing.join(", ") }));
+          if (x.extra.length) bits.push(t("hbr.lint.extra", { tags: x.extra.join(", ") }));
+          return `• ${x.file.replace(/-_resources_.+$/, "")} · ${x.textId} #${x.variantIdx} → ${bits.join(" · ")}`;
+        }).join("\n");
+        const proceed = await showConfirm(
+          t("hbr.lint.title"),
+          t("hbr.lint.body", { n: v.length, files: lint.scannedFiles ?? 0 }) + "\n\n" + preview + (v.length > 8 ? `\n…+${v.length - 8}` : ""),
+          { tone: "warning", okLabel: t("hbr.lint.proceed"), cancelLabel: t("btn.cancel") },
+        );
+        if (!proceed) return;
+      }
+    } catch { /* lint не повинен валити pack — ігноруємо */ }
+
     setSaving(true);
     setPacking(true);
     setPackLog([]);
@@ -597,52 +1146,86 @@ export function HbrEditor({ onHome }: Props) {
           totalFields?: number;
           summary?: { applied?: number; failed?: { name: string; reason: string }[] };
         }>;
+        hbrBuildRelease: () => Promise<{
+          ok: boolean; error?: string; releaseRoot?: string;
+          bundleName?: string; bundleSize?: number; logPath?: string;
+          packSummary?: { applied?: number; failed?: { name: string; reason: string }[] };
+        }>;
+        openFolder?: (p: string) => void;
       };
+
+      if (mode === "release") {
+        const r = await w.hbrBuildRelease();
+        if (!r.ok) {
+          await showAlert(t("hbr.pack.errTitle"), r.error ?? "?", { tone: "danger" });
+          return;
+        }
+        const applied = r.packSummary?.applied ?? 0;
+        const failed = r.packSummary?.failed?.length ?? 0;
+        const sizeKb = r.bundleSize ? `${(r.bundleSize / 1024 / 1024).toFixed(1)} MB` : "—";
+        const lines: string[] = [];
+        lines.push(t("hbr.release.doneBody", { path: r.releaseRoot ?? "—", applied, failed, size: sizeKb }));
+        const opened = await showConfirm(
+          t("hbr.release.doneTitle"),
+          lines.join("\n"),
+          { tone: "success", okLabel: t("hbr.release.openFolder"), cancelLabel: t("btn.close") }
+        );
+        if (opened && r.releaseRoot && w.openFolder) w.openFolder(r.releaseRoot);
+        return;
+      }
+
       const r = await w.hbrPackIntoGame();
       if (!r.ok) {
         const logHint = r.logPath ? `\n\n${t("hbr.pack.logSaved", { path: r.logPath })}` : "";
         await showAlert(t("hbr.pack.errTitle"), (r.error ?? "?") + logHint, { tone: "danger" });
         return;
       }
-      const applied = r.summary?.applied ?? 0;
-      const failed = r.summary?.failed?.length ?? 0;
-      const totalFields = r.totalFields ?? 0;
-      const sizeKb = r.bundleSize ? `${(r.bundleSize / 1024 / 1024).toFixed(1)} MB` : "—";
-      const lines: string[] = [];
-      lines.push(t("hbr.pack.doneBody", { applied, failed }));
-      lines.push("");
-      lines.push(t("hbr.pack.summary.fields", { n: totalFields }));
-      if (r.bundlePath) lines.push(t("hbr.pack.summary.bundle", { path: r.bundlePath, size: sizeKb }));
-      if (r.bakPath) lines.push(t("hbr.pack.summary.bak", { path: r.bakPath }));
-      if (r.logPath) lines.push(t("hbr.pack.logSaved", { path: r.logPath }));
-      if (totalFields === 0) {
-        lines.push("");
-        lines.push(t("hbr.pack.warn.noFields"));
-      }
-      if (failed > 0) {
-        lines.push("");
-        lines.push(...r.summary!.failed!.slice(0, 10).map((f) => `• ${f.name}: ${f.reason}`));
-      }
-      await showAlert(
-        t("hbr.pack.doneTitle"),
-        lines.join("\n"),
-        { tone: failed > 0 || totalFields === 0 ? "danger" : "success" }
-      );
+      setPackSuccess({
+        applied: r.summary?.applied ?? 0,
+        failed: r.summary?.failed?.length ?? 0,
+        totalFields: r.totalFields ?? 0,
+        bundlePath: r.bundlePath,
+        bundleSize: r.bundleSize,
+        bakPath: r.bakPath,
+        logPath: r.logPath,
+        failedRows: r.summary?.failed,
+      });
     } finally {
       setSaving(false);
       setPacking(false);
     }
   }
 
+  // O(1) lookup item→idx замість parsed.items.indexOf(it) у map (O(N²) для
+  // 1000+ items). Перебудовується тільки при зміні parsed.
+  const idxMap = useMemo(() => {
+    const m = new Map<HbrTextItem, number>();
+    if (parsed) parsed.items.forEach((it, i) => m.set(it, i));
+    return m;
+  }, [parsed]);
+
+  // Стабільні refs для HbrRow memo — інакше memo пропускає рендер тільки коли
+  // callbacks не змінюються при кожному рендері HbrEditor.
+  const handleRowSelect = useCallback((realIdx: number) => {
+    setActiveItemIndex(realIdx);
+  }, []);
+  const handleRowContextMenu = useCallback((e: React.MouseEvent, realIdx: number) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setCtxMenu({ kind: "row", x: e.clientX, y: e.clientY, itemIndex: realIdx });
+  }, []);
+
   const filteredItems = useMemo(() => {
     if (!parsed) return [];
     const q = search.trim().toLowerCase();
     return parsed.items.filter((it) => {
       // Статус-фільтр: визначаємо isTranslated як у parseHbrJson:
-      // current !== original AND current не порожній.
+      // current !== original AND current не порожній. System-row (тільки
+      // теги типу <space=0em>, прочерк «-» тощо) автоматично translated.
+      const isSystem = isHbrSystemRow(it.original);
       const isSame = it.current === it.original;
       const isEmpty = !it.current || it.current.trim().length === 0;
-      const isTranslated = !isSame && !isEmpty;
+      const isTranslated = isSystem || (!isSame && !isEmpty);
       if (rowFilter === "untranslated" && isTranslated) return false;
       if (rowFilter === "translated" && !isTranslated) return false;
       if (rowFilter === "samesAsOriginal" && !isSame) return false;
@@ -673,31 +1256,98 @@ export function HbrEditor({ onHome }: Props) {
         <div className="flex-1" />
         {phase === "ready" && (
           <>
+            <button className="dp-btn dp-btn--ghost" disabled={saving} onClick={() => setStatsOpen(true)} title={t("hbr.stats.btnHint")}>
+              {t("hbr.stats.btn")}
+            </button>
+            <button className="dp-btn dp-btn--ghost" disabled={saving} onClick={reExtractFromGame} title={t("hbr.reextract.hint")}>
+              {t("hbr.reextract.btn")}
+            </button>
             <button className="dp-btn dp-btn--ghost" disabled={saving || !files.length} onClick={exportCombined} title={t("hbr.combined.exportBtnHint")}>
+              <svg className="w-3.5 h-3.5 mr-1.5 inline" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                <path strokeLinecap="round" strokeLinejoin="round" d="M9 5h-3a2 2 0 00-2 2v12a2 2 0 002 2h12a2 2 0 002-2v-3" />
+                <path strokeLinecap="round" strokeLinejoin="round" d="M16 3l5 5m0 0v-5m0 5h-5M9 14l11-11" />
+              </svg>
               {t("hbr.combined.exportBtn")}
             </button>
             <button className="dp-btn dp-btn--ghost" disabled={saving || !files.length} onClick={importCombined} title={t("hbr.combined.importBtnHint")}>
+              <svg className="w-3.5 h-3.5 mr-1.5 inline" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                <path strokeLinecap="round" strokeLinejoin="round" d="M15 5h3a2 2 0 012 2v12a2 2 0 01-2 2H6a2 2 0 01-2-2V7a2 2 0 012-2h3" />
+                <path strokeLinecap="round" strokeLinejoin="round" d="M12 3v12m0 0l-4-4m4 4l4-4" />
+              </svg>
               {t("hbr.combined.importBtn")}
             </button>
-            <button className="dp-btn dp-btn--success" disabled={saving || !files.length} onClick={packIntoGame} title={t("hbr.pack.btnHint")}>
+            <button
+              className="dp-btn dp-btn--success"
+              disabled={saving || !files.length}
+              onClick={() => setPackMenuOpen(true)}
+              title={t("hbr.pack.btnHint")}
+            >
               {t("hbr.pack.btn")}
             </button>
           </>
         )}
-        {parsed && (
-          <>
-            <span className="text-[11px] text-[var(--text-faint)] font-mono truncate max-w-[280px]">{parsed.fileName}</span>
-            <button
-              className={`dp-btn ${dirty ? "dp-btn--primary" : ""}`}
-              onClick={saveActive}
-              disabled={!dirty || saving}
-              title="Ctrl+S"
-            >
-              {saving ? t("hbr.editor.saving") : t("hbr.editor.save")}
-            </button>
-          </>
-        )}
+        <LangToggle compact />
       </header>
+
+      {/* Patch-migration банер. З'являється коли bundle на диску має новий
+         хеш, а meta/Done ще посилаються на старий — тобто гра отримала патч
+         і треба пере-екстрактувати + перенести переклади. */}
+      {phase === "ready" && migrateInfo?.needed && (
+        <div className="px-4 py-2.5 border-b border-[var(--border-soft)] bg-[var(--warning,#d97706)]/10 flex items-center gap-3 shrink-0">
+          <svg className="w-5 h-5 text-[var(--warning,#d97706)] shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+            <path strokeLinecap="round" strokeLinejoin="round" d="M12 9v3.75m-9.303 3.376c-.866 1.5.217 3.374 1.948 3.374h14.71c1.73 0 2.813-1.874 1.948-3.374L13.949 3.378c-.866-1.5-3.032-1.5-3.898 0L2.697 16.126zM12 15.75h.007v.008H12v-.008z" />
+          </svg>
+          <div className="flex-1 min-w-0">
+            <div className="text-[12.5px] font-semibold text-[var(--text-strong)]">
+              {t("hbr.migrate.bannerTitle")}
+            </div>
+            <div className="text-[11px] text-[var(--text-muted)] mt-0.5">
+              {t("hbr.migrate.bannerBody", { old: migrateInfo.oldBundle, fresh: migrateInfo.newBundle })}
+            </div>
+          </div>
+          <button className="dp-btn dp-btn--primary shrink-0" onClick={runPatchMigrate} disabled={migrating}>
+            {migrating ? t("hbr.migrate.btnRunning") : t("hbr.migrate.btn")}
+          </button>
+        </div>
+      )}
+
+      {/* Sub-toolbar для активного файлу. Винесено з головної шапки, бо там
+         довжина fileName / поява-зникнення "Збережено"-індикатора штовхали
+         центральні кнопки і "Зібрати у гру" танцювала туди-сюди. Тут фікс-
+         ширина і justify-between — нічого не стрибає. */}
+      {phase === "ready" && activeFile && (
+        <div className="h-9 px-4 border-b border-[var(--border-soft)] bg-[var(--bg)] flex items-center gap-2 shrink-0">
+          <span className="text-[11px] text-[var(--text-faint)] font-mono truncate min-w-0 flex-1" title={activeFile.file}>
+            {activeFile.file}
+          </span>
+          <button
+            className="dp-btn dp-btn--ghost shrink-0"
+            onClick={() => setFindReplaceOpen(true)}
+            disabled={!parsed || !parsed.items.length}
+            title={t("hbr.findReplace.btnHint")}
+          >
+            {t("hbr.findReplace.btn")}
+          </button>
+          <span
+            className="text-[11px] text-[var(--success)] flex items-center gap-1 shrink-0"
+            title={t("hbr.editor.savedHint")}
+            style={{ visibility: parsed && !dirty && !saving ? "visible" : "hidden" }}
+          >
+            <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={3}>
+              <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
+            </svg>
+            {t("hbr.editor.saved")}
+          </span>
+          <button
+            className={`dp-btn shrink-0 ${dirty ? "dp-btn--primary" : ""}`}
+            onClick={saveActive}
+            disabled={!parsed || !dirty || saving}
+            title="Ctrl+S"
+          >
+            {saving ? t("hbr.editor.saving") : t("hbr.editor.save")}
+          </button>
+        </div>
+      )}
 
       {phase === "preparing" && (
         <div className="flex-1 flex items-center justify-center p-8 overflow-y-auto relative" style={{ background: "#0d1117" }}>
@@ -816,24 +1466,181 @@ export function HbrEditor({ onHome }: Props) {
         </div>
       )}
 
-      {packing && (
-        <div className="fixed inset-0 z-40 bg-black/60 flex items-center justify-center p-6">
-          <div className="w-full max-w-[720px] bg-[var(--bg-surface)] border border-[var(--border-soft)] rounded-lg shadow-xl">
-            <div className="px-5 py-3 border-b border-[var(--border-soft)] flex items-center gap-3">
-              <span className="inline-block h-3 w-3 rounded-full border-2 border-[var(--accent)] border-t-transparent animate-spin" />
-              <p className="text-[13px] font-semibold text-[var(--text-strong)]">{t("hbr.pack.runningTitle")}</p>
-              <span className="ml-auto text-[10.5px] tabular-nums text-[var(--text-faint)]">
-                {packLog.filter((l) => l.startsWith("[PATCHED]")).length} {t("hbr.pack.patched")}
-              </span>
+      {packMenuOpen && !packing && (
+        <div className="fixed inset-0 z-40 bg-black/60 flex items-center justify-center p-6" onClick={() => setPackMenuOpen(false)}>
+          <div
+            className="w-full max-w-[560px] bg-[var(--bg-surface)] border border-[var(--border-soft)] rounded-lg shadow-xl"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="px-5 py-3 border-b border-[var(--border-soft)] flex items-center gap-2">
+              <p className="text-[13px] font-semibold text-[var(--text-strong)]">{t("hbr.packMenu.title")}</p>
+              <div className="flex-1" />
+              <button className="dp-btn dp-btn--ghost" onClick={() => setPackMenuOpen(false)}>✕</button>
             </div>
-            <div className="p-3">
-              <pre className="text-[10.5px] font-mono text-[var(--text-faint)] bg-[var(--bg)] border border-[var(--border-soft)] rounded p-2 max-h-[300px] overflow-y-auto whitespace-pre-wrap break-all">
-                {packLog.slice(-30).join("\n") || t("hbr.pack.starting")}
-              </pre>
+            <div className="p-4 space-y-2">
+              <button
+                className="w-full text-left rounded-md border border-[var(--border-soft)] bg-[var(--bg)] hover:bg-[var(--row-hover)] p-4 flex items-start gap-3"
+                onClick={() => { setPackMenuOpen(false); packIntoGame("game"); }}
+              >
+                <span className="text-[18px] leading-none mt-0.5">🎮</span>
+                <div className="flex-1 min-w-0">
+                  <p className="text-[13px] font-semibold text-[var(--text-strong)]">{t("hbr.packMenu.gameTitle")}</p>
+                  <p className="text-[11.5px] text-[var(--text-muted)] mt-1 leading-relaxed">{t("hbr.packMenu.gameBody")}</p>
+                </div>
+              </button>
+              <button
+                className="w-full text-left rounded-md border border-[var(--border-soft)] bg-[var(--bg)] hover:bg-[var(--row-hover)] p-4 flex items-start gap-3"
+                onClick={() => { setPackMenuOpen(false); packIntoGame("release"); }}
+              >
+                <span className="text-[18px] leading-none mt-0.5">📦</span>
+                <div className="flex-1 min-w-0">
+                  <p className="text-[13px] font-semibold text-[var(--text-strong)]">{t("hbr.packMenu.releaseTitle")}</p>
+                  <p className="text-[11.5px] text-[var(--text-muted)] mt-1 leading-relaxed">{t("hbr.packMenu.releaseBody")}</p>
+                </div>
+              </button>
             </div>
           </div>
         </div>
       )}
+
+      {packing && (() => {
+        // Похідні з лога значення для прогрес-шкали.
+        const patchedLines = packLog.filter((l) => l.startsWith("[PATCHED]"));
+        const failLines = packLog.filter((l) => l.startsWith("[FAIL]"));
+        const totalMatch = packLog.find((l) => /\[DIAG\] Meta items:/.test(l));
+        const totalGuess = totalMatch ? parseInt(totalMatch.replace(/[^\d]/g, ""), 10) || files.length : (files.length || 61);
+        const done = patchedLines.length + failLines.length;
+        const pct = totalGuess > 0 ? Math.min(100, Math.round((done / totalGuess) * 100)) : null;
+        const isWriting = packLog.some((l) => /Writing bundle/i.test(l));
+        const isDone = packLog.some((l) => /\[STEP\] DONE/i.test(l));
+        const hasMeta = packLog.some((l) => /\[DIAG\] Meta items:/.test(l));
+        const hasBundleLoad = packLog.some((l) => /\[STEP\] Loading bundle/i.test(l));
+        const lastLine = packLog[packLog.length - 1] || "";
+        const lastName = (() => {
+          const m = lastLine.match(/\[PATCHED\]\s+([^\s(]+)/);
+          return m ? m[1] : "";
+        })();
+
+        // Чек-лист 5 кроків — статус кожного виводимо з логу.
+        type StepKey = "meta" | "bundle" | "patch" | "write" | "done";
+        const stepStatus = (k: StepKey): "pending" | "running" | "done" => {
+          if (k === "meta") return hasMeta ? "done" : "running";
+          if (k === "bundle") return hasBundleLoad ? (hasMeta ? "done" : "running") : "pending";
+          if (k === "patch") {
+            if (!hasBundleLoad) return "pending";
+            if (totalGuess > 0 && done >= totalGuess) return "done";
+            return "running";
+          }
+          if (k === "write") {
+            if (isDone) return "done";
+            if (isWriting) return "running";
+            return "pending";
+          }
+          if (k === "done") return isDone ? "done" : "pending";
+          return "pending";
+        };
+
+        const renderStep = (k: StepKey, title: string, sub?: ReactNode) => {
+          const s = stepStatus(k);
+          const icon = s === "done"
+            ? <span className="inline-flex items-center justify-center w-5 h-5 rounded-full bg-[var(--success)]/15 text-[var(--success)] border border-[var(--success)]/40 text-[10px] font-bold shrink-0">✓</span>
+            : s === "running"
+              ? <span className="inline-flex items-center justify-center w-5 h-5 rounded-full border border-[var(--accent)]/40 bg-[var(--accent)]/10 shrink-0"><span className="inline-block h-2.5 w-2.5 rounded-full border-2 border-[var(--accent)] border-t-transparent animate-spin" /></span>
+              : <span className="inline-flex items-center justify-center w-5 h-5 rounded-full bg-[var(--bg-elevated)] border border-[var(--border-soft)] text-[var(--text-faint)] text-[10px] shrink-0">○</span>;
+          const titleCls = s === "running"
+            ? "text-[var(--text-strong)]"
+            : s === "done"
+              ? "text-[var(--text)]"
+              : "text-[var(--text-faint)]";
+          return (
+            <li className="flex items-start gap-2.5 py-1.5">
+              {icon}
+              <div className="flex-1 min-w-0">
+                <p className={`text-[12.5px] leading-snug ${titleCls}`}>{title}</p>
+                {sub && <div className="text-[11px] text-[var(--text-muted)] mt-0.5">{sub}</div>}
+              </div>
+            </li>
+          );
+        };
+
+        // Кольорування рядків лога: type-based.
+        const colorize = (line: string): string => {
+          if (line.startsWith("[PATCHED]")) return "text-[var(--success)]";
+          if (line.startsWith("[FAIL]")) return "text-[var(--danger)] font-semibold";
+          if (line.startsWith("[STEP]")) return "text-[var(--accent)]";
+          if (line.startsWith("[DIAG]")) return "text-[var(--text-faint)]";
+          if (line.startsWith("[SKIP]")) return "text-[var(--warning)]";
+          return "text-[var(--text-muted)]";
+        };
+
+        return (
+          <div className="fixed inset-0 z-40 bg-black/60 flex items-center justify-center p-6">
+            <div className="w-full max-w-[640px] bg-[var(--bg-surface)] border border-[var(--border-soft)] rounded-lg shadow-xl">
+              {/* Header */}
+              <div className="px-5 py-3 border-b border-[var(--border-soft)] flex items-center gap-3">
+                <span className="inline-block h-3 w-3 rounded-full border-2 border-[var(--accent)] border-t-transparent animate-spin" />
+                <p className="text-[13px] font-semibold text-[var(--text-strong)]">{t("hbr.pack.runningTitle")}</p>
+                <span className="ml-auto text-[10.5px] tabular-nums text-[var(--text-faint)]">
+                  {patchedLines.length}/{totalGuess}
+                  {failLines.length > 0 && (
+                    <span className="text-[var(--danger)] ml-1">· {failLines.length} {t("hbr.pack.failedShort")}</span>
+                  )}
+                </span>
+              </div>
+
+              {/* Чек-лист фаз */}
+              <ol className="px-5 py-3">
+                {renderStep("meta", t("hbr.pack.step.meta"),
+                  hasMeta ? <span className="tabular-nums">{totalGuess} items</span> : undefined)}
+                {renderStep("bundle", t("hbr.pack.step.bundle"))}
+                {renderStep(
+                  "patch",
+                  t("hbr.pack.step.patch"),
+                  stepStatus("patch") !== "pending" ? (
+                    <div>
+                      <div className="flex items-baseline justify-between mb-1 gap-2">
+                        <span className="tabular-nums text-[var(--text-muted)]">
+                          {done} / {totalGuess}{pct != null && ` · ${pct}%`}
+                        </span>
+                        {lastName && (
+                          <span className="font-mono text-[10.5px] text-[var(--text-faint)] truncate max-w-[260px]" title={lastName}>{lastName}</span>
+                        )}
+                      </div>
+                      <div className="h-1 rounded-full bg-[var(--bg-elevated)] overflow-hidden">
+                        <div
+                          className="h-full bg-[var(--accent)] transition-all"
+                          style={{ width: pct != null ? `${pct}%` : "0%" }}
+                        />
+                      </div>
+                    </div>
+                  ) : undefined,
+                )}
+                {renderStep("write", t("hbr.pack.step.write"))}
+                {renderStep("done", t("hbr.pack.step.done"))}
+              </ol>
+
+              {/* Лог — згорнутий за замовч. */}
+              <div className="px-5 pb-4">
+                <details className="group">
+                  <summary className="cursor-pointer list-none text-[11px] text-[var(--text-muted)] hover:text-[var(--text)] flex items-center gap-1 select-none">
+                    <span className="inline-block transition-transform group-open:rotate-90">›</span>
+                    {t("hbr.pack.logToggle")} <span className="text-[var(--text-faint)]">({packLog.length})</span>
+                  </summary>
+                  <div className="mt-2 text-[10.5px] font-mono bg-[var(--bg)] border border-[var(--border-soft)] rounded p-2 max-h-[260px] overflow-y-auto whitespace-pre-wrap break-all">
+                    {packLog.length === 0 ? (
+                      <span className="text-[var(--text-faint)]">{t("hbr.pack.starting")}</span>
+                    ) : (
+                      packLog.slice(-200).map((line, i) => (
+                        <div key={i} className={colorize(line)}>{line}</div>
+                      ))
+                    )}
+                  </div>
+                </details>
+              </div>
+            </div>
+          </div>
+        );
+      })()}
 
       {phase === "error" && (
         <div className="p-6 max-w-[820px]">
@@ -873,40 +1680,75 @@ export function HbrEditor({ onHome }: Props) {
           style={{ left: ctxMenu.x, top: ctxMenu.y }}
           onClick={(e) => e.stopPropagation()}
         >
-          {ctxMenu.kind === "row" && parsed && (
-            <>
-              <li
-                className="px-3 py-1.5 hover:bg-[var(--row-hover)] cursor-pointer"
-                onClick={() => {
-                  const it = parsed.items[ctxMenu.itemIndex];
-                  if (it) patchItem(ctxMenu.itemIndex, it.original);
-                  setCtxMenu(null);
-                }}
-              >
-                {t("hbr.ctx.restoreOriginal")}
-              </li>
-              <li
-                className="px-3 py-1.5 hover:bg-[var(--row-hover)] cursor-pointer"
-                onClick={() => {
-                  const it = parsed.items[ctxMenu.itemIndex];
-                  if (it) patchItem(ctxMenu.itemIndex, "");
-                  setCtxMenu(null);
-                }}
-              >
-                {t("hbr.ctx.clearTranslation")}
-              </li>
-              <li
-                className="px-3 py-1.5 hover:bg-[var(--row-hover)] cursor-pointer"
-                onClick={async () => {
-                  const it = parsed.items[ctxMenu.itemIndex];
-                  if (it) { try { await navigator.clipboard.writeText(it.original); } catch {} }
-                  setCtxMenu(null);
-                }}
-              >
-                {t("hbr.ctx.copyOriginal")}
-              </li>
-            </>
-          )}
+          {ctxMenu.kind === "row" && parsed && (() => {
+            const idx = ctxMenu.itemIndex;
+            const it = parsed.items[idx];
+            const sk = activeFile && it ? statusKey(activeFile.file, it.textId, it.variantIdx) : "";
+            const entry = sk ? statusFile.entries[sk] : undefined;
+            return (
+              <>
+                <li
+                  className={`px-3 py-1.5 hover:bg-[var(--row-hover)] cursor-pointer ${entry?.status === "draft" ? "text-[var(--warning,#d97706)] font-semibold" : ""}`}
+                  onClick={() => { setRowStatus(idx, entry?.status === "draft" ? undefined : "draft"); setCtxMenu(null); }}
+                >
+                  {t("status.markDraft")}
+                </li>
+                <li
+                  className={`px-3 py-1.5 hover:bg-[var(--row-hover)] cursor-pointer ${entry?.status === "review" ? "text-[var(--accent)] font-semibold" : ""}`}
+                  onClick={() => { setRowStatus(idx, entry?.status === "review" ? undefined : "review"); setCtxMenu(null); }}
+                >
+                  {t("status.markReview")}
+                </li>
+                <li
+                  className={`px-3 py-1.5 hover:bg-[var(--row-hover)] cursor-pointer ${entry?.status === "approved" ? "text-[var(--success)] font-semibold" : ""}`}
+                  onClick={() => { setRowStatus(idx, entry?.status === "approved" ? undefined : "approved"); setCtxMenu(null); }}
+                >
+                  {t("status.markApproved")}
+                </li>
+                <li
+                  className="px-3 py-1.5 hover:bg-[var(--row-hover)] cursor-pointer"
+                  onClick={() => { setRowStatus(idx, undefined); setCtxMenu(null); }}
+                >
+                  {t("status.clear")}
+                </li>
+                <li className="border-t border-[var(--border-soft)] my-0.5" />
+                <li
+                  className={`px-3 py-1.5 hover:bg-[var(--row-hover)] cursor-pointer ${entry?.bookmark ? "text-[var(--accent)] font-semibold" : ""}`}
+                  onClick={() => { toggleRowBookmark(idx); setCtxMenu(null); }}
+                >
+                  {t("status.toggleBookmark")}
+                </li>
+                <li className="border-t border-[var(--border-soft)] my-0.5" />
+                <li
+                  className="px-3 py-1.5 hover:bg-[var(--row-hover)] cursor-pointer"
+                  onClick={() => { if (it) patchItem(idx, it.original); setCtxMenu(null); }}
+                >
+                  {t("bulk.copyOriginal")}
+                </li>
+                <li
+                  className="px-3 py-1.5 hover:bg-[var(--row-hover)] cursor-pointer"
+                  onClick={() => { if (it) patchItem(idx, it.current.trim()); setCtxMenu(null); }}
+                >
+                  {t("bulk.trim")}
+                </li>
+                <li
+                  className="px-3 py-1.5 hover:bg-[var(--row-hover)] cursor-pointer"
+                  onClick={async () => {
+                    if (it) { try { await navigator.clipboard.writeText(it.original); } catch {} }
+                    setCtxMenu(null);
+                  }}
+                >
+                  {t("hbr.ctx.copyOriginal")}
+                </li>
+                <li
+                  className="px-3 py-1.5 hover:bg-[var(--row-hover)] cursor-pointer text-[var(--danger)]"
+                  onClick={() => { if (it) patchItem(idx, ""); setCtxMenu(null); }}
+                >
+                  {t("hbr.ctx.clearTranslation")}
+                </li>
+              </>
+            );
+          })()}
           {ctxMenu.kind === "file" && (
             <>
               <li className="px-3 py-1 text-[10px] uppercase tracking-wider text-[var(--text-faint)] border-b border-[var(--border-soft)] truncate" title={ctxMenu.file.file}>
@@ -946,11 +1788,84 @@ export function HbrEditor({ onHome }: Props) {
             <div className="px-3 py-2 border-b border-[var(--border-soft)] text-[10px] uppercase tracking-wider text-[var(--text-faint)] font-semibold">
               {t("hbr.editor.fileTree")} · {files.length}
             </div>
+            <div className="px-3 py-2 border-b border-[var(--border-soft)] flex flex-col gap-1.5">
+              <div className="flex gap-1">
+                <input
+                  className="dp-input flex-1 text-[11.5px]"
+                  placeholder={t("hbr.globalSearch.placeholder")}
+                  value={globalQuery}
+                  onChange={(e) => setGlobalQuery(e.target.value)}
+                  onKeyDown={(e) => { if (e.key === "Enter") runGlobalSearch(); }}
+                />
+                <button
+                  className="dp-btn"
+                  onClick={runGlobalSearch}
+                  disabled={globalSearching || !globalQuery.trim()}
+                  title={t("hbr.globalSearch.searchHint")}
+                >
+                  {globalSearching ? "…" : "🔍"}
+                </button>
+                {globalHits !== null && (
+                  <button
+                    className="dp-btn dp-btn--ghost"
+                    onClick={() => { setGlobalHits(null); setGlobalQuery(""); }}
+                    title={t("hbr.globalSearch.clear")}
+                  >
+                    ✕
+                  </button>
+                )}
+              </div>
+              {globalHits !== null && (
+                <p className="text-[10.5px] text-[var(--text-faint)] tabular-nums">
+                  {t("hbr.globalSearch.foundN", { n: globalHits.length })}
+                </p>
+              )}
+            </div>
             <div className="flex-1 overflow-y-auto">
-              {files.map((f) => {
+              {globalHits !== null && (
+                <>
+                  {globalHits.length === 0 ? (
+                    <p className="px-3 py-3 text-[11.5px] text-[var(--text-muted)] text-center">
+                      {t("hbr.globalSearch.empty")}
+                    </p>
+                  ) : (
+                    globalHits.map((h, i) => (
+                      <button
+                        key={i}
+                        onClick={() => jumpToHit(h)}
+                        className="w-full text-left px-3 py-2 border-b border-[var(--border-soft)] hover:bg-[var(--row-hover)]"
+                      >
+                        <p className="text-[10px] font-mono text-[var(--text-faint)] truncate" title={h.file.file}>
+                          {h.file.file}
+                        </p>
+                        <p className="text-[10.5px] font-mono text-[var(--text-muted)] truncate">
+                          {h.textId} <span className="text-[var(--text-faint)]">[v{h.variantIdx}]</span>
+                        </p>
+                        <p className="text-[11.5px] text-[var(--text)] mt-0.5 line-clamp-2 break-words">
+                          {h.snippet}
+                        </p>
+                      </button>
+                    ))
+                  )}
+                </>
+              )}
+              {globalHits === null && files.map((f) => {
                 const st = fileStats[f.file];
                 const pct = st && st.total > 0 ? Math.round((st.translated / st.total) * 100) : 0;
                 const isActive = activeFile?.donePath === f.donePath;
+                // Кольорова "ліва смужка" за рівнем прогресу: червона (0%),
+                // жовта (1-99%), зелена (100%). Дозволяє швидко сканувати
+                // список файлів, не читаючи цифр.
+                const borderColor = !st || pct === 0
+                  ? "border-l-[var(--danger)]"
+                  : pct >= 100
+                    ? "border-l-[var(--success)]"
+                    : "border-l-[var(--warning,#d97706)]";
+                const barColor = pct === 0
+                  ? "bg-[var(--danger)]"
+                  : pct >= 100
+                    ? "bg-[var(--success)]"
+                    : "bg-[var(--warning,#d97706)]";
                 return (
                   <button
                     key={f.donePath}
@@ -960,7 +1875,7 @@ export function HbrEditor({ onHome }: Props) {
                       e.stopPropagation();
                       setCtxMenu({ kind: "file", x: e.clientX, y: e.clientY, file: f });
                     }}
-                    className={`w-full text-left px-3 py-2 border-b border-[var(--border-soft)] hover:bg-[var(--row-hover)] ${
+                    className={`w-full text-left px-3 py-2 border-b border-[var(--border-soft)] border-l-2 ${borderColor} hover:bg-[var(--row-hover)] ${
                       isActive ? "bg-[var(--row-active)]" : ""
                     }`}
                   >
@@ -969,7 +1884,7 @@ export function HbrEditor({ onHome }: Props) {
                       <div className="flex items-center gap-2 mt-1">
                         <div className="flex-1 h-1 bg-[var(--bg-elevated)] rounded overflow-hidden">
                           <div
-                            className="h-full bg-[var(--success)]"
+                            className={`h-full transition-all ${barColor}`}
                             style={{ width: `${pct}%` }}
                           />
                         </div>
@@ -998,8 +1913,8 @@ export function HbrEditor({ onHome }: Props) {
                     <input
                       className="dp-input flex-1"
                       placeholder={t("hbr.editor.searchPh")}
-                      value={search}
-                      onChange={(e) => setSearch(e.target.value)}
+                      value={searchDraft}
+                      onChange={(e) => setSearchDraft(e.target.value)}
                     />
                     <span className="text-[11px] text-[var(--text-faint)] tabular-nums">
                       {parsed.translatedItems}/{parsed.totalItems} · {parsed.totalItems > 0 ? ((parsed.translatedItems / parsed.totalItems) * 100).toFixed(1) : "0.0"}%
@@ -1026,7 +1941,7 @@ export function HbrEditor({ onHome }: Props) {
                   </div>
                 </div>
                 <div className="flex-1 overflow-y-auto">
-                  <table className="w-full text-[12px]">
+                  <table className="w-full text-[12px] table-fixed">
                     <thead className="sticky top-0 z-10 bg-[var(--bg-surface)] text-[10px] uppercase tracking-wider text-[var(--text-faint)] border-b border-[var(--border-soft)]">
                       <tr>
                         <th className="text-left px-2 py-1.5 w-[180px]">_TextId</th>
@@ -1037,63 +1952,353 @@ export function HbrEditor({ onHome }: Props) {
                     </thead>
                     <tbody>
                       {filteredItems.map((it) => {
-                        const realIdx = parsed.items.indexOf(it);
-                        const isSame = it.current === it.original;
-                        const isEmpty = !it.current || it.current.trim().length === 0;
-                        const isTranslated = !isSame && !isEmpty;
-                        // Підсвічування: перекладено — м'який зелений лівий border;
-                        // збігається з оригіналом — жовтий; порожній — червоний.
-                        const borderClass = isEmpty
-                          ? "border-l-2 border-l-[var(--danger)]"
-                          : isTranslated
-                          ? "border-l-2 border-l-[var(--success)]"
-                          : "border-l-2 border-l-[var(--warning)]";
+                        const realIdx = idxMap.get(it) ?? -1;
+                        const sk = activeFile ? statusKey(activeFile.file, it.textId, it.variantIdx) : "";
+                        const entry = sk ? statusFile.entries[sk] : undefined;
                         return (
-                          <tr
+                          <HbrRow
                             key={realIdx}
-                            className={`border-b border-[var(--border-soft)] align-top ${borderClass}`}
-                            onContextMenu={(e) => {
-                              e.preventDefault();
-                              e.stopPropagation();
-                              setCtxMenu({ kind: "row", x: e.clientX, y: e.clientY, itemIndex: realIdx });
-                            }}
-                          >
-                            <td className="px-2 py-1 font-mono text-[11px] text-[var(--text-muted)]">
-                              {it.textId}
-                            </td>
-                            <td className="px-2 py-1 font-mono text-[11px] text-[var(--text-faint)] tabular-nums">{it.variantIdx}</td>
-                            <td className="px-2 py-1 text-[var(--text-muted)] whitespace-pre-wrap">{it.original}</td>
-                            <td className="px-2 py-1">
-                              <textarea
-                                className="w-full bg-[var(--bg)] border border-[var(--border-soft)] rounded px-2 py-1 text-[12px] text-[var(--text)] resize-vertical min-h-[56px] whitespace-pre-wrap break-words leading-snug"
-                                style={{ fieldSizing: "content" } as React.CSSProperties}
-                                value={it.current}
-                                onChange={(e) => patchItem(realIdx, e.target.value)}
-                                onInput={(e) => {
-                                  // Fallback auto-resize якщо field-sizing не підтримується.
-                                  const el = e.currentTarget;
-                                  el.style.height = "auto";
-                                  el.style.height = Math.max(56, Math.min(400, el.scrollHeight)) + "px";
-                                }}
-                                ref={(el) => {
-                                  // Підлаштовуємо висоту при першому рендері.
-                                  if (!el) return;
-                                  el.style.height = "auto";
-                                  el.style.height = Math.max(56, Math.min(400, el.scrollHeight)) + "px";
-                                }}
-                              />
-                            </td>
-                          </tr>
+                            it={it}
+                            realIdx={realIdx}
+                            active={activeItemIndex === realIdx}
+                            status={entry?.status}
+                            bookmark={entry?.bookmark}
+                            onSelect={handleRowSelect}
+                            onContextMenu={handleRowContextMenu}
+                          />
                         );
                       })}
                     </tbody>
                   </table>
                 </div>
+                <EditorFooter
+                  fileName={activeFile?.file}
+                  stats={[
+                    {
+                      label: t("hbr.filter.shownLabel"),
+                      value: filteredItems.length,
+                      tone: "default",
+                    },
+                    {
+                      label: t("hbr.footer.total"),
+                      value: parsed.totalItems,
+                    },
+                    {
+                      label: t("hbr.footer.translated"),
+                      value: `${parsed.translatedItems} (${parsed.totalItems > 0
+                        ? ((parsed.translatedItems / parsed.totalItems) * 100).toFixed(1)
+                        : "0.0"}%)`,
+                      tone: "success",
+                    },
+                    ...(activeItemIndex !== null && parsed.items[activeItemIndex]
+                      ? [{
+                          label: t("hbr.footer.position"),
+                          value: `${activeItemIndex + 1}/${parsed.totalItems}`,
+                          tone: "accent" as const,
+                        }]
+                      : []),
+                  ]}
+                />
               </>
             )}
           </section>
+
+          {/* Right: Monaco editor для активного рядка */}
+          <CorpusStatsModal open={statsOpen} onClose={() => setStatsOpen(false)} mode="hbr" />
+          <HbrFindReplaceModal
+            open={findReplaceOpen}
+            items={parsed?.items ?? null}
+            onApply={(updates) => {
+              if (!parsed) return;
+              const items = parsed.items.slice();
+              for (const u of updates) {
+                items[u.idx] = { ...items[u.idx], current: u.next };
+              }
+              setParsed({ ...parsed, items });
+              setDirty(true);
+            }}
+            onClose={() => setFindReplaceOpen(false)}
+          />
+          <HbrItemEditor
+            item={activeItemIndex !== null && parsed ? parsed.items[activeItemIndex] : null}
+            prev={activeItemIndex !== null && parsed && activeItemIndex > 0 ? parsed.items[activeItemIndex - 1] : null}
+            next={activeItemIndex !== null && parsed && activeItemIndex < parsed.items.length - 1 ? parsed.items[activeItemIndex + 1] : null}
+            onChange={(v) => activeItemIndex !== null && patchItem(activeItemIndex, v)}
+            onJumpPrev={() => activeItemIndex !== null && activeItemIndex > 0 && setActiveItemIndex(activeItemIndex - 1)}
+            onJumpNext={() => activeItemIndex !== null && parsed && activeItemIndex < parsed.items.length - 1 && setActiveItemIndex(activeItemIndex + 1)}
+            onClose={() => setActiveItemIndex(null)}
+          />
         </div>
       )}
+
+      {/* Стилізована модалка результату Pack — замість простого showAlert.
+         Для tone використовуємо warning (жовтий) коли totalFields=0 чи є fails;
+         success (зелений) для чистого pack'у. Steam appId 2286600 = HBR. */}
+      {importDone && (() => {
+        // Точно той самий формат, що в "Огляді готовності" (CorpusStatsModal):
+        // pctNum для бара (з точкою), pctText для відображення.
+        const pctNum = importDone.overall.total > 0
+          ? +((importDone.overall.translated / importDone.overall.total) * 100).toFixed(2)
+          : 0;
+        const pctText = pctNum.toFixed(2).replace(".", ",");
+        const tone = importDone.errors.length > 0 ? "warning" : "success";
+        const accentRgba = tone === "warning" ? "217,119,6" : "34,197,94";
+        const accentVar = tone === "warning" ? "var(--warning,#d97706)" : "var(--success)";
+        return (
+          <div
+            className="fixed inset-0 z-40 bg-black/60 flex items-center justify-center p-6"
+            onClick={() => setImportDone(null)}
+          >
+            <div
+              className="w-full max-w-[600px] bg-[var(--bg-surface)] border border-[var(--border-soft)] rounded-xl shadow-2xl overflow-hidden"
+              onClick={(e) => e.stopPropagation()}
+            >
+              <div
+                className="relative px-8 pt-7 pb-6 text-center"
+                style={{
+                  background: `linear-gradient(135deg, rgba(${accentRgba},0.18) 0%, rgba(${accentRgba},0.05) 60%, transparent 100%)`,
+                  borderBottom: "1px solid var(--border-soft)",
+                }}
+              >
+                <div
+                  className="inline-flex items-center justify-center w-14 h-14 rounded-full mb-3"
+                  style={{
+                    background: `radial-gradient(circle, rgba(${accentRgba},0.30), rgba(${accentRgba},0.05))`,
+                    boxShadow: `0 0 22px -4px rgba(${accentRgba},0.45)`,
+                  }}
+                >
+                  <svg className="w-7 h-7" fill="none" viewBox="0 0 24 24" stroke={accentVar} strokeWidth={2.5}>
+                    <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
+                  </svg>
+                </div>
+                <h2 className="text-[22px] font-bold text-[var(--text-strong)] mb-1" style={{ fontFamily: "'Playfair Display', Georgia, serif" }}>
+                  {t("hbr.importDone.title")}
+                </h2>
+                <p className="text-[12.5px] text-[var(--text-muted)]">
+                  {t("hbr.importDone.subtitle", { records: importDone.records, files: importDone.files.length })}
+                </p>
+              </div>
+
+              {/* Overall progress */}
+              <div className="px-6 py-5">
+                <div className="rounded-lg border border-[var(--border-soft)] bg-[var(--bg)] px-4 py-3">
+                  <div className="flex items-end justify-between mb-1.5">
+                    <p className="text-[10px] uppercase tracking-wider text-[var(--text-faint)]">
+                      {t("hbr.importDone.overall")}
+                    </p>
+                    <p className="text-[22px] font-bold tabular-nums leading-none text-[var(--success)]">
+                      {pctText}%
+                    </p>
+                  </div>
+                  <div className="h-2 rounded-full bg-[var(--bg-elevated)] overflow-hidden border border-[var(--border-soft)]">
+                    <div className="h-full bg-[var(--success)] transition-all" style={{ width: `${Math.min(100, pctNum)}%` }} />
+                  </div>
+                  <p className="text-[11px] text-[var(--text-muted)] mt-1.5 tabular-nums">
+                    {importDone.overall.translated.toLocaleString("uk-UA")} / {importDone.overall.total.toLocaleString("uk-UA")}
+                  </p>
+                </div>
+              </div>
+
+              {/* Updated files list */}
+              <div className="px-6 pb-5">
+                <p className="text-[10px] uppercase tracking-wider text-[var(--text-faint)] mb-2">
+                  {t("hbr.importDone.filesUpdated", { n: importDone.files.length })}
+                </p>
+                {importDone.files.length === 0 ? (
+                  <p className="text-[11.5px] text-[var(--text-muted)] italic">{t("hbr.importDone.empty")}</p>
+                ) : (
+                  <ul className="max-h-[200px] overflow-auto rounded-md border border-[var(--border-soft)] bg-[var(--bg)] divide-y divide-[var(--border-soft)]">
+                    {importDone.files.map((f, i) => (
+                      <li key={i} className="px-3 py-1.5 flex items-center justify-between gap-2 text-[11.5px]">
+                        <span className="font-mono text-[var(--text)] truncate min-w-0 flex-1" title={f.name}>{f.name}</span>
+                        <span className="tabular-nums text-[var(--success)] font-semibold shrink-0">
+                          +{f.updated.toLocaleString("uk-UA")}
+                        </span>
+                      </li>
+                    ))}
+                  </ul>
+                )}
+
+                {importDone.errors.length > 0 && (
+                  <details className="mt-2 text-[11px]">
+                    <summary className="cursor-pointer text-[var(--warning,#d97706)]">
+                      {t("hbr.importDone.errorsSummary", { n: importDone.errors.length })}
+                    </summary>
+                    <ul className="mt-1.5 ml-4 list-disc text-[var(--text-muted)] space-y-0.5 max-h-[160px] overflow-auto">
+                      {importDone.errors.slice(0, 30).map((e, i) => <li key={i}>{e}</li>)}
+                    </ul>
+                  </details>
+                )}
+              </div>
+
+              <div className="px-6 pb-5 flex items-center justify-end gap-2 border-t border-[var(--border-soft)] pt-4">
+                <button className="dp-btn dp-btn--primary" onClick={() => setImportDone(null)}>{t("btn.close")}</button>
+              </div>
+            </div>
+          </div>
+        );
+      })()}
+
+      {packSuccess && (() => {
+        const hasFailures = packSuccess.failed > 0 || packSuccess.totalFields === 0;
+        const accent = hasFailures ? "warning" : "success";
+        const accentRgba = hasFailures ? "217,119,6" : "34,197,94";
+        const accentVar = hasFailures ? "var(--warning,#d97706)" : "var(--success)";
+        const sizeMb = packSuccess.bundleSize
+          ? `${(packSuccess.bundleSize / 1024 / 1024).toFixed(1)} MB` : "—";
+        return (
+          <div
+            className="fixed inset-0 z-40 bg-black/60 flex items-center justify-center p-6"
+            onClick={() => setPackSuccess(null)}
+          >
+            <div
+              className="w-full max-w-[600px] bg-[var(--bg-surface)] border border-[var(--border-soft)] rounded-xl shadow-2xl overflow-hidden"
+              onClick={(e) => e.stopPropagation()}
+            >
+              {/* Hero band */}
+              <div
+                className="relative px-8 pt-7 pb-6 text-center"
+                style={{
+                  background: `linear-gradient(135deg, rgba(${accentRgba},0.18) 0%, rgba(${accentRgba},0.05) 60%, transparent 100%)`,
+                  borderBottom: "1px solid var(--border-soft)",
+                }}
+              >
+                <div
+                  className="inline-flex items-center justify-center w-14 h-14 rounded-full mb-3"
+                  style={{
+                    background: `radial-gradient(circle, rgba(${accentRgba},0.30), rgba(${accentRgba},0.05))`,
+                    boxShadow: `0 0 22px -4px rgba(${accentRgba},0.45)`,
+                  }}
+                >
+                  {hasFailures ? (
+                    <svg className="w-7 h-7" fill="none" viewBox="0 0 24 24" stroke={accentVar} strokeWidth={2.5}>
+                      <path strokeLinecap="round" strokeLinejoin="round" d="M12 9v2m0 4h.01M10.29 3.86l-8.18 14.18A2 2 0 003.84 21h16.32a2 2 0 001.73-2.96L13.71 3.86a2 2 0 00-3.42 0z" />
+                    </svg>
+                  ) : (
+                    <svg className="w-7 h-7" fill="none" viewBox="0 0 24 24" stroke={accentVar} strokeWidth={2.5}>
+                      <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
+                    </svg>
+                  )}
+                </div>
+                <h2 className="text-[22px] font-bold text-[var(--text-strong)] mb-1" style={{ fontFamily: "'Playfair Display', Georgia, serif" }}>
+                  {t(hasFailures ? "hbr.pack.success.titleWarn" : "hbr.pack.success.title")}
+                </h2>
+                <p className="text-[12.5px] text-[var(--text-muted)]">
+                  {t(hasFailures ? "hbr.pack.success.subtitleWarn" : "hbr.pack.success.subtitle")}
+                </p>
+              </div>
+
+              {/* Metrics grid 3-up */}
+              <div className="grid grid-cols-3 gap-3 px-6 py-5">
+                <div className="rounded-lg border border-[var(--border-soft)] bg-[var(--bg)] px-4 py-3">
+                  <p className="text-[10px] uppercase tracking-wider text-[var(--text-faint)] mb-1">
+                    {t("hbr.pack.success.metric.applied")}
+                  </p>
+                  <p className="text-[22px] font-bold text-[var(--success)] tabular-nums leading-none">
+                    {packSuccess.applied.toLocaleString("uk-UA")}
+                  </p>
+                  <p className="text-[10.5px] text-[var(--text-muted)] mt-1.5">{t("hbr.pack.success.metric.mb")}</p>
+                </div>
+                <div className="rounded-lg border border-[var(--border-soft)] bg-[var(--bg)] px-4 py-3">
+                  <p className="text-[10px] uppercase tracking-wider text-[var(--text-faint)] mb-1">
+                    {t("hbr.pack.success.metric.fields")}
+                  </p>
+                  <p className="text-[22px] font-bold text-[var(--text-strong)] tabular-nums leading-none">
+                    {packSuccess.totalFields.toLocaleString("uk-UA")}
+                  </p>
+                  <p className="text-[10.5px] text-[var(--text-muted)] mt-1.5">{t("hbr.pack.success.metric.fieldsHint")}</p>
+                </div>
+                <div className="rounded-lg border border-[var(--border-soft)] bg-[var(--bg)] px-4 py-3">
+                  <p className="text-[10px] uppercase tracking-wider text-[var(--text-faint)] mb-1">
+                    {t("hbr.pack.success.metric.failed")}
+                  </p>
+                  <p
+                    className="text-[22px] font-bold tabular-nums leading-none"
+                    style={{ color: packSuccess.failed > 0 ? "var(--warning,#d97706)" : "var(--text-strong)" }}
+                  >
+                    {packSuccess.failed.toLocaleString("uk-UA")}
+                  </p>
+                  <p className="text-[10.5px] text-[var(--text-muted)] mt-1.5">{t("hbr.pack.success.metric.failedHint")}</p>
+                </div>
+              </div>
+
+              {/* Paths */}
+              <div className="px-6 pb-5 space-y-2.5">
+                {packSuccess.bundlePath && (
+                  <div className="rounded-md border border-[var(--border-soft)] bg-[var(--bg)] px-3 py-2 flex items-start gap-3">
+                    <span className="text-[10px] uppercase tracking-wider text-[var(--text-faint)] shrink-0 mt-0.5">
+                      {t("hbr.pack.success.bundle", { size: sizeMb })}
+                    </span>
+                    <p className="text-[11px] font-mono text-[var(--text)] break-all flex-1 min-w-0" title={packSuccess.bundlePath}>
+                      {packSuccess.bundlePath}
+                    </p>
+                  </div>
+                )}
+                {packSuccess.bakPath && (
+                  <div className="rounded-md border border-[var(--border-soft)] bg-[var(--bg)] px-3 py-2 flex items-start gap-3">
+                    <span className="text-[10px] uppercase tracking-wider text-[var(--text-faint)] shrink-0 mt-0.5">
+                      {t("hbr.pack.success.bak")}
+                    </span>
+                    <p className="text-[11px] font-mono text-[var(--text-muted)] break-all flex-1 min-w-0" title={packSuccess.bakPath}>
+                      {packSuccess.bakPath}
+                    </p>
+                  </div>
+                )}
+                {packSuccess.failedRows && packSuccess.failedRows.length > 0 && (
+                  <details className="text-[11px]">
+                    <summary className="cursor-pointer text-[var(--warning,#d97706)]">
+                      {t("hbr.pack.success.failedSummary", { n: packSuccess.failedRows.length })}
+                    </summary>
+                    <ul className="mt-1.5 ml-4 list-disc text-[var(--text-muted)] space-y-0.5">
+                      {packSuccess.failedRows.slice(0, 20).map((f, i) => (
+                        <li key={i}><span className="font-mono">{f.name}</span> — {f.reason}</li>
+                      ))}
+                    </ul>
+                  </details>
+                )}
+              </div>
+
+              {/* Actions */}
+              <div className="px-6 pb-5 flex flex-wrap items-center gap-2 border-t border-[var(--border-soft)] pt-4">
+                <button
+                  className="dp-btn"
+                  onClick={() => {
+                    if (!packSuccess.bundlePath) return;
+                    const dir = packSuccess.bundlePath.replace(/[\\/][^\\/]+$/, "");
+                    window.dp2.openFolder?.(dir);
+                  }}
+                  disabled={!packSuccess.bundlePath}
+                >
+                  <svg className="w-4 h-4 mr-1.5 inline" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                    <path strokeLinecap="round" strokeLinejoin="round" d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-7l-2-2H5a2 2 0 00-2 2z" />
+                  </svg>
+                  {t("hbr.pack.success.openFolder")}
+                </button>
+                <div className="flex-1" />
+                <button className="dp-btn" onClick={() => setPackSuccess(null)}>
+                  {t("btn.close")}
+                </button>
+                <button
+                  className={`dp-btn dp-btn--${accent === "success" ? "success" : "primary"}`}
+                  style={{ boxShadow: `0 0 18px -4px rgba(${accentRgba},0.55)` }}
+                  onClick={async () => {
+                    try {
+                      const w = window.dp2 as unknown as { launchSteamGame?: (id: string) => Promise<{ ok: boolean; error?: string }> };
+                      if (w.launchSteamGame) await w.launchSteamGame("2286600");
+                    } catch {}
+                    setPackSuccess(null);
+                  }}
+                >
+                  <svg className="w-4 h-4 mr-1.5 inline" fill="currentColor" viewBox="0 0 24 24">
+                    <path d="M8 5v14l11-7z" />
+                  </svg>
+                  {t("hbr.pack.success.launchGame")}
+                </button>
+              </div>
+            </div>
+          </div>
+        );
+      })()}
     </div>
   );
 }

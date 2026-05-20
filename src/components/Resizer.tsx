@@ -55,11 +55,16 @@ export function Resizer({ value, onChange, invert = false, min = 160, max = 1200
   return (
     <div
       role="separator"
-      className="shrink-0 w-[5px] cursor-col-resize bg-transparent hover:bg-[var(--accent)]/40 active:bg-[var(--accent)] transition-colors"
+      // Wide hit-target (8px) — користувач не промахується. Visible separator
+      // лишається тонкий (2px) у центрі, стає accent на hover/drag для
+      // зворотного зв'язку.
+      className="shrink-0 w-2 cursor-col-resize group flex items-center justify-center"
       onPointerDown={onPointerDown}
       onPointerMove={onPointerMove}
       onPointerUp={onPointerUp}
       onPointerCancel={onPointerUp}
-    />
+    >
+      <div className="h-full w-[2px] bg-[var(--border-soft)] group-hover:bg-[var(--accent)] group-active:bg-[var(--accent)] transition-colors" />
+    </div>
   );
 }

@@ -7,6 +7,12 @@ import { t } from "../lib/i18n";
 
 export type ToastTone = "info" | "success" | "error" | "warning";
 
+export interface ToastAction {
+  label: string;
+  /** Click handler. Toast закривається автоматично після виклику. */
+  onClick: () => void;
+}
+
 export interface ToastData {
   id: number;
   tone: ToastTone;
@@ -14,6 +20,8 @@ export interface ToastData {
   body: string;
   /** ms до автозакриття. 0 = не закривати автоматично. */
   durationMs?: number;
+  /** Опціональна action-кнопка (наприклад: "Перейти до запису"). */
+  action?: ToastAction;
 }
 
 interface Props {
@@ -65,6 +73,17 @@ function ToastItem({ toast, onDismiss }: { toast: ToastData; onDismiss: (id: num
         <p className="text-[12.5px] text-[var(--text)] leading-snug break-all whitespace-pre-wrap">
           {toast.body}
         </p>
+        {toast.action && (
+          <button
+            className="mt-1.5 text-[11px] font-semibold uppercase tracking-wider hover:underline"
+            style={{ color: borderColor }}
+            onClick={() => {
+              try { toast.action!.onClick(); } finally { onDismiss(toast.id); }
+            }}
+          >
+            {toast.action.label} →
+          </button>
+        )}
       </div>
       <button
         onClick={() => onDismiss(toast.id)}
@@ -89,7 +108,7 @@ const dismissListeners = new Set<(id: number) => void>();
 
 export function showToast(
   body: string,
-  opts: { title?: string; tone?: ToastTone; durationMs?: number } = {}
+  opts: { title?: string; tone?: ToastTone; durationMs?: number; action?: ToastAction } = {}
 ) {
   const t: ToastData = {
     id: nextId++,
@@ -97,6 +116,7 @@ export function showToast(
     title: opts.title,
     body,
     durationMs: opts.durationMs ?? 6000,
+    action: opts.action,
   };
   for (const l of showListeners) l(t);
   return t.id;
@@ -105,6 +125,22 @@ export function showToast(
 /** Програмно закрити toast (за id, який повернув showToast). */
 export function dismissToast(id: number) {
   for (const l of dismissListeners) l(id);
+}
+
+/** Помилка: червона рамка, 10с (довше за info — щоб встигли прочитати). */
+export function showError(body: string | unknown, title?: string) {
+  const msg = body instanceof Error ? body.message : typeof body === "string" ? body : String(body);
+  return showToast(msg, { title: title ?? "Помилка", tone: "error", durationMs: 10000 });
+}
+
+/** Успіх: зелена рамка, 4с (короткий ack). */
+export function showOk(body: string, title?: string) {
+  return showToast(body, { title, tone: "success", durationMs: 4000 });
+}
+
+/** Попередження: оранжева рамка, 7с. */
+export function showWarn(body: string, title?: string) {
+  return showToast(body, { title, tone: "warning", durationMs: 7000 });
 }
 
 export function subscribeToasts(fn: (t: ToastData) => void): () => void {

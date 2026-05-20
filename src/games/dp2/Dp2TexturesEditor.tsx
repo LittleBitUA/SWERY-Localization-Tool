@@ -1,7 +1,8 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useT } from "../../lib/i18n";
-import { alert as showAlert, confirm as showConfirm } from "../../lib/dialogs";
+import { confirm as showConfirm } from "../../lib/dialogs";
 import { DP2_TEXTURES, type TextureEntry } from "./textures-list";
+import { Dp2TextureBusyModal, type BusyKind, type BusyTarget } from "./Dp2TextureBusyModal";
 
 interface Dp2TexturesEditorProps {
   onHome: () => void;
@@ -10,16 +11,73 @@ interface Dp2TexturesEditorProps {
 type Status = "idle" | "exporting" | "replacing";
 type Preview = { src: string; mtime: number };
 
+// Витягуємо людино-читабельний крок з рядка PowerShell. Скрипти пишуть префікси
+// "[STEP] …" / "[DIAG] …" / "Exported …". Все інше вважається сирим логом.
+function pickStatusFromLine(ln: string): string | null {
+  const m = ln.match(/^\[STEP\]\s*(.+)$/);
+  if (m) return m[1].trim();
+  if (/^Exported\s/.test(ln)) return ln.trim();
+  return null;
+}
+
 export function Dp2TexturesEditor({ onHome }: Dp2TexturesEditorProps) {
   const t = useT();
 
   const [status, setStatus] = useState<Status>("idle");
-  const [globalMsg, setGlobalMsg] = useState<string>("");
   const [previews, setPreviews] = useState<Record<string, Preview>>({});
   const [exportedDir, setExportedDir] = useState<string | null>(null);
   const [busyIds, setBusyIds] = useState<Set<string>>(new Set());
   const [search, setSearch] = useState("");
   const [groupFilter, setGroupFilter] = useState<string>("all");
+
+  // Стан модалки прогресу.
+  const [modalOpen, setModalOpen] = useState(false);
+  const [modalKind, setModalKind] = useState<BusyKind | null>(null);
+  const [modalTarget, setModalTarget] = useState<BusyTarget>({});
+  const [modalLines, setModalLines] = useState<string[]>([]);
+  const [modalStatus, setModalStatus] = useState<string>("");
+  const [modalDone, setModalDone] = useState(false);
+  const [modalError, setModalError] = useState<string | null>(null);
+  const [modalCurrent, setModalCurrent] = useState<number | undefined>(undefined);
+  const [modalTotal, setModalTotal] = useState<number | undefined>(undefined);
+  const [modalResult, setModalResult] = useState<{
+    mode?: string; resS?: string; offset?: number; size?: number;
+    output?: string; outDir?: string; exportedCount?: number;
+  } | undefined>(undefined);
+  const exportedSoFarRef = useRef(0);
+
+  function resetModal() {
+    setModalLines([]);
+    setModalStatus("");
+    setModalDone(false);
+    setModalError(null);
+    setModalCurrent(undefined);
+    setModalTotal(undefined);
+    setModalResult(undefined);
+    exportedSoFarRef.current = 0;
+  }
+
+  function openModal(kind: BusyKind, target: BusyTarget, total?: number) {
+    resetModal();
+    setModalKind(kind);
+    setModalTarget(target);
+    if (typeof total === "number") {
+      setModalTotal(total);
+      setModalCurrent(0);
+    }
+    setModalOpen(true);
+  }
+
+  function pushLine(ln: string) {
+    setModalLines((prev) => (prev.length > 500 ? [...prev.slice(-500), ln] : [...prev, ln]));
+    const s = pickStatusFromLine(ln);
+    if (s) setModalStatus(s);
+    // Інкремент лічильника для exportAll по кожному "Exported …" рядку.
+    if (/^Exported\s/.test(ln)) {
+      exportedSoFarRef.current += 1;
+      setModalCurrent(exportedSoFarRef.current);
+    }
+  }
 
   const groups = useMemo(() => {
     const s = new Set<string>();
@@ -64,17 +122,29 @@ export function Dp2TexturesEditor({ onHome }: Dp2TexturesEditorProps) {
     })().catch(() => {});
   }, []);
 
+  // Підписка на потокові рядки PowerShell, поки модалка відкрита. Слухаємо
+  // обидва канали (export + replace) — будь-який не релевантний нічого не
+  // зашкодить, бо хибних подій тут не буває (емітить лише активний скрипт).
+  useEffect(() => {
+    if (!modalOpen) return;
+    const offExp = window.dp2.onTexturesExportProgress(pushLine);
+    const offRep = window.dp2.onTexturesReplaceProgress(pushLine);
+    return () => { offExp?.(); offRep?.(); };
+  }, [modalOpen]);
+
   async function exportTexture(tx: TextureEntry) {
     if (status !== "idle") return; // глобальний lock — два паралельні Replace на одне .assets зруйнують offset table.
     setBusyIds((s) => new Set(s).add(tx.id));
     setStatus("exporting");
+    openModal("exportOne", { name: tx.name, pathId: tx.pathId }, 1);
     try {
       const res = await window.dp2.texturesExport({
         assetsFile: tx.assetsFile,
         pathIds: [tx.pathId],
       });
       if (!res.success) {
-        await showAlert(t("textures.export.errTitle"), res.error ?? "?", { tone: "danger" });
+        setModalError(res.error ?? "?");
+        setModalDone(true);
         return;
       }
       const exported = res.exported?.find((e) => e.pathId === tx.pathId);
@@ -83,14 +153,21 @@ export function Dp2TexturesEditor({ onHome }: Dp2TexturesEditorProps) {
         if (b64) setPreviews((p) => ({ ...p, [tx.id]: { src: `data:image/png;base64,${b64}`, mtime: Date.now() } }));
       }
       if (res.outDir) setExportedDir(res.outDir);
+      setModalCurrent(1);
+      setModalResult({ outDir: res.outDir, exportedCount: res.exported?.length ?? 0 });
+      setModalDone(true);
+    } catch (e: unknown) {
+      setModalError(e instanceof Error ? e.message : String(e));
+      setModalDone(true);
     } finally {
       setBusyIds((s) => { const n = new Set(s); n.delete(tx.id); return n; });
+      setStatus("idle");
     }
   }
 
   async function exportAll() {
     setStatus("exporting");
-    setGlobalMsg(t("textures.export.running", { n: DP2_TEXTURES.length }));
+    openModal("exportAll", { total: DP2_TEXTURES.length }, DP2_TEXTURES.length);
     try {
       // Групуємо за assetsFile (зараз один resources.assets, але архітектурно правильно)
       const byFile = new Map<string, number[]>();
@@ -103,7 +180,8 @@ export function Dp2TexturesEditor({ onHome }: Dp2TexturesEditorProps) {
       for (const [assetsFile, pathIds] of byFile) {
         const res = await window.dp2.texturesExport({ assetsFile, pathIds });
         if (!res.success) {
-          await showAlert(t("textures.export.errTitle"), res.error ?? "?", { tone: "danger" });
+          setModalError(res.error ?? "?");
+          setModalDone(true);
           return;
         }
         if (res.outDir && !firstDir) firstDir = res.outDir;
@@ -111,6 +189,7 @@ export function Dp2TexturesEditor({ onHome }: Dp2TexturesEditorProps) {
           for (const e of res.exported) allExported.push({ pathId: e.pathId, file: e.file });
         }
       }
+      setModalCurrent(allExported.length);
       // Завантажити прев'ю паралельно (Promise.all) — 20+ файлів × 1MB кожен,
       // послідовно це 5-10 сек, паралельно 1-2 сек.
       const previewTasks = DP2_TEXTURES.map(async (tx): Promise<[string, Preview] | null> => {
@@ -125,11 +204,13 @@ export function Dp2TexturesEditor({ onHome }: Dp2TexturesEditorProps) {
       for (const r of previewResults) if (r) nextPrev[r[0]] = r[1];
       setPreviews(nextPrev);
       if (firstDir) setExportedDir(firstDir);
-      setGlobalMsg(t("textures.export.done", { n: allExported.length }));
-      await showAlert(t("textures.export.successTitle"), t("textures.export.successBody", { n: allExported.length, dir: firstDir ?? "—" }), { tone: "success" });
+      setModalResult({ outDir: firstDir ?? undefined, exportedCount: allExported.length });
+      setModalDone(true);
+    } catch (e: unknown) {
+      setModalError(e instanceof Error ? e.message : String(e));
+      setModalDone(true);
     } finally {
       setStatus("idle");
-      setTimeout(() => setGlobalMsg(""), 6000);
     }
   }
 
@@ -149,7 +230,7 @@ export function Dp2TexturesEditor({ onHome }: Dp2TexturesEditorProps) {
 
     setBusyIds((s) => new Set(s).add(tx.id));
     setStatus("replacing");
-    setGlobalMsg(t("textures.replace.running", { name: tx.name }));
+    openModal("replace", { name: tx.name, pathId: tx.pathId });
     try {
       const res = await window.dp2.texturesReplace({
         pathId: tx.pathId,
@@ -157,22 +238,28 @@ export function Dp2TexturesEditor({ onHome }: Dp2TexturesEditorProps) {
         assetsFile: tx.assetsFile,
       });
       if (!res.success) {
-        await showAlert(t("textures.replace.errTitle"), res.error ?? "?", { tone: "danger" });
+        setModalError(res.error ?? "?");
+        setModalDone(true);
         return;
       }
       // Оновити прев'ю — підвантажуємо PNG, який щойно патчили в гру
       const b64 = await window.dp2.texturesReadBase64(picked);
       if (b64) setPreviews((p) => ({ ...p, [tx.id]: { src: `data:image/png;base64,${b64}`, mtime: Date.now() } }));
 
-      const where = res.mode === "resS-inplace"
-        ? t("textures.replace.successInplace", { resS: res.resS ?? "", offset: res.offset ?? 0, size: res.size ?? 0 })
-        : t("textures.replace.successAssets", { output: res.output ?? "" });
-      await showAlert(t("textures.replace.successTitle"), where, { tone: "success" });
-      setGlobalMsg(t("textures.replace.done", { name: tx.name }));
+      setModalResult({
+        mode: res.mode,
+        resS: res.resS,
+        offset: res.offset,
+        size: res.size,
+        output: res.output,
+      });
+      setModalDone(true);
+    } catch (e: unknown) {
+      setModalError(e instanceof Error ? e.message : String(e));
+      setModalDone(true);
     } finally {
       setBusyIds((s) => { const n = new Set(s); n.delete(tx.id); return n; });
       setStatus("idle");
-      setTimeout(() => setGlobalMsg(""), 6000);
     }
   }
 
@@ -189,13 +276,6 @@ export function Dp2TexturesEditor({ onHome }: Dp2TexturesEditorProps) {
           {DP2_TEXTURES.length} {t("textures.count")}
         </span>
         <div className="flex-1 min-w-0" />
-        {globalMsg && (
-          <span className={`text-[11px] font-mono px-2.5 py-1 rounded shrink-0 ${
-            status === "exporting" || status === "replacing" ? "dp-pill" : "dp-pill--success"
-          }`}>
-            {globalMsg}
-          </span>
-        )}
         {exportedDir && (
           <button
             className="dp-btn dp-btn--ghost shrink-0"
@@ -271,8 +351,8 @@ export function Dp2TexturesEditor({ onHome }: Dp2TexturesEditorProps) {
                       </div>
                     )}
                     {busy && (
-                      <div className="absolute inset-0 bg-[var(--bg)]/70 flex items-center justify-center text-[12px] text-[var(--text)]">
-                        ⏳ {t("textures.busy.short")}
+                      <div className="absolute inset-0 bg-[var(--bg)]/70 backdrop-blur-[1px] flex flex-col items-center justify-center gap-2 text-[var(--text)]">
+                        <span className="inline-block w-6 h-6 rounded-full border-2 border-[var(--text-faint)] border-t-[var(--accent,#3b82f6)] animate-spin" aria-hidden />
                       </div>
                     )}
                   </div>
@@ -317,6 +397,20 @@ export function Dp2TexturesEditor({ onHome }: Dp2TexturesEditorProps) {
           </div>
         )}
       </div>
+
+      <Dp2TextureBusyModal
+        open={modalOpen}
+        kind={modalKind}
+        target={modalTarget}
+        current={modalCurrent}
+        total={modalTotal}
+        statusLine={modalStatus}
+        lines={modalLines}
+        done={modalDone}
+        error={modalError}
+        result={modalResult}
+        onClose={() => setModalOpen(false)}
+      />
     </div>
   );
 }

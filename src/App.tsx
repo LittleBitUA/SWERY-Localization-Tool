@@ -12,11 +12,15 @@ import { Resizer } from "./components/Resizer";
 import { HomeV2 as HomeScreen } from "./ui-v2/HomeV2";
 import { OnboardingScreen } from "./components/OnboardingScreen";
 import { Dp1Editor } from "./games/dp1/Dp1Editor";
-import { Dp1SettingsModal } from "./games/dp1/Dp1SettingsModal";
 import { Dp2FontsEditor } from "./games/dp2/Dp2FontsEditor";
 import { Dp2TexturesEditor } from "./games/dp2/Dp2TexturesEditor";
 import { Dp2TextPrepWizard } from "./games/dp2/Dp2TextPrepWizard";
 import { HbrEditor } from "./games/hbr/HbrEditor";
+import { MissingEditor } from "./games/missing/MissingEditor";
+import { MissingFontsEditor } from "./games/missing/MissingFontsEditor";
+import { MissingTexturesEditor } from "./games/missing/MissingTexturesEditor";
+import { HbrFontsEditor } from "./games/hbr/HbrFontsEditor";
+import { ErrorBoundary } from "./components/ErrorBoundary";
 import { dp2TextRequiredEntries } from "./games/dp2/required-text-files";
 import { TglEditor } from "./games/tgl/TglEditor";
 import { TglFontsEditor } from "./games/tgl/fonts/TglFontsEditor";
@@ -27,10 +31,11 @@ import { useStore } from "./lib/store";
 import { useAutosave } from "./lib/useAutosave";
 import type { SetupStatus } from "./lib/ipc";
 import { DialogHost } from "./lib/dialogs";
+import { UpdateBanner } from "./components/UpdateBanner";
 import { ToastProvider } from "./components/ToastProvider";
 
-type Stage = "loading" | "onboarding" | "home" | "prep-dp2" | "editor-dp2" | "editor-dp1" | "editor-tgl" | "fonts-dp2" | "textures-dp2" | "fonts-tgl" | "editor-hbr";
-type ActiveGame = "dp1" | "dp2" | "tgl" | "hbr" | null;
+type Stage = "loading" | "onboarding" | "home" | "prep-dp2" | "editor-dp2" | "editor-dp1" | "editor-tgl" | "fonts-dp2" | "textures-dp2" | "fonts-tgl" | "editor-hbr" | "fonts-hbr" | "editor-missing" | "fonts-missing" | "textures-missing";
+type ActiveGame = "dp1" | "dp2" | "tgl" | "hbr" | "missing" | null;
 
 export default function App() {
   const [findOpen, setFindOpen] = useState(false);
@@ -47,7 +52,6 @@ export default function App() {
   // перезапуску відкритися саме там, де користувач був, а не завжди в Text.
   const [dp2Mode, setDp2Mode] = useLocalStorage<"text" | "fonts" | "textures">("dp2.ui.dp2Mode", "text");
   const [tglMode, setTglMode] = useLocalStorage<"text" | "fonts">("dp2.ui.tglMode", "text");
-  const [dp1SettingsOpen, setDp1SettingsOpen] = useState(false);
   const [fontsSettingsOpen, setFontsSettingsOpen] = useState(false);
   const [glossary, setGlossary] = useState<GlossaryEntry[]>([]);
 
@@ -220,7 +224,7 @@ export default function App() {
         <div className="h-screen flex items-center justify-center bg-[var(--bg)] text-[var(--text-muted)] text-[13px]">
           Завантаження…
         </div>
-        <DialogHost /><ToastProvider />
+        <DialogHost /><ToastProvider /><UpdateBanner />
       </>
     );
   }
@@ -234,17 +238,23 @@ export default function App() {
             onComplete={() => refreshStatusAndRoute()}
           />
         </div>
-        <DialogHost /><ToastProvider />
+        <DialogHost /><ToastProvider /><UpdateBanner />
       </>
     );
   }
 
   if (stage === "home") {
     const homeProps = {
-      onPickGame: (id: "dp1" | "dp2" | "tgl" | "hbr", mode?: "text" | "fonts" | "textures") => {
+      onPickGame: (id: "dp1" | "dp2" | "tgl" | "hbr" | "missing", mode?: "text" | "fonts" | "textures") => {
         setActiveGame(id);
+        if (id === "missing") {
+          if (mode === "fonts") setStage("fonts-missing");
+          else if (mode === "textures") setStage("textures-missing");
+          else setStage("editor-missing");
+          return;
+        }
         if (id === "hbr") {
-          setStage("editor-hbr");
+          setStage(mode === "fonts" ? "fonts-hbr" : "editor-hbr");
           return;
         }
         if (id === "dp1") {
@@ -271,8 +281,8 @@ export default function App() {
         setActiveGame("dp2");
         setStage("editor-dp2");
       },
-      onOpenRecent: async (game: "dp1" | "dp2" | "tgl" | "hbr", path: string) => {
-        if (game === "hbr") return;
+      onOpenRecent: async (game: "dp1" | "dp2" | "tgl" | "hbr" | "missing", path: string) => {
+        if (game === "hbr" || game === "missing") return;
         if (game === "dp1") {
           await window.dp2.saveSettings({ dp1EngPath: path });
           setActiveGame("dp1");
@@ -295,7 +305,7 @@ export default function App() {
         <div className="h-screen flex flex-col">
           <HomeScreen {...homeProps} />
         </div>
-        <DialogHost /><ToastProvider />
+        <DialogHost /><ToastProvider /><UpdateBanner />
       </>
     );
   }
@@ -312,11 +322,66 @@ export default function App() {
               // прочитає stale activeGame з closure і поверне нас назад у editor.
               window.dp2.setupStatus().then(setSetupStatus);
             }}
-            onOpenSettings={() => setDp1SettingsOpen(true)}
           />
-          <Dp1SettingsModal open={dp1SettingsOpen} onClose={() => setDp1SettingsOpen(false)} />
         </div>
-        <DialogHost /><ToastProvider />
+        <DialogHost /><ToastProvider /><UpdateBanner />
+      </>
+    );
+  }
+
+  if (stage === "editor-missing") {
+    return (
+      <>
+        <div className="h-screen flex flex-col">
+          <ErrorBoundary label="THE MISSING — text">
+            <MissingEditor
+              onHome={() => {
+                setActiveGame(null);
+                setStage("home");
+                window.dp2.setupStatus().then(setSetupStatus);
+              }}
+            />
+          </ErrorBoundary>
+        </div>
+        <DialogHost /><ToastProvider /><UpdateBanner />
+      </>
+    );
+  }
+
+  if (stage === "fonts-missing") {
+    return (
+      <>
+        <div className="h-screen flex flex-col">
+          <ErrorBoundary label="THE MISSING — fonts">
+            <MissingFontsEditor
+              onHome={() => {
+                setActiveGame(null);
+                setStage("home");
+                window.dp2.setupStatus().then(setSetupStatus);
+              }}
+            />
+          </ErrorBoundary>
+        </div>
+        <DialogHost /><ToastProvider /><UpdateBanner />
+      </>
+    );
+  }
+
+  if (stage === "textures-missing") {
+    return (
+      <>
+        <div className="h-screen flex flex-col">
+          <ErrorBoundary label="THE MISSING — textures">
+            <MissingTexturesEditor
+              onHome={() => {
+                setActiveGame(null);
+                setStage("home");
+                window.dp2.setupStatus().then(setSetupStatus);
+              }}
+            />
+          </ErrorBoundary>
+        </div>
+        <DialogHost /><ToastProvider /><UpdateBanner />
       </>
     );
   }
@@ -325,15 +390,36 @@ export default function App() {
     return (
       <>
         <div className="h-screen flex flex-col">
-          <HbrEditor
-            onHome={() => {
-              setActiveGame(null);
-              setStage("home");
-              window.dp2.setupStatus().then(setSetupStatus);
-            }}
-          />
+          <ErrorBoundary label="Hotel Barcelona — text">
+            <HbrEditor
+              onHome={() => {
+                setActiveGame(null);
+                setStage("home");
+                window.dp2.setupStatus().then(setSetupStatus);
+              }}
+            />
+          </ErrorBoundary>
         </div>
-        <DialogHost /><ToastProvider />
+        <DialogHost /><ToastProvider /><UpdateBanner />
+      </>
+    );
+  }
+
+  if (stage === "fonts-hbr") {
+    return (
+      <>
+        <div className="h-screen flex flex-col">
+          <ErrorBoundary label="Hotel Barcelona — fonts">
+            <HbrFontsEditor
+              onHome={() => {
+                setActiveGame(null);
+                setStage("home");
+                window.dp2.setupStatus().then(setSetupStatus);
+              }}
+            />
+          </ErrorBoundary>
+        </div>
+        <DialogHost /><ToastProvider /><UpdateBanner />
       </>
     );
   }
@@ -350,7 +436,7 @@ export default function App() {
             }}
           />
         </div>
-        <DialogHost /><ToastProvider />
+        <DialogHost /><ToastProvider /><UpdateBanner />
       </>
     );
   }
@@ -367,7 +453,7 @@ export default function App() {
             }}
           />
         </div>
-        <DialogHost /><ToastProvider />
+        <DialogHost /><ToastProvider /><UpdateBanner />
       </>
     );
   }
@@ -384,7 +470,7 @@ export default function App() {
             }}
           />
         </div>
-        <DialogHost /><ToastProvider />
+        <DialogHost /><ToastProvider /><UpdateBanner />
       </>
     );
   }
@@ -403,7 +489,7 @@ export default function App() {
           />
           <SettingsModal open={fontsSettingsOpen} onClose={() => setFontsSettingsOpen(false)} />
         </div>
-        <DialogHost /><ToastProvider />
+        <DialogHost /><ToastProvider /><UpdateBanner />
       </>
     );
   }
@@ -467,7 +553,7 @@ export default function App() {
           if (saved) setGlossary(saved);
         }}
       />
-      <DialogHost /><ToastProvider />
+      <DialogHost /><ToastProvider /><UpdateBanner />
       {dp2PrepOpen && (
         <Dp2TextPrepWizard
           assetsPath={(setupStatus?.settings as { assetsPath?: string })?.assetsPath ?? null}

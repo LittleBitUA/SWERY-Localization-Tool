@@ -34,8 +34,10 @@ if ($metaDir -and -not (Test-Path $metaDir)) { New-Item -ItemType Directory -Pat
 # Load DLLs (order matters).
 $loadList = @(
     "Mono.Cecil.dll", "LibCpp2IL.dll",
+    "Newtonsoft.Json.dll",
     "AssetsTools.NET.dll",
-    "AssetsTools.NET.MonoCecil.dll", "AssetsTools.NET.Cpp2IL.dll"
+    "AssetsTools.NET.MonoCecil.dll", "AssetsTools.NET.Cpp2IL.dll",
+    "UABEANext4.dll"
 )
 foreach ($name in $loadList) {
     $p = Join-Path $UabeaDir $name
@@ -58,7 +60,13 @@ $metaList = New-Object System.Collections.ArrayList
 $bundleName = [System.IO.Path]::GetFileNameWithoutExtension($BundlePath)
 $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
 
-# Inline C#: JSON-serializer для MonoBehaviour. Той же, що у dp2-text-export.
+# Inline C#: JSON-serializer для MonoBehaviour.
+#
+# Прив'язано до UABEANext4.Logic.ImportExport.AssetExport.DumpJsonAsset, бо
+# наш кастомний walker не вмів виводити блок ManagedReferencesRegistry
+# (references: { version, RefIds }), і round-trip Import чекав цей JObject —
+# 13 файлів HBR падали з InvalidOperationException на JValue→Item.
+# Якщо UABEA-asm недоступний — використовуємо fallback-walker (без refs).
 $csCode = @'
 using System;
 using System.IO;
@@ -67,7 +75,26 @@ using AssetsTools.NET;
 
 public static class HbrJsonExport {
     public static string LastErr = "";
+
     public static string Serialize(AssetTypeValueField root) {
+        // Спершу пробуємо UABEANext через reflection — це гарантує симетрію
+        // з ImportJsonAsset (managed-references registry зберігається у JSON).
+        try {
+            var uabeaAsm = System.Reflection.Assembly.Load("UABEANext4");
+            var exporterType = uabeaAsm.GetType("UABEANext4.Logic.ImportExport.AssetExport");
+            if (exporterType != null) {
+                using (var ms = new MemoryStream()) {
+                    var ctor = exporterType.GetConstructor(new Type[] { typeof(Stream) });
+                    var exporter = ctor.Invoke(new object[] { ms });
+                    var dumpMethod = exporterType.GetMethod("DumpJsonAsset", new Type[] { typeof(AssetTypeValueField) });
+                    dumpMethod.Invoke(exporter, new object[] { root });
+                    return Encoding.UTF8.GetString(ms.ToArray());
+                }
+            }
+        } catch (Exception ex) {
+            LastErr = "UABEA export failed, falling back: " + ex.Message;
+        }
+        // Fallback — наш простий walker.
         try {
             var sb = new StringBuilder(1 << 18);
             Walk(root, sb, 0);

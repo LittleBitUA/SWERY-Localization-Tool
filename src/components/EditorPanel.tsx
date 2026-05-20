@@ -1,6 +1,9 @@
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import Editor, { type OnMount } from "@monaco-editor/react";
+import type * as MonacoEditor from "monaco-editor";
 import { useStore } from "../lib/store";
+import { DiffModal } from "./DiffModal";
+import { MonacoFontSizeControl, useMonacoFontSize } from "./MonacoFontSize";
 import type { FlatEntry } from "../types";
 import { useT } from "../lib/i18n";
 import {
@@ -72,8 +75,14 @@ export function EditorPanel() {
   const active = idx !== null ? entries[idx] : null;
   const prevNeighbor = idx !== null ? neighbor(entries, idx, -1) : null;
   const nextNeighbor = idx !== null ? neighbor(entries, idx, 1) : null;
-  const editorRef = useRef<any>(null);
+  const editorRef = useRef<MonacoEditor.editor.IStandaloneCodeEditor | null>(null);
+  const monacoRef = useRef<typeof MonacoEditor | null>(null);
+  // Стабільний Monaco: НЕ remount на зміні запису — тільки model.setValue.
+  const lastKeyRef = useRef<string | null>(null);
+  const skipNextChangeRef = useRef(false);
   const [previewOpen, setPreviewOpen] = useLocalStorage<boolean>("dp2.ui.previewOpen", true);
+  const [diffOpen, setDiffOpen] = useState(false);
+  const [monacoFontSize] = useMonacoFontSize();
 
   // Глобальні шорткати редактора. Capture=true, щоб перехоплювати раніше
   // за Monaco/інпути (інакше Monaco з'їсть Ctrl+Enter, Alt+стрілки тощо).
@@ -127,6 +136,7 @@ export function EditorPanel() {
 
   const handleMount: OnMount = (editor, monaco) => {
     editorRef.current = editor;
+    monacoRef.current = monaco;
     registerDpTextLanguage(monaco);
     // Чистий VS Code-style темний — без сепії, без бордового
     monaco.editor.defineTheme("dp2-dark", {
@@ -159,20 +169,43 @@ export function EditorPanel() {
     });
     monaco.editor.setTheme("dp2-dark");
     editor.focus();
-    // Перша діагностика тегів для активного запису.
-    if (active) {
-      const origForDiag = active.originalEn ?? active.jp ?? "";
-      setTagDiagnostics(monaco, editor, origForDiag, active.en);
-    }
-    // На зміну вмісту — оновлювати діагностику.
+    // Діагностику тегів вішаємо у живий лiстенер, який читає active через ref.
+    // (Сам active змінюється — а handleMount-замикання заморожене на mount-час.)
     editor.onDidChangeModelContent(() => {
       const cur = editor.getValue();
-      if (active) {
-        const origForDiag = active.originalEn ?? active.jp ?? "";
+      const a = activeRef.current;
+      if (a) {
+        const origForDiag = a.originalEn ?? a.jp ?? "";
         setTagDiagnostics(monaco, editor, origForDiag, cur);
       }
     });
   };
+
+  // Ref на свіжий active — для readers всередині handleMount/onChange.
+  const activeRef = useRef(active);
+  useEffect(() => { activeRef.current = active; }, [active]);
+
+  // Sync моделі при перемиканні запису — стабільний Monaco без remount.
+  useEffect(() => {
+    const ed = editorRef.current;
+    const monaco = monacoRef.current;
+    if (!ed || !active) return;
+    const key = `${active.locator.filePath}::${idx}`;
+    if (lastKeyRef.current !== key) {
+      lastKeyRef.current = key;
+      skipNextChangeRef.current = true;
+      const model = ed.getModel();
+      if (model) {
+        model.setValue(active.en ?? "");
+        model.pushStackElement();
+      }
+      ed.setPosition({ lineNumber: 1, column: 1 });
+      if (monaco) {
+        const origForDiag = active.originalEn ?? active.jp ?? "";
+        setTagDiagnostics(monaco, ed, origForDiag, active.en);
+      }
+    }
+  }, [active, idx]);
 
   if (!active) {
     return (
@@ -321,6 +354,15 @@ export function EditorPanel() {
             {isSentence ? t("editor.ua.sentence") : t("editor.ua.item")}
           </label>
           <div className="flex items-center gap-2">
+            <MonacoFontSizeControl />
+            <button
+              className="text-[10px] uppercase tracking-wider text-[var(--accent)] hover:underline"
+              onClick={() => setDiffOpen(true)}
+              title="Side-by-side порівняння оригіналу і перекладу"
+              disabled={!active.originalEn && !active.jp}
+            >
+              Diff
+            </button>
             <button
               className="text-[10px] uppercase tracking-wider text-[var(--accent)] hover:underline"
               onClick={() => {
@@ -332,22 +374,24 @@ export function EditorPanel() {
               {t("editor.smartBreak.btn")}
             </button>
             <span className="text-[10px] text-[var(--text-faint)] tabular-nums">
-              {active.en.length} {t("dp1.chars")}
+              {active.en.length} {t("editor.chars")}
             </span>
           </div>
         </div>
         <div className="flex-1 min-h-0 mx-3 mb-3 border border-[var(--border)] rounded-md overflow-hidden">
           <Editor
-            key={`${active.locator.filePath}::${idx}`}
             defaultValue={active.en}
-            onChange={(v) => updateActive(active.charaName ?? "", v ?? "")}
+            onChange={(v) => {
+              if (skipNextChangeRef.current) { skipNextChangeRef.current = false; return; }
+              updateActive(active.charaName ?? "", v ?? "");
+            }}
             language="dp-text"
             theme="dp2-dark"
             onMount={handleMount}
             options={{
               fontFamily: '"JetBrains Mono", ui-monospace, "Cascadia Code", "Consolas", monospace',
-              fontSize: 13,
-              lineHeight: 20,
+              fontSize: monacoFontSize,
+              lineHeight: Math.round(monacoFontSize * 1.55),
               wordWrap: "on",
               minimap: { enabled: false },
               lineNumbers: "on",
@@ -411,6 +455,15 @@ export function EditorPanel() {
         <span className="dp-kbd">Ctrl+\</span>
         <span>{t("editor.kbd.focus")}</span>
       </div>
+      <DiffModal
+        open={diffOpen}
+        original={active.originalEn ?? active.jp ?? ""}
+        modified={active.en}
+        title={active.id || (isSentence ? active.charaName ?? "" : active.itemName ?? "")}
+        labelOriginal={active.originalEn ? "EN" : "JP"}
+        labelModified="UA"
+        onClose={() => setDiffOpen(false)}
+      />
     </aside>
   );
 }

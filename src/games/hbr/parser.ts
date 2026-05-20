@@ -13,6 +13,20 @@ export interface HbrTextItem {
   listIdx: number;      // індекс у _List.Array
 }
 
+// «Системні» рядки — ті, що НЕ переводяться в принципі, бо в них нема тексту:
+//   • тільки Unity-TMP теги типу `<space=0em>`, `<br/>`, `<color=red>…</color>`
+//     (після видалення тегів лишається порожній рядок);
+//   • placeholder-прочерк типу `-`, `--`, `---`.
+// Такі ряди має зараховуватись як "translated" автоматично — інакше прогрес
+// застрягає на 99% через сотні службових рядків, які перекладати нічим.
+export function isHbrSystemRow(original: string): boolean {
+  if (!original) return true;
+  const stripped = original.replace(/<[^>]+>/g, "").trim();
+  if (stripped.length === 0) return true;
+  if (/^-+$/.test(stripped)) return true;
+  return false;
+}
+
 // Витягуємо набір службових маркерів з тексту для valid-check.
 // Формат: placeholders `{0}`, `{name}`, `${var}`; HTML/inline tags `<color=...>`,
 // `</color>`; control sequences `\n`, `\r\n`; bracket-controls `[c="..."]`,
@@ -21,7 +35,9 @@ const PLACEHOLDER_RES = [
   /\{[A-Za-z0-9_]+\}/g,         // {0}, {name}
   /\$\{[^}]+\}/g,               // ${var}
   /<\/?[A-Za-z][^>]*>/g,        // <color=red>, </color>
-  /\[\/?[A-Za-z][^\]]*\]/g,     // [c="..."], [/c], [Job]
+  /\[\/?[A-Za-z][^\] ]*\]/g,    // [c="..."], [/c], [Job] — БЕЗ пробілу
+                                //  всередині, інакше ловило б "[RATED R]"
+                                //  (це звичайний текст, а не Unity-тег).
   /\\n/g, /\\r\\n/g,            // \n, \r\n у літералах
 ];
 export function extractPlaceholders(s: string): string[] {
@@ -282,23 +298,43 @@ export function applyCombinedToParsed(
   return { updated, missing };
 }
 
-// Серіалізує редаговані items назад у JSON. Працюємо з raw текстом —
-// зберігаємо формат і ключі поза `_Text`, лише оновлюємо значення.
+// Серіалізує редаговані items назад у JSON.
+//
+// КРИТИЧНО: НЕ використовуємо JSON.parse + JSON.stringify, бо JS Number
+// має лише 15-17 значущих цифр precision, а Unity PathID (m_Script тощо)
+// можуть бути int64 з 19 цифрами — round-trip через JSON.parse округляє
+// `-2774078311433900551` до `-2774078311433900500`. Це 2-байтова різниця
+// у serialized bundle, через яку Unity не може завантажити MonoScript
+// reference і вся гра зависає на завантаженні.
+//
+// Натомість — regex-replace _Text-значень у raw-стрінгу. Все інше (PathID,
+// Hash, GUID, число-цілі) залишається байт-у-байт як у вихідному дампі.
 export function applyHbrEdits(raw: string, items: HbrTextItem[]): string {
-  const data = JSON.parse(raw) as RawNode;
-  const list = data._List?.Array ?? [];
-  // Групуємо items по listIdx → масив variantIdx → text.
-  const byListIdx = new Map<number, Map<number, string>>();
-  for (const it of items) {
-    if (!byListIdx.has(it.listIdx)) byListIdx.set(it.listIdx, new Map());
-    byListIdx.get(it.listIdx)!.set(it.variantIdx, it.current);
+  // Порядок items відповідає порядку _Text у raw JSON: ми обходили
+  // _List.Array у parseHbrJson послідовно, для кожного listIdx — всі
+  // variantIdx по порядку. Така ж послідовність буде, коли проходитимем
+  // raw regex'ом — _Text з'являються у тому ж порядку.
+  //
+  // КРИТИЧНО: цей контракт ламається, якщо після парсингу гра отримала патч
+  // і кількість _Text у новому raw НЕ дорівнює items.length. Без цієї
+  // перевірки запис мовчки зміщувався у "чужі" записи (i-й item писався
+  // у (i+k)-й _Text). Тепер — explicit error до UI, користувач знає що
+  // треба перевстановити extract.
+  const re = /("_Text"\s*:\s*")((?:\\.|[^"\\])*)(")/g;
+  const rawMatchCount = (raw.match(re) || []).length;
+  if (rawMatchCount !== items.length) {
+    throw new Error(
+      `HBR _Text count mismatch: raw has ${rawMatchCount} _Text entries, ` +
+      `but editor has ${items.length} items. Bundle likely changed since extract — ` +
+      `re-run extract before saving.`
+    );
   }
-  byListIdx.forEach((vmap, li) => {
-    const entry = list[li];
-    if (!entry || !entry._Texts?.Array) return;
-    vmap.forEach((text, vi) => {
-      if (entry._Texts!.Array![vi]) entry._Texts!.Array![vi]._Text = text;
-    });
+  const newTexts = items.map((it) => it.current);
+  let idx = 0;
+  return raw.replace(re, (full, prefix: string, _oldText: string, suffix: string) => {
+    if (idx >= newTexts.length) return full;
+    const escaped = JSON.stringify(newTexts[idx]).slice(1, -1); // прибираємо обрамлюючі лапки
+    idx++;
+    return prefix + escaped + suffix;
   });
-  return JSON.stringify(data, null, 2);
 }

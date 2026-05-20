@@ -183,7 +183,17 @@ if ($useStream) {
         $fs.Dispose()
     }
     Write-Step ("DONE -> resS patched in-place ({0:N0} bytes at offset {1})" -f $encoded.Length, $streamOffset)
-    Write-Host ("RESULT_JSON: {{`"ok`":true,`"mode`":`"resS-inplace`",`"resS`":`"{0}`",`"offset`":{1},`"size`":{2}}}" -f $resSCandidate.Replace("\\","/").Replace("`"","\\`""), $streamOffset, $encoded.Length)
+    # ConvertTo-Json коректно екранує бекслеші у Windows-шляхах (E:\Foo\Bar →
+    # "E:\\Foo\\Bar"); ручний format-string з .Replace("\\","/") ламав JSON, бо
+    # в PowerShell-рядку "\\" — це два бекслеші, а у шляху лише один.
+    $result = [pscustomobject]@{
+        ok = $true
+        mode = "resS-inplace"
+        resS = $resSCandidate
+        offset = $streamOffset
+        size = $encoded.Length
+    }
+    Write-Host ("RESULT_JSON: " + ($result | ConvertTo-Json -Compress))
     exit 0
 }
 

@@ -8,11 +8,8 @@ interface Props {
   onClose: () => void;
 }
 
-type Tab = "paths" | "display";
-
 export function SettingsModal({ open, onClose }: Props) {
   const t = useT();
-  const [tab, setTab] = useState<Tab>("paths");
 
   // Paths
   const [uabeaPath, setUabeaPath] = useState("");
@@ -113,51 +110,47 @@ export function SettingsModal({ open, onClose }: Props) {
 
         {/* Content */}
         <div className="p-5 space-y-4 max-h-[60vh] overflow-y-auto">
-          {tab === "display" && (
-            <>
-              <div>
-                <label className="text-[11px] font-semibold uppercase tracking-wider text-[var(--text-muted)] block mb-1.5">
-                  {t("set.display.lang")}
-                </label>
-                <div className="inline-flex rounded-md border border-[var(--border-soft)] overflow-hidden">
-                  <button
-                    className={`px-4 py-1.5 text-[12px] font-semibold uppercase ${
-                      lang === "uk"
-                        ? "bg-[var(--accent)] text-white"
-                        : "text-[var(--text-muted)] hover:bg-[var(--row-hover)]"
-                    }`}
-                    onClick={() => changeLang("uk")}
-                  >
-                    UK · Українська
-                  </button>
-                  <button
-                    className={`px-4 py-1.5 text-[12px] font-semibold uppercase ${
-                      lang === "en"
-                        ? "bg-[var(--accent)] text-white"
-                        : "text-[var(--text-muted)] hover:bg-[var(--row-hover)]"
-                    }`}
-                    onClick={() => changeLang("en")}
-                  >
-                    EN · English
-                  </button>
-                </div>
-                <p className="text-[11px] text-[var(--text-faint)] mt-1.5 leading-relaxed">
-                  {t("set.display.langHint")}
-                </p>
-              </div>
+          <div>
+            <label className="text-[11px] font-semibold uppercase tracking-wider text-[var(--text-muted)] block mb-1.5">
+              {t("set.display.lang")}
+            </label>
+            <div className="inline-flex rounded-md border border-[var(--border-soft)] overflow-hidden">
+              <button
+                className={`px-4 py-1.5 text-[12px] font-semibold uppercase ${
+                  lang === "uk"
+                    ? "bg-[var(--accent)] text-white"
+                    : "text-[var(--text-muted)] hover:bg-[var(--row-hover)]"
+                }`}
+                onClick={() => changeLang("uk")}
+              >
+                UK · Українська
+              </button>
+              <button
+                className={`px-4 py-1.5 text-[12px] font-semibold uppercase ${
+                  lang === "en"
+                    ? "bg-[var(--accent)] text-white"
+                    : "text-[var(--text-muted)] hover:bg-[var(--row-hover)]"
+                }`}
+                onClick={() => changeLang("en")}
+              >
+                EN · English
+              </button>
+            </div>
+            <p className="text-[11px] text-[var(--text-faint)] mt-1.5 leading-relaxed">
+              {t("set.display.langHint")}
+            </p>
+          </div>
 
-              <div className="pt-2 border-t border-[var(--border-soft)]">
-                <label className="text-[11px] font-semibold uppercase tracking-wider text-[var(--text-muted)] block mb-1.5">
-                  {t("set.display.wrap")}
-                </label>
-                <WrapToggle value={wrapMode} onChange={setWrapMode} />
-                <p className="text-[11px] text-[var(--text-faint)] mt-1.5 leading-relaxed">
-                  {t("set.display.wrapHint")}
-                </p>
-              </div>
+          <div className="pt-2 border-t border-[var(--border-soft)]">
+            <label className="text-[11px] font-semibold uppercase tracking-wider text-[var(--text-muted)] block mb-1.5">
+              {t("set.display.wrap")}
+            </label>
+            <WrapToggle value={wrapMode} onChange={setWrapMode} />
+            <p className="text-[11px] text-[var(--text-faint)] mt-1.5 leading-relaxed">
+              {t("set.display.wrapHint")}
+            </p>
+          </div>
 
-            </>
-          )}
         </div>
 
         <div className="px-5 py-3 border-t border-[var(--border-soft)] flex items-center justify-end gap-2">
@@ -172,3 +165,4 @@ export function SettingsModal({ open, onClose }: Props) {
     </div>
   );
 }
+

@@ -1,79 +1,67 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useState } from "react";
 import { useT } from "../lib/i18n";
 import type { CorpusStats } from "../lib/ipc";
-import { useDp1Store } from "../games/dp1/store";
-import { isDp1Translated } from "../games/dp1/parser";
 
 interface Props {
   open: boolean;
   onClose: () => void;
-  mode: "dp1" | "dp2";
-  /** Для DP2 — тека з JSON-дампами. Для DP1 ігнорується. */
+  mode: "dp1" | "dp2" | "hbr" | "missing";
+  /** Для DP2 — тека з JSON-дампами. Для HBR/DP1 ігнорується (вони використовують
+   *  computeCustomStats — повний IPC у main процесі). */
   folder?: string | null;
-}
-
-function countWords(s: string): number {
-  if (!s) return 0;
-  const trimmed = s.trim();
-  if (!trimmed) return 0;
-  return trimmed.split(/\s+/).filter(Boolean).length;
+  /** Готова статистика (для mode="missing" чи будь-якого зовнішнього розрахунку). */
+  customStats?: CorpusStats | null;
+  /** Якщо потрібно перебудувати customStats — callback, що повертає CorpusStats. */
+  computeCustomStats?: () => Promise<CorpusStats | null>;
 }
 
 function fmt(n: number): string {
   return n.toLocaleString("uk-UA").replace(/ /g, " ");
 }
 
-export function CorpusStatsModal({ open, onClose, mode, folder }: Props) {
+export function CorpusStatsModal({ open, onClose, mode, folder, customStats, computeCustomStats }: Props) {
   const t = useT();
   const [loading, setLoading] = useState(false);
   const [data, setData] = useState<CorpusStats | null>(null);
   const [tick, setTick] = useState(0);
 
-  // DP1: рахуємо з локальних entries — все вже у пам'яті, IPC не потрібен.
-  const dp1Entries = useDp1Store((s) => s.entries);
-  const dp1EngPath = useDp1Store((s) => s.engPath);
-  const dp1Stats = useMemo<CorpusStats | null>(() => {
-    if (mode !== "dp1" || !dp1EngPath) return null;
-    let total = 0, trans = 0;
-    let uaW = 0, enW = 0, uaC = 0, enC = 0;
-    for (const e of dp1Entries) {
-      if (e.empty) continue;
-      total++;
-      if (isDp1Translated(e)) {
-        trans++;
-        uaW += countWords(e.ua);
-        uaC += e.ua.length;
-      } else {
-        enW += countWords(e.original);
-        enC += e.original.length;
-      }
-    }
-    const fileName = (dp1EngPath.split(/[\\/]/).pop() ?? "eng.json").replace(/\.json$/i, "");
-    return {
-      files: 1,
-      totalEntries: total,
-      translatedEntries: trans,
-      percent: total ? +(trans / total * 100).toFixed(2) : 0,
-      uaWords: uaW, enWords: enW, uaChars: uaC, enChars: enC,
-      topFiles: [{ fileName, filePath: dp1EngPath, total, translated: trans,
-                   percent: total ? +(trans / total * 100).toFixed(2) : 0 }],
-    };
-  }, [mode, dp1Entries, dp1EngPath]);
-
-  // DP2: запит у worker. Перезбираємо при кожному відкритті, щоб бачити
-  // зміни після save (юзер очікує актуальні цифри).
+  // DP2: запит у worker. HBR: окремий main-process IPC, що читає Done/Original
+  // безпосередньо (його структура _List/_Texts/Array відрізняється від DP2).
+  // Перезбираємо при кожному відкритті, щоб бачити зміни після save.
   useEffect(() => {
     if (!open) return;
-    if (mode === "dp1") { setData(dp1Stats); return; }
-    if (!folder) { setData(null); return; }
+    // Для missing mode (або будь-якого з зовнішнім compute-callback'ом).
+    if (mode === "missing" || computeCustomStats) {
+      let cancelled = false;
+      setLoading(true);
+      const p = computeCustomStats ? computeCustomStats() : Promise.resolve(customStats ?? null);
+      Promise.resolve(p)
+        .then((r) => { if (!cancelled) setData(r); })
+        .catch(() => { if (!cancelled) setData(null); })
+        .finally(() => { if (!cancelled) setLoading(false); });
+      return () => { cancelled = true; };
+    }
     let cancelled = false;
     setLoading(true);
-    window.dp2.corpusStatsWorker({ folder })
+    const fetcher = mode === "hbr"
+      ? window.dp2.hbrCorpusStats().then((r) => r.ok ? ({
+          files: r.files ?? 0,
+          totalEntries: r.totalEntries ?? 0,
+          translatedEntries: r.translatedEntries ?? 0,
+          percent: r.percent ?? 0,
+          uaWords: r.uaWords ?? 0,
+          enWords: r.enWords ?? 0,
+          uaChars: r.uaChars ?? 0,
+          enChars: r.enChars ?? 0,
+          topFiles: r.topFiles ?? [],
+        } as CorpusStats) : null)
+      : (folder ? window.dp2.corpusStatsWorker({ folder }) : Promise.resolve(null));
+    Promise.resolve(fetcher)
       .then((res) => { if (!cancelled) setData(res); })
       .catch(() => { if (!cancelled) setData(null); })
       .finally(() => { if (!cancelled) setLoading(false); });
     return () => { cancelled = true; };
-  }, [open, mode, folder, dp1Stats, tick]);
+  }, [open, mode, folder, tick]);
 
   // ESC закриває
   useEffect(() => {
@@ -85,9 +73,10 @@ export function CorpusStatsModal({ open, onClose, mode, folder }: Props) {
 
   if (!open) return null;
 
-  const subtitle = mode === "dp1" ? t("stats.dp1Subtitle") : t("stats.subtitle");
-  const emptyMsg = mode === "dp1" ? t("stats.dp1Empty") : t("stats.empty");
-  const isEmpty = mode === "dp2" ? !folder : !dp1EngPath;
+  const subtitle = t("stats.subtitle");
+  const emptyMsg = t("stats.empty");
+  // HBR/missing не залежать від `folder` (IPC або client-side compute).
+  const isEmpty = mode === "dp2" ? !folder : false;
 
   return (
     <div
@@ -107,11 +96,11 @@ export function CorpusStatsModal({ open, onClose, mode, folder }: Props) {
             <p className="text-[12px] text-[var(--text-muted)] mt-0.5 truncate">{subtitle}</p>
           </div>
           <div className="flex items-center gap-2 shrink-0">
-            {mode === "dp2" && (
+            {(mode === "dp2" || mode === "hbr" || mode === "missing") && (
               <button
                 onClick={() => setTick((x) => x + 1)}
                 className="dp-btn"
-                disabled={loading || !folder}
+                disabled={loading || (mode === "dp2" && !folder)}
                 title={t("stats.refresh")}
               >
                 {t("stats.refresh")}
@@ -168,7 +157,7 @@ export function CorpusStatsModal({ open, onClose, mode, folder }: Props) {
               </div>
 
               {/* Топ файлів — приховуємо для DP1 (там один файл, нецікаво) */}
-              {mode === "dp2" && data.topFiles.length > 0 && (
+              {data.topFiles.length > 0 && (
                 <div>
                   <h3 className="text-[11px] font-semibold uppercase tracking-wider text-[var(--text-muted)] mb-2">
                     {t("stats.topFiles")}

@@ -14,6 +14,7 @@ Menu.setApplicationMenu(null);
 const path = require("node:path");
 const fs = require("node:fs/promises");
 const fsSync = require("node:fs");
+const os = require("node:os");
 const { spawn } = require("node:child_process");
 
 // scripts/ ідуть як extraResources у production, тому require треба резолвити
@@ -112,10 +113,16 @@ async function readSettings() {
       }
       return null;
     }
-    // Hotel Barcelona: AAA-bundle із MonoBehaviour-текстами.
+    // Hotel Barcelona: AAA-bundle із MonoBehaviour-текстами. Хеш у назві
+    // змінюється при кожному патчі гри, тому: спочатку перевіряємо валідність
+    // збереженого шляху (файл міг зникнути після оновлення), потім швидкий
+    // candidate з відомого хешу, далі — wildcard-сканування теки.
+    if (obj.hbrBundlePath) {
+      try { await fs.access(obj.hbrBundlePath); } catch { obj.hbrBundlePath = undefined; }
+    }
     if (!obj.hbrBundlePath && obj.hbrRoot) {
       const subDir = path.join(obj.hbrRoot, "HOTEL BARCELONA_Data", "StreamingAssets", "aa", "StandaloneWindows64");
-      const fixedCand = path.join(subDir, "_resources_assets_all_e8a024b2dce1dfada7cc2ce7dced913c.bundle");
+      const fixedCand = path.join(subDir, "_resources_assets_all_0d63e41486d027f2e31ca9d62cbfb661.bundle");
       try { await fs.access(fixedCand); obj.hbrBundlePath = fixedCand; }
       catch {
         try {
@@ -124,6 +131,17 @@ async function readSettings() {
           if (match) obj.hbrBundlePath = path.join(subDir, match);
         } catch {}
       }
+    }
+    // THE MISSING: resources.assets живе у TheMISSING_Data/ (повна гра)
+    // або TheMISSING_Demo_Data/ (демо). Користувач у onboarding вказує корінь
+    // Steam-теки, далі ми резолвимо самі.
+    if (!obj.missingAssetsPath && obj.missingRoot) {
+      const cands = [
+        path.join(obj.missingRoot, "TheMISSING_Data", "resources.assets"),
+        path.join(obj.missingRoot, "TheMISSING_Demo_Data", "resources.assets"),
+        path.join(obj.missingRoot, "resources.assets"),
+      ];
+      for (const c of cands) { try { await fs.access(c); obj.missingAssetsPath = c; break; } catch {} }
     }
     if (obj.tglRoot && (!obj.tglBinPath || !obj.tglCabPath)) {
       const saDir = await resolveTglStreamingAssets(obj.tglRoot);
@@ -151,6 +169,68 @@ async function readSettings() {
 
 async function writeSettings(next) {
   await fs.writeFile(settingsPath(), JSON.stringify(next, null, 2), "utf8");
+}
+
+// ── File guards: write queue + system-path deny ────────────────────────
+// Окремий чейн Promise на кожен path — гарантує що одночасні writes
+// (manual save + autosave + bulk patch) серіалізуються і .bak/atomic-rename
+// не race-аться. Map авточиститься, коли остання задача завершується.
+const _fileLocks = new Map();
+function withFileLock(filePath, fn) {
+  const key = path.resolve(filePath).toLowerCase();
+  const prev = _fileLocks.get(key) ?? Promise.resolve();
+  const next = prev.catch(() => {}).then(() => fn());
+  _fileLocks.set(key, next);
+  next.finally(() => { if (_fileLocks.get(key) === next) _fileLocks.delete(key); }).catch(() => {});
+  return next;
+}
+
+// Системні директорії, у які renderer ніколи не повинен писати.
+// Дозволено все інше — щоб не зламати ігрові теки на нестандартних дисках.
+const _denyRoots = (() => {
+  const list = [
+    process.env.SystemRoot || "C:\\Windows",
+    process.env.ProgramFiles || "C:\\Program Files",
+    process.env["ProgramFiles(x86)"] || "C:\\Program Files (x86)",
+    process.env.ProgramData || "C:\\ProgramData",
+  ];
+  return list.filter(Boolean).map((p) => path.resolve(p).toLowerCase());
+})();
+function assertSafeWritePath(p) {
+  if (!p || typeof p !== "string") throw new Error("invalid path");
+  const resolved = path.resolve(p);
+  const lower = resolved.toLowerCase();
+  for (const deny of _denyRoots) {
+    if (lower === deny || lower.startsWith(deny + path.sep)) {
+      throw new Error(`refused: system path "${resolved}"`);
+    }
+  }
+  return resolved;
+}
+
+// Allow-list ключів settings, які renderer має право писати через
+// dp2:save-settings. Усе інше — main-driven (setupCompleted, recentFolders,
+// update cache, auto-resolved game paths) — і renderer не повинен мати
+// можливість їх отруїти.
+const RENDERER_ALLOWED_KEYS = new Set([
+  "lastFolder", "assetsPath", "uabeaPath", "pwshPath", "toolsDir",
+  "dp1EngPath", "tglBinPath", "tglTxtPath",
+  "tglMonoBundlePath", "tglMonoOutDir", "tglMonoFilter",
+  "dp2LastFile",
+  "dp1Root", "dp2Root", "tglRoot", "hbrRoot", "missingRoot",
+  "autosaveDir", "autosaveIntervalMin",
+  "recentItemsDismissed", "hbrFontsGuideSeen",
+  "dismissedUpdateVersion",
+  "locale", "theme",
+]);
+function filterRendererSettings(partial) {
+  if (!partial || typeof partial !== "object") return {};
+  const out = {};
+  for (const k of Object.keys(partial)) {
+    if (RENDERER_ALLOWED_KEYS.has(k)) out[k] = partial[k];
+    else console.warn(`[settings] renderer attempted to write disallowed key: ${k}`);
+  }
+  return out;
 }
 
 // Глобальне посилання на головне вікно для broadcast'у setup-progress.
@@ -308,20 +388,26 @@ ipcMain.handle("dp2:read-file", async (_event, fullPath) => {
 });
 
 // ── IPC: write file (with .bak backup if not exists) ─────────────
+// Серіалізовано через withFileLock: гарантує що паралельні save + autosave
+// для одного файла не race-аться на створенні .bak (старіший reader міг
+// прочитати вже модифікований currentTree → .bak застиг не-original).
 ipcMain.handle("dp2:write-file", async (_event, fullPath, content) => {
-  const bakPath = fullPath.replace(/\.json$/i, ".bak.json");
-  try {
-    await fs.access(bakPath);
-  } catch {
+  const safe = assertSafeWritePath(fullPath);
+  const bakPath = safe.replace(/\.json$/i, ".bak.json");
+  return withFileLock(safe, async () => {
     try {
-      const original = await fs.readFile(fullPath, "utf8");
-      await fs.writeFile(bakPath, original, "utf8");
-    } catch (e) {
-      console.warn("Failed to create .bak:", e);
+      await fs.access(bakPath);
+    } catch {
+      try {
+        const original = await fs.readFile(safe, "utf8");
+        await fs.writeFile(bakPath, original, "utf8");
+      } catch (e) {
+        console.warn("Failed to create .bak:", e);
+      }
     }
-  }
-  await fs.writeFile(fullPath, content, "utf8");
-  return true;
+    await fs.writeFile(safe, content, "utf8");
+    return true;
+  });
 });
 
 // ── IPC: read backup if exists ───────────────────────────────────
@@ -372,16 +458,35 @@ ipcMain.handle("dp2:read-all", async (_event, folder) => {
 // ── IPC: autosave sidecar ────────────────────────────────────────
 // Пишемо `<file>.autosave.json` поруч з оригіналом — НЕ створюючи .bak і
 // НЕ чіпаючи реальний файл. При успішному saveFile цей sidecar видаляється.
-function autosavePathFor(fullPath) {
+// Шлях до autosave-файла. За замовчуванням — sidecar поряд з оригіналом
+// (`<file>.autosave.json`). Якщо у settings задана окрема директорія
+// `autosaveDir` — пишемо туди з flat-іменем, де колізії неможливі завдяки
+// hash повного шляху джерела.
+async function autosavePathFor(fullPath) {
+  try {
+    const settings = await readSettings();
+    const dir = settings?.autosaveDir;
+    if (dir && typeof dir === "string" && dir.trim()) {
+      try { await fs.mkdir(dir, { recursive: true }); } catch {}
+      const crypto = require("node:crypto");
+      const hash = crypto.createHash("sha1").update(fullPath).digest("hex").slice(0, 10);
+      const base = path.basename(fullPath).replace(/\.json$/i, "");
+      return path.join(dir, `${base}.${hash}.autosave.json`);
+    }
+  } catch {}
   return fullPath.replace(/\.json$/i, ".autosave.json");
 }
 ipcMain.handle("dp2:write-autosave", async (_e, fullPath, content) => {
-  const dest = autosavePathFor(fullPath);
-  await fs.writeFile(dest, content, "utf8");
-  return dest;
+  assertSafeWritePath(fullPath);
+  const dest = await autosavePathFor(fullPath);
+  assertSafeWritePath(dest);
+  return withFileLock(dest, async () => {
+    await fs.writeFile(dest, content, "utf8");
+    return dest;
+  });
 });
 ipcMain.handle("dp2:read-autosave", async (_e, fullPath) => {
-  const ap = autosavePathFor(fullPath);
+  const ap = await autosavePathFor(fullPath);
   try {
     const [content, st] = await Promise.all([
       fs.readFile(ap, "utf8"),
@@ -395,8 +500,12 @@ ipcMain.handle("dp2:read-autosave", async (_e, fullPath) => {
   }
 });
 ipcMain.handle("dp2:delete-autosave", async (_e, fullPath) => {
-  const ap = autosavePathFor(fullPath);
-  try { await fs.unlink(ap); return true; } catch { return false; }
+  assertSafeWritePath(fullPath);
+  const ap = await autosavePathFor(fullPath);
+  assertSafeWritePath(ap);
+  return withFileLock(ap, async () => {
+    try { await fs.unlink(ap); return true; } catch { return false; }
+  });
 });
 
 // Heavy-worker задачі: всю важку роботу робить worker_threads — main залишається responsive.
@@ -413,10 +522,18 @@ ipcMain.handle("dp2:rename-chara-worker", async (_event, payload) => callHeavy("
 // ── IPC: settings ────────────────────────────────────────────────
 ipcMain.handle("dp2:get-settings", async () => readSettings());
 ipcMain.handle("dp2:save-settings", async (_event, partial) => {
-  const cur = await readSettings();
-  const next = { ...cur, ...partial };
-  await writeSettings(next);
-  return next;
+  // 1) renderer пише тільки allow-listed ключі — uabeaPath/pwshPath/toolsDir
+  //    тощо є чутливими (керують spawn-командами), тому не приймаємо довільні.
+  // 2) read-merge-write серіалізуємо через withFileLock — інакше дві паралельні
+  //    saveSettings (з різних modal-ів або autosave-pathchange + manual)
+  //    можуть прочитати один стан і записати конкуруючі мерджи.
+  const filtered = filterRendererSettings(partial);
+  return withFileLock(settingsPath(), async () => {
+    const cur = await readSettings();
+    const next = { ...cur, ...filtered };
+    await writeSettings(next);
+    return next;
+  });
 });
 
 // ── IPC: setup / onboarding ──────────────────────────────────────
@@ -485,12 +602,25 @@ ipcMain.handle("dp2:setup-reset", async (_e, payload) => {
   if (opts.wipeTools) {
     try {
       const cur = (await readSettings().catch(() => ({}))) || {};
-      const dir = cur.toolsDir || path.join(app.getPath("documents"), "SWERY-Localization-Tool");
-      if (dir) {
-        await fs.rm(dir, { recursive: true, force: true });
-        wipedPaths.push(dir);
+      const defaultDir = path.join(app.getPath("documents"), "SWERY-Localization-Tool");
+      const dir = cur.toolsDir || defaultDir;
+      // Захист: видаляємо ТІЛЬКИ якщо це SWERY-Localization-Tool тека або
+      // вкладена. Інакше отруєний toolsDir (через старий settings.json без
+      // allow-list) міг би видалити C:\, %USERPROFILE% тощо.
+      const resolved = path.resolve(dir);
+      const allowed = path.resolve(defaultDir);
+      const inSweryRoot =
+        resolved === allowed ||
+        resolved.toLowerCase().startsWith(allowed.toLowerCase() + path.sep);
+      if (!inSweryRoot) {
+        return { ok: false, error: `refused wipe: ${resolved} outside SWERY-Localization-Tool root` };
       }
-    } catch {}
+      assertSafeWritePath(resolved);
+      await fs.rm(resolved, { recursive: true, force: true });
+      wipedPaths.push(resolved);
+    } catch (e) {
+      console.warn("wipeTools failed:", e);
+    }
   }
   return { ok: true, mode: "full", wipedPaths };
 });
@@ -953,6 +1083,29 @@ async function dp2TextDirs() {
 }
 
 // ── Hotel Barcelona prep ──────────────────────────────────────────
+//
+// Int64-safe JSON helpers. HBR-дампи містять Int64-поля > 2^53, які JSON.parse
+// мовчки truncate'ує до Double-точності (втрата 2-3 останніх цифр). Поля які
+// треба захищати:
+//   - m_PathID (PPtr.m_PathID) — посилання на assets
+//   - pathId / scriptPathId — у meta.json
+//   - rid (managed-reference id у _CommandInfos.Array[*]._Argument)
+// Без обгортки rid'и зливаються в одне округлене значення → Unity GC бачить
+// dangling-ref → краш `il2cpp_unity_liveness_calculation_from_statics`.
+function hbrParseJsonInt64Safe(raw) {
+  const safe = raw
+    .replace(/"m_PathID"\s*:\s*(-?\d+)/g, '"m_PathID":"$1"')
+    .replace(/"(pathId|scriptPathId)"\s*:\s*(-?\d+)/g, '"$1":"$2"')
+    .replace(/"rid"\s*:\s*(-?\d+)/g, '"rid":"$1"');
+  return JSON.parse(safe);
+}
+function hbrStringifyJsonInt64Safe(obj) {
+  let raw = JSON.stringify(obj, null, 2);
+  raw = raw.replace(/"m_PathID"\s*:\s*"(-?\d+)"/g, '"m_PathID": $1');
+  raw = raw.replace(/"rid"\s*:\s*"(-?\d+)"/g, '"rid": $1');
+  return raw;
+}
+
 async function hbrTextDirs() {
   const settings = await readSettings();
   let toolsDir = settings.toolsDir;
@@ -997,7 +1150,7 @@ ipcMain.handle("dp2:hbr-text-prep-status", async () => {
   };
 });
 
-ipcMain.handle("dp2:hbr-text-prep-extract", async () => {
+async function hbrRunExtract() {
   const settings = await readSettings();
   const bundlePath = settings.hbrBundlePath;
   if (!bundlePath) return { ok: false, error: "hbrBundlePath not set" };
@@ -1014,38 +1167,561 @@ ipcMain.handle("dp2:hbr-text-prep-extract", async () => {
   const uabeaDir = path.dirname(uabeaPath);
   const scriptPath = resolveResource("scripts/hbr-text-export.ps1");
 
+  // Multi-bundle: знаходимо всі _resources*.bundle у тій самій теці. DLC-
+  // bundle'и виключаємо — їхні MonoBehaviour мають _DLC1 у m_Name і ламали
+  // pack-flow (Hotel Barcelona база і DLC мають різні PathID-простори).
+  // Якщо знадобиться знову — приберемо exclude.
+  const aaSwDir = path.dirname(bundlePath);
+  let entries = []; try { entries = await fs.readdir(aaSwDir); } catch {}
+  const allBundles = entries
+    .filter((f) => /^_resources.*\.bundle$/i.test(f) && !f.endsWith(".bak") && !/dlc/i.test(f))
+    .map((f) => path.join(aaSwDir, f));
+  if (allBundles.length === 0) allBundles.push(bundlePath);
+  const win = BrowserWindow.getAllWindows()[0];
+  try { win?.webContents.send("dp2:hbr-text-prep-progress", `[STEP] Scanning ${allBundles.length} bundle(s): ${allBundles.map((b) => path.basename(b)).join(", ")}`); } catch {}
+
+  const aggregateItems = [];
+  const bundlesProcessed = [];
+  for (const bp of allBundles) {
+    const tmpMeta = path.join(path.dirname(metaFile), `_tmp-meta-${path.basename(bp)}.json`);
+    const ok = await new Promise((resolve) => {
+      const args = [
+        "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass",
+        "-File", scriptPath,
+        "-BundlePath", bp,
+        "-OutDir", originalDir,
+        "-MetaPath", tmpMeta,
+        "-UabeaDir", uabeaDir,
+      ];
+      const child = spawn(pwshLookup, args, { windowsHide: true });
+      let leftover = "";
+      const emit = (chunk) => {
+        leftover += chunk;
+        const lines = leftover.split(/\r?\n/);
+        leftover = lines.pop() || "";
+        for (const ln of lines) {
+          if (!ln.trim()) continue;
+          try { win?.webContents.send("dp2:hbr-text-prep-progress", ln); } catch {}
+        }
+      };
+      child.stdout.on("data", (d) => emit(d.toString()));
+      child.stderr.on("data", (d) => emit(d.toString()));
+      child.on("error", () => resolve(false));
+      child.on("exit", (code) => resolve(code === 0));
+    });
+    if (!ok) continue;
+    try {
+      // Int64 PathID > 2^53: JSON.parse без обгортки truncate'ує його як Double
+      // (втрата 3-4 останніх цифр). Обертаємо pathId/scriptPathId у string ще
+      // до parse — далі по pipeline вони залишаються рядками.
+      const rawTmp = await fs.readFile(tmpMeta, "utf8");
+      const safeTmp = rawTmp.replace(/"(pathId|scriptPathId)"\s*:\s*(-?\d+)/g, '"$1":"$2"');
+      const m = JSON.parse(safeTmp);
+      if (Array.isArray(m.items)) aggregateItems.push(...m.items);
+      bundlesProcessed.push(path.basename(bp));
+    } catch {}
+    try { await fs.unlink(tmpMeta); } catch {}
+  }
+
+  // Записуємо об'єднану meta.
+  const merged = {
+    bundles: bundlesProcessed,
+    items: aggregateItems,
+    exportedAt: new Date().toISOString(),
+  };
+  await fs.writeFile(metaFile, JSON.stringify(merged, null, 2), "utf8");
+  try { win?.webContents.send("dp2:hbr-text-prep-progress", `[STEP] DONE multi-bundle: ${aggregateItems.length} items from ${bundlesProcessed.length} bundle(s)`); } catch {}
+  return { ok: true, total: aggregateItems.length, bundles: bundlesProcessed };
+}
+
+ipcMain.handle("dp2:hbr-text-prep-extract", async () => hbrRunExtract());
+
+// Patch migration: гра випустила оновлення → bundle-хеш у назві файлу
+// поміняв sсь, +/- кілька рядків у текстах, MonoBehaviour-структура та PathID
+// зазвичай стабільні. Цей handler:
+//   1. Бекапить поточні Text/Original, Text/Done, Text/Meta у _backup-<ts>/.
+//   2. Чистить Original/Done/Meta.
+//   3. Робить свіжий extract з нового bundle (заповнює Original + Meta).
+//   4. Для кожного new-item шукає старий Done у бекапі за pathId, мерджить
+//      `_Text` значення (де переклад було зроблено) у new structure.
+//   5. Записує merged-Done.
+// КРИТИЧНО: для read/write JSON використовуємо hbrParseJsonInt64Safe /
+// hbrStringifyJsonInt64Safe, бо `rid`-поле > 2^53 в managed-references й JS
+// JSON.parse без обгортки нищить його точність.
+ipcMain.handle("dp2:hbr-patch-migrate-check", async () => {
+  const settings = await readSettings();
+  const bundlePath = settings.hbrBundlePath;
+  if (!bundlePath) return { ok: false, error: "hbrBundlePath not set" };
+  const { metaFile, doneDir } = await hbrTextDirs();
+  let metaBundles = [];
+  let metaItemsCount = 0;
+  try {
+    const raw = await fs.readFile(metaFile, "utf8");
+    const meta = JSON.parse(raw);
+    metaBundles = Array.isArray(meta.bundles) ? meta.bundles : [];
+    metaItemsCount = Array.isArray(meta.items) ? meta.items.length : 0;
+  } catch {
+    return { ok: true, hasMeta: false, needed: false, newBundle: path.basename(bundlePath) };
+  }
+  let doneCount = 0;
+  try {
+    const ents = await fs.readdir(doneDir);
+    doneCount = ents.filter((f) => f.endsWith(".json")).length;
+  } catch {}
+  const newBundle = path.basename(bundlePath);
+  const oldBundle = metaBundles[0] || "";
+  return {
+    ok: true,
+    hasMeta: true,
+    newBundle,
+    oldBundle,
+    needed: oldBundle !== newBundle && oldBundle !== "",
+    metaItemsCount,
+    doneCount,
+  };
+});
+
+ipcMain.handle("dp2:hbr-patch-migrate", async () => {
+  const settings = await readSettings();
+  const bundlePath = settings.hbrBundlePath;
+  if (!bundlePath) return { ok: false, error: "hbrBundlePath not set" };
+  try { await fs.access(bundlePath); }
+  catch { return { ok: false, error: "bundle-not-found: " + bundlePath }; }
+  const { baseDir, originalDir, doneDir, metaDir, metaFile } = await hbrTextDirs();
+  const win = BrowserWindow.getAllWindows()[0];
+  const emit = (msg) => { try { win?.webContents.send("dp2:hbr-text-prep-progress", msg); } catch {} };
+
+  // 1. Backup поточних теку.
+  const ts = new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19);
+  const bakRoot = path.join(baseDir, `_backup-${ts}`);
+  await fs.mkdir(bakRoot, { recursive: true });
+  const bakOrig = path.join(bakRoot, "Original");
+  const bakDone = path.join(bakRoot, "Done");
+  const bakMeta = path.join(bakRoot, "Meta");
+  async function copyDir(src, dst) {
+    try { await fs.mkdir(dst, { recursive: true }); } catch {}
+    let entries; try { entries = await fs.readdir(src); } catch { return; }
+    for (const f of entries) {
+      const sp = path.join(src, f), dp = path.join(dst, f);
+      const st = await fs.stat(sp);
+      if (st.isDirectory()) await copyDir(sp, dp);
+      else await fs.copyFile(sp, dp);
+    }
+  }
+  emit(`[STEP] Backup → ${bakRoot}`);
+  await copyDir(originalDir, bakOrig);
+  await copyDir(doneDir, bakDone);
+  await copyDir(metaDir, bakMeta);
+
+  // 2. Очищаємо Original / Done / Meta (структуру лишаємо).
+  async function wipeDir(dir) {
+    let entries; try { entries = await fs.readdir(dir); } catch { return; }
+    for (const f of entries) {
+      try { await fs.unlink(path.join(dir, f)); } catch {}
+    }
+  }
+  await wipeDir(originalDir);
+  await wipeDir(doneDir);
+  await wipeDir(metaDir);
+
+  // 3. Свіжий extract з нового bundle.
+  emit("[STEP] Extract from new bundle…");
+  const ext = await hbrRunExtract();
+  if (!ext.ok) {
+    return { ok: false, error: "extract failed: " + (ext.error || "?"), backup: bakRoot };
+  }
+
+  // 4. Читаємо нову meta + ітеруємо items, шукаємо старе Done за pathId,
+  //    мерджимо `_Text`-значення там, де old-Done відрізнявся від old-Original.
+  const newMetaRaw = await fs.readFile(metaFile, "utf8");
+  const newMeta = JSON.parse(newMetaRaw);
+  const newItems = Array.isArray(newMeta.items) ? newMeta.items : [];
+
+  function pidFromName(n) { const m = n.match(/-(-?\d+)\.json$/); return m ? m[1] : null; }
+  let bakDoneFiles = []; try { bakDoneFiles = await fs.readdir(bakDone); } catch {}
+  let bakOrigFiles = []; try { bakOrigFiles = await fs.readdir(bakOrig); } catch {}
+  const bakDoneByPid = new Map();
+  const bakOrigByPid = new Map();
+  for (const f of bakDoneFiles) { const p = pidFromName(f); if (p) bakDoneByPid.set(p, f); }
+  for (const f of bakOrigFiles) { const p = pidFromName(f); if (p) bakOrigByPid.set(p, f); }
+
+  function flattenTexts(obj) {
+    const m = new Map();
+    const lst = obj?._List?.Array;
+    if (!Array.isArray(lst)) return m;
+    for (const row of lst) {
+      const tid = row?._TextId ?? "";
+      const arr = row?._Texts?.Array;
+      if (!Array.isArray(arr)) continue;
+      for (let j = 0; j < arr.length; j++) m.set(`${tid}|${j}`, arr[j]?._Text ?? "");
+    }
+    return m;
+  }
+
+  let mergedFiles = 0, totalTouched = 0, totalNewCells = 0, totalKept = 0;
+  for (const it of newItems) {
+    const pidStr = String(it.pathId);
+    const newDumpPath = path.join(originalDir, it.file);
+    let newObj;
+    try {
+      const raw = await fs.readFile(newDumpPath, "utf8");
+      newObj = hbrParseJsonInt64Safe(raw);
+    } catch (e) {
+      emit(`[WARN] read new ${it.file} failed: ${e.message}`);
+      continue;
+    }
+
+    const oldDoneName = bakDoneByPid.get(pidStr);
+    const oldOrigName = bakOrigByPid.get(pidStr);
+    let doneObj = newObj;
+    if (oldDoneName && oldOrigName) {
+      try {
+        const oldDoneRaw = await fs.readFile(path.join(bakDone, oldDoneName), "utf8");
+        const oldOrigRaw = await fs.readFile(path.join(bakOrig, oldOrigName), "utf8");
+        const oldDoneObj = hbrParseJsonInt64Safe(oldDoneRaw);
+        const oldOrigObj = hbrParseJsonInt64Safe(oldOrigRaw);
+        const oOrig = flattenTexts(oldOrigObj);
+        const oDone = flattenTexts(oldDoneObj);
+        doneObj = JSON.parse(JSON.stringify(newObj));
+        const lst = doneObj?._List?.Array || [];
+        for (const row of lst) {
+          const tid = row?._TextId ?? "";
+          const arr = row?._Texts?.Array;
+          if (!Array.isArray(arr)) continue;
+          for (let j = 0; j < arr.length; j++) {
+            const key = `${tid}|${j}`;
+            const origText = oOrig.get(key);
+            const doneText = oDone.get(key);
+            if (doneText !== undefined && origText !== undefined && doneText !== origText) {
+              arr[j]._Text = doneText; totalTouched++;
+            } else if (origText === undefined) totalNewCells++;
+            else totalKept++;
+          }
+        }
+      } catch (e) {
+        emit(`[WARN] merge ${it.name} failed: ${e.message} — used new English as-is`);
+      }
+    }
+    const newDonePath = path.join(doneDir, it.file);
+    await fs.writeFile(newDonePath, hbrStringifyJsonInt64Safe(doneObj), "utf8");
+    // Original теж пере-серіалізуємо через Int64-safe — щоб формат був бітово
+    // рівним з Done і не виглядав «дивно» у diff-tools.
+    await fs.writeFile(newDumpPath, hbrStringifyJsonInt64Safe(newObj), "utf8");
+    mergedFiles++;
+  }
+
+  // Збагачуємо meta полем migratedFrom для діагностики.
+  try {
+    const m = JSON.parse(await fs.readFile(metaFile, "utf8"));
+    m.migratedFrom = path.basename(bakRoot);
+    m.migratedAt = new Date().toISOString();
+    await fs.writeFile(metaFile, JSON.stringify(m, null, 2), "utf8");
+  } catch {}
+
+  emit(`[STEP] DONE migration: ${mergedFiles} files, ${totalTouched} translated cells preserved, ${totalNewCells} new English cells, backup at ${path.basename(bakRoot)}`);
+  return {
+    ok: true,
+    mergedFiles,
+    translated: totalTouched,
+    newCells: totalNewCells,
+    keptEnglish: totalKept,
+    backup: bakRoot,
+  };
+});
+
+// Pack HBR translations back into the game bundle (hbr-text-import.ps1).
+// Спільна pack-логіка: викликається і з `dp2:hbr-pack-into-game`, і з
+// `dp2:hbr-build-release`. Раніше release-handler намагався виcмикнути
+// pack-listener через `ipcMain.listeners()`, але `ipcMain.handle()` НЕ
+// додає у `listeners` — це окремий механізм. Тому використовуємо звичайну
+// функцію-помічника.
+async function hbrRunPack() {
+  const settings = await readSettings();
+  const bundlePath = settings.hbrBundlePath;
+  if (!bundlePath) return { ok: false, error: "hbrBundlePath not set" };
+  try { await fs.access(bundlePath); }
+  catch { return { ok: false, error: "bundle-not-found: " + bundlePath }; }
+  const { uabeaPath } = settings;
+  if (!uabeaPath) return { ok: false, error: "UABEA not set" };
+  const { doneDir, metaFile, metaDir } = await hbrTextDirs();
+  try { await fs.access(doneDir); } catch { return { ok: false, error: "Done dir empty/missing" }; }
+  try { await fs.access(metaFile); } catch { return { ok: false, error: "Meta file missing — run extract first" }; }
+  const pwshLookup = await findPwsh(settings);
+  if (!pwshLookup) return { ok: false, error: "PowerShell 7 not found" };
+  const uabeaDir = path.dirname(uabeaPath);
+  const scriptPath = resolveResource("scripts/hbr-text-import.ps1");
+
+  // Multi-bundle pack: читаємо meta, groupуємо items по `bundle` (basename),
+  // для кожної групи робимо окремий запуск import-script зі своєю tmp-meta
+  // (script сам обробляє один bundle за раз).
+  let meta;
+  try {
+    // PathID — Unity Int64. Числа > 2^53 у JSON.parse стають Double і втрачають
+    // точність ("-8972238306652206080" → "-8972238306652206000"), тож PS-скрипт
+    // не знаходить asset. Обгортаємо pathId/scriptPathId у string перед parse —
+    // тоді у tmpMeta вони лишаються рядками, PS скрипт парсить як Int64.
+    const raw = await fs.readFile(metaFile, "utf8");
+    const safe = raw.replace(/"(pathId|scriptPathId)"\s*:\s*(-?\d+)/g, '"$1":"$2"');
+    meta = JSON.parse(safe);
+  }
+  catch (e) { return { ok: false, error: "meta parse fail: " + (e.message || e) }; }
+  const items = Array.isArray(meta.items) ? meta.items : [];
+  if (items.length === 0) return { ok: false, error: "meta has no items" };
+  const groups = {};
+  for (const it of items) {
+    const key = it.bundle || "";
+    if (!groups[key]) groups[key] = [];
+    groups[key].push(it);
+  }
+  const aaSwDir = path.dirname(bundlePath);
+  const win = BrowserWindow.getAllWindows()[0];
+
+  // Аггрегаційні лічильники по всіх bundle-у.
+  let totalAllFields = 0;
+  let allApplied = 0;
+  const allFailed = [];
+  const bundleSizes = {};
+  let combinedLog = "";
+
+  for (const [bundleName, subItems] of Object.entries(groups)) {
+    const fullPath = path.join(aaSwDir, bundleName + ".bundle");
+    try { await fs.access(fullPath); }
+    catch {
+      try { win?.webContents.send("dp2:hbr-pack-progress", `[SKIP] bundle not found: ${bundleName}.bundle`); } catch {}
+      continue;
+    }
+    const tmpMeta = path.join(metaDir, `_tmp-pack-meta-${bundleName}.json`);
+    await fs.writeFile(tmpMeta, JSON.stringify({ items: subItems }, null, 2), "utf8");
+    try { win?.webContents.send("dp2:hbr-pack-progress", `[STEP] ───── ${bundleName}.bundle (${subItems.length} items)`); } catch {}
+
+    const result = await new Promise((resolve) => {
+      const args = [
+        "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass",
+        "-File", scriptPath,
+        "-BundlePath", fullPath,
+        "-DoneDir", doneDir,
+        "-MetaPath", tmpMeta,
+        "-UabeaDir", uabeaDir,
+      ];
+      const child = spawn(pwshLookup, args, { windowsHide: true });
+      let allStdout = "";
+      let leftover = "";
+      let bundleFields = 0;
+      const emit = (chunk) => {
+        allStdout += chunk;
+        leftover += chunk;
+        const lines = leftover.split(/\r?\n/);
+        leftover = lines.pop() || "";
+        for (const ln of lines) {
+          if (!ln.trim()) continue;
+          const fm = ln.match(/\[PATCHED\][^\n]*(?:fields|bytes)=(\d+)/);
+          if (fm) bundleFields += parseInt(fm[1], 10) || 0;
+          try { win?.webContents.send("dp2:hbr-pack-progress", ln); } catch {}
+        }
+      };
+      child.stdout.on("data", (d) => emit(d.toString()));
+      child.stderr.on("data", (d) => emit(d.toString()));
+      child.on("error", (err) => resolve({ ok: false, error: err.message, log: allStdout, totalFields: bundleFields }));
+      child.on("exit", (code) => {
+        if (leftover.trim()) { try { win?.webContents.send("dp2:hbr-pack-progress", leftover); } catch {} }
+        if (code !== 0) {
+          const tail = allStdout.split("\n").slice(-25).join("\n").trim();
+          resolve({ ok: false, error: tail || `Exit ${code}`, log: allStdout, totalFields: bundleFields });
+          return;
+        }
+        let summary = null;
+        const m = allStdout.match(/RESULT_JSON:\s*(.+)$/m);
+        if (m) { try { summary = JSON.parse(m[1]); } catch {} }
+        resolve({ ok: true, summary, log: allStdout, totalFields: bundleFields });
+      });
+    });
+    combinedLog += `\n=== ${bundleName} ===\n` + result.log;
+    try { await fs.unlink(tmpMeta); } catch {}
+    totalAllFields += result.totalFields || 0;
+    if (result.summary) {
+      allApplied += result.summary.applied || 0;
+      if (Array.isArray(result.summary.failed)) allFailed.push(...result.summary.failed);
+    }
+    try { const st = await fs.stat(fullPath); bundleSizes[bundleName] = st.size; } catch {}
+    if (!result.ok) {
+      // Save log і повертаємо помилку (зупиняємось на першому fail-bundle).
+      const out = { ok: false, error: result.error, totalFields: totalAllFields, bundlePath, bundleSize: bundleSizes[path.basename(bundlePath, ".bundle")] };
+      try {
+        let toolsDir = settings.toolsDir;
+        if (!toolsDir) toolsDir = path.join(app.getPath("documents"), "SWERY-Localization-Tool");
+        const logsDir = path.join(toolsDir, "LOGS", "HBR");
+        await fs.mkdir(logsDir, { recursive: true });
+        const ts = new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19);
+        const logPath = path.join(logsDir, `hbr-pack-${ts}.log`);
+        await fs.writeFile(logPath, combinedLog, "utf8");
+        out.logPath = logPath;
+      } catch {}
+      return out;
+    }
+  }
+
+  // Лог + сумарна відповідь.
+  const out = {
+    ok: true,
+    summary: { applied: allApplied, failed: allFailed },
+    totalFields: totalAllFields,
+    bundlePath,
+    bundleSize: bundleSizes[path.basename(bundlePath, ".bundle")],
+    bakPath: bundlePath + ".bak",
+  };
+  try { const sb = await fs.stat(bundlePath + ".bak"); out.bakSize = sb.size; } catch {}
+  try {
+    let toolsDir = settings.toolsDir;
+    if (!toolsDir) toolsDir = path.join(app.getPath("documents"), "SWERY-Localization-Tool");
+    const logsDir = path.join(toolsDir, "LOGS", "HBR");
+    await fs.mkdir(logsDir, { recursive: true });
+    const ts = new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19);
+    const logPath = path.join(logsDir, `hbr-pack-${ts}.log`);
+    await fs.writeFile(logPath, combinedLog, "utf8");
+    out.logPath = logPath;
+  } catch {}
+  return out;
+}
+
+ipcMain.handle("dp2:hbr-pack-into-game", async () => {
+  return await hbrRunPack();
+});
+
+// Pre-pack lint: для кожного Done-файлу пройти `_List.Array[*]._Texts.Array[*]`
+// і знайти рядки, де набір плейсхолдерів `{n}/${var}/<tag>/[ctl]/\n` у current
+// (Done) НЕ збігається з Original. Це не блокує pack, але дає попередження
+// користувачу — щоб не запакувати білд із бракуючими/зайвими маркерами.
+ipcMain.handle("dp2:hbr-text-lint-placeholders", async () => {
+  const { originalDir, doneDir } = await hbrTextDirs();
+  let entries; try { entries = await fs.readdir(originalDir); }
+  catch { return { ok: false, error: "no extracted text" }; }
+  // Той самий набір, що в parser.ts. ВАЖЛИВО: квадратні дужки НЕ містять
+  // пробілу всередині — інакше "[RATED R]" (звичайний текст) трактувався б
+  // як Unity-тег і pre-pack lint ловив би на ньому false-positives.
+  const PATS = [
+    /\{[A-Za-z0-9_]+\}/g,
+    /\$\{[^}]+\}/g,
+    /<\/?[A-Za-z][^>]*>/g,
+    /\[\/?[A-Za-z][^\] ]*\]/g,
+    /\\n/g, /\\r\\n/g,
+  ];
+  function extractTags(s) {
+    if (!s) return [];
+    const out = [];
+    for (const re of PATS) { const m = s.match(re); if (m) out.push(...m); }
+    return out.sort();
+  }
+  function diff(o, c) {
+    const oC = new Map(); const cC = new Map();
+    for (const x of o) oC.set(x, (oC.get(x) ?? 0) + 1);
+    for (const x of c) cC.set(x, (cC.get(x) ?? 0) + 1);
+    const missing = []; const extra = [];
+    for (const [k, v] of oC) { const d = v - (cC.get(k) ?? 0); for (let i = 0; i < d; i++) missing.push(k); }
+    for (const [k, v] of cC) { const d = v - (oC.get(k) ?? 0); for (let i = 0; i < d; i++) extra.push(k); }
+    return { missing, extra };
+  }
+  const violations = [];
+  let scannedFiles = 0; let scannedRows = 0;
+  for (const fname of entries) {
+    if (!fname.endsWith(".json")) continue;
+    const origPath = path.join(originalDir, fname);
+    const donePath = path.join(doneDir, fname);
+    let origRaw; let doneRaw;
+    try { origRaw = await fs.readFile(origPath, "utf8"); } catch { continue; }
+    try { doneRaw = await fs.readFile(donePath, "utf8"); } catch { continue; }
+    try {
+      const orig = JSON.parse(origRaw);
+      const done = JSON.parse(doneRaw);
+      const oList = (orig && orig._List && orig._List.Array) || [];
+      const dList = (done && done._List && done._List.Array) || [];
+      scannedFiles++;
+      for (let i = 0; i < dList.length; i++) {
+        const textId = (dList[i] && dList[i]._TextId) || `#${i}`;
+        const dTexts = (dList[i] && dList[i]._Texts && dList[i]._Texts.Array) || [];
+        const oTexts = (oList[i] && oList[i]._Texts && oList[i]._Texts.Array) || [];
+        for (let j = 0; j < dTexts.length; j++) {
+          scannedRows++;
+          const d = (dTexts[j] && dTexts[j]._Text) || "";
+          const o = (oTexts[j] && oTexts[j]._Text) || "";
+          if (!d || d === o) continue; // not translated → skip lint
+          const { missing, extra } = diff(extractTags(o), extractTags(d));
+          if (missing.length === 0 && extra.length === 0) continue;
+          violations.push({
+            file: fname, textId, variantIdx: j,
+            missing, extra,
+            original: o, current: d,
+          });
+        }
+      }
+    } catch {}
+  }
+  return { ok: true, scannedFiles, scannedRows, violations };
+});
+
+// Прибрати DLC-сліди з HBR/Text: видаляє Done/Original .json (а також .bak),
+// у яких bundle назва містить "dlc", і викидає DLC-items з meta. Не чіпає
+// сам ігровий .bundle файл. Безпечно викликати кілька разів.
+ipcMain.handle("dp2:hbr-text-purge-dlc", async () => {
+  const { originalDir, doneDir, metaFile } = await hbrTextDirs();
+  const isDlc = (n) => /dlc/i.test(n);
+  let removedFiles = 0;
+  for (const dir of [originalDir, doneDir]) {
+    let items = []; try { items = await fs.readdir(dir); } catch { continue; }
+    for (const n of items) {
+      if (!isDlc(n)) continue;
+      try { await fs.unlink(path.join(dir, n)); removedFiles++; } catch {}
+    }
+  }
+  let removedMeta = 0;
+  try {
+    const raw = await fs.readFile(metaFile, "utf8");
+    const safe = raw.replace(/"(pathId|scriptPathId)"\s*:\s*(-?\d+)/g, '"$1":"$2"');
+    const meta = JSON.parse(safe);
+    if (Array.isArray(meta.items)) {
+      const before = meta.items.length;
+      meta.items = meta.items.filter((it) => !(it && (isDlc(it.file || "") || isDlc(it.bundle || "") || isDlc(it.name || ""))));
+      removedMeta = before - meta.items.length;
+    }
+    if (Array.isArray(meta.bundles)) {
+      meta.bundles = meta.bundles.filter((b) => !isDlc(b));
+    }
+    await fs.writeFile(metaFile, JSON.stringify(meta, null, 2), "utf8");
+  } catch {}
+  return { ok: true, removedFiles, removedMeta };
+});
+
+// TGL Mono Export: викликає tgl-mono-export.ps1.
+// payload: { bundlePath, outDir, nameFilter }
+ipcMain.handle("dp2:tgl-mono-export", async (_e, payload) => {
+  const { bundlePath, outDir, nameFilter } = payload || {};
+  if (!bundlePath) return { ok: false, error: "bundlePath not set" };
+  if (!outDir) return { ok: false, error: "outDir not set" };
+  try { await fs.access(bundlePath); }
+  catch { return { ok: false, error: "bundle not found: " + bundlePath }; }
+  const settings = await readSettings();
+  if (!settings.uabeaPath) return { ok: false, error: "UABEA not set" };
+  const pwshLookup = await findPwsh(settings);
+  if (!pwshLookup) return { ok: false, error: "PowerShell 7 not found" };
+  const uabeaDir = path.dirname(settings.uabeaPath);
+  const scriptPath = resolveResource("scripts/tgl-mono-export.ps1");
+  try { await fs.mkdir(outDir, { recursive: true }); } catch {}
   return await new Promise((resolve) => {
     const args = [
       "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass",
       "-File", scriptPath,
       "-BundlePath", bundlePath,
-      "-OutDir", originalDir,
-      "-MetaPath", metaFile,
+      "-OutDir", outDir,
       "-UabeaDir", uabeaDir,
     ];
+    if (nameFilter) { args.push("-NameFilter", nameFilter); }
     const child = spawn(pwshLookup, args, { windowsHide: true });
     let allStdout = "";
-    let leftover = "";
-    const win = BrowserWindow.getAllWindows()[0];
-    const emit = (chunk) => {
-      allStdout += chunk;
-      leftover += chunk;
-      const lines = leftover.split(/\r?\n/);
-      leftover = lines.pop() || "";
-      for (const ln of lines) {
-        if (!ln.trim()) continue;
-        try { win?.webContents.send("dp2:hbr-text-prep-progress", ln); } catch {}
-      }
-    };
-    child.stdout.on("data", (d) => emit(d.toString()));
-    child.stderr.on("data", (d) => emit(d.toString()));
+    child.stdout.on("data", (d) => { allStdout += d.toString(); });
+    child.stderr.on("data", (d) => { allStdout += d.toString(); });
     child.on("error", (err) => resolve({ ok: false, error: err.message, log: allStdout }));
     child.on("exit", (code) => {
-      if (leftover.trim()) {
-        try { win?.webContents.send("dp2:hbr-text-prep-progress", leftover); } catch {}
-      }
       if (code !== 0) {
-        const tail = allStdout.split("\n").slice(-25).join("\n").trim();
+        const tail = allStdout.split("\n").slice(-15).join("\n").trim();
         resolve({ ok: false, error: tail || `Exit ${code}`, log: allStdout });
         return;
       }
@@ -1057,35 +1733,111 @@ ipcMain.handle("dp2:hbr-text-prep-extract", async () => {
   });
 });
 
-// Pack HBR translations back into the game bundle (hbr-text-import.ps1).
-ipcMain.handle("dp2:hbr-pack-into-game", async () => {
-  const settings = await readSettings();
-  const bundlePath = settings.hbrBundlePath;
-  if (!bundlePath) return { ok: false, error: "hbrBundlePath not set" };
+// TGL Mono Import: викликає tgl-mono-import.ps1.
+// payload: { bundlePath, jsonPath, pathId? }
+ipcMain.handle("dp2:tgl-mono-import", async (_e, payload) => {
+  const { bundlePath, jsonPath, pathId } = payload || {};
+  if (!bundlePath) return { ok: false, error: "bundlePath not set" };
+  if (!jsonPath) return { ok: false, error: "jsonPath not set" };
   try { await fs.access(bundlePath); }
-  catch { return { ok: false, error: "bundle-not-found: " + bundlePath }; }
-  const { uabeaPath } = settings;
-  if (!uabeaPath) return { ok: false, error: "UABEA not set" };
-  const { doneDir, metaFile } = await hbrTextDirs();
-  try { await fs.access(doneDir); } catch { return { ok: false, error: "Done dir empty/missing" }; }
-  try { await fs.access(metaFile); } catch { return { ok: false, error: "Meta file missing — run extract first" }; }
+  catch { return { ok: false, error: "bundle not found: " + bundlePath }; }
+  try { await fs.access(jsonPath); }
+  catch { return { ok: false, error: "json not found: " + jsonPath }; }
+  const settings = await readSettings();
+  if (!settings.uabeaPath) return { ok: false, error: "UABEA not set" };
   const pwshLookup = await findPwsh(settings);
   if (!pwshLookup) return { ok: false, error: "PowerShell 7 not found" };
-  const uabeaDir = path.dirname(uabeaPath);
-  const scriptPath = resolveResource("scripts/hbr-text-import.ps1");
+  const uabeaDir = path.dirname(settings.uabeaPath);
+  const scriptPath = resolveResource("scripts/tgl-mono-import.ps1");
   return await new Promise((resolve) => {
     const args = [
       "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass",
       "-File", scriptPath,
       "-BundlePath", bundlePath,
-      "-DoneDir", doneDir,
-      "-MetaPath", metaFile,
+      "-JsonPath", jsonPath,
       "-UabeaDir", uabeaDir,
     ];
+    if (pathId) { args.push("-PathId", String(pathId)); }
+    const child = spawn(pwshLookup, args, { windowsHide: true });
+    let allStdout = "";
+    child.stdout.on("data", (d) => { allStdout += d.toString(); });
+    child.stderr.on("data", (d) => { allStdout += d.toString(); });
+    child.on("error", (err) => resolve({ ok: false, error: err.message, log: allStdout }));
+    child.on("exit", (code) => {
+      if (code !== 0) {
+        const tail = allStdout.split("\n").slice(-15).join("\n").trim();
+        resolve({ ok: false, error: tail || `Exit ${code}`, log: allStdout });
+        return;
+      }
+      let summary = null;
+      const m = allStdout.match(/RESULT_JSON:\s*(.+)$/m);
+      if (m) { try { summary = JSON.parse(m[1]); } catch {} }
+      resolve({ ok: true, summary, log: allStdout });
+    });
+  });
+});
+
+// ── IPC: HBR Fonts (Atlas + MonoBehaviour dump) ─────────────────────────
+// Step 2 після завантаження TMP_FontAssetCreator-тулзи: розпаковуємо з того ж
+// bundle, де живе текст, SDF-атласи (Texture2D з "atlas" у m_Name) та
+// TMP_FontAsset-MonoBehaviour (m_Name=FOT-…). Зберігаємо у toolsDir/HBR/Fonts/.
+
+function hbrFontsRoot(settings) {
+  if (!settings.toolsDir) return null;
+  return path.join(settings.toolsDir, "HBR", "Fonts");
+}
+
+ipcMain.handle("dp2:hbr-fonts-status", async () => {
+  const settings = await readSettings();
+  const root = hbrFontsRoot(settings);
+  if (!root) return { ok: false, error: "toolsDir not set" };
+  const atlasDir = path.join(root, "Atlas");
+  const monoDir = path.join(root, "MonoBehaviour");
+  const list = async (d, ext) => {
+    try {
+      const items = await fs.readdir(d, { withFileTypes: true });
+      return items.filter((x) => x.isFile() && x.name.toLowerCase().endsWith(ext)).map((x) => x.name);
+    } catch { return []; }
+  };
+  const atlas = await list(atlasDir, ".png");
+  const mono = await list(monoDir, ".json");
+  const bundlePath = settings.hbrBundlePath || null;
+  let bundleOk = false;
+  if (bundlePath) { try { await fs.access(bundlePath); bundleOk = true; } catch {} }
+  return {
+    ok: true, root, atlasDir, monoDir,
+    atlasCount: atlas.length, monoCount: mono.length,
+    bundlePath, bundleOk,
+  };
+});
+
+// Спільний раннер для обох scriptів — bundle + outDir + UabeaDir, стрім
+// прогресу у відповідний канал.
+async function hbrRunFontsScript({ scriptName, outSubdir, progressChannel }) {
+  const settings = await readSettings();
+  if (!settings.hbrBundlePath) return { ok: false, error: "hbrBundlePath not set" };
+  try { await fs.access(settings.hbrBundlePath); }
+  catch { return { ok: false, error: "bundle-not-found: " + settings.hbrBundlePath }; }
+  if (!settings.uabeaPath) return { ok: false, error: "UABEA path not set" };
+  const pwshLookup = await findPwsh(settings);
+  if (!pwshLookup) return { ok: false, error: "PowerShell 7 not found" };
+  const root = hbrFontsRoot(settings);
+  if (!root) return { ok: false, error: "toolsDir not set" };
+  const outDir = path.join(root, outSubdir);
+  await fs.mkdir(outDir, { recursive: true });
+  const uabeaDir = path.dirname(settings.uabeaPath);
+  const scriptPath = resolveResource("scripts/" + scriptName);
+  const args = [
+    "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass",
+    "-File", scriptPath,
+    "-BundlePath", settings.hbrBundlePath,
+    "-OutDir", outDir,
+    "-UabeaDir", uabeaDir,
+  ];
+  return await new Promise((resolve) => {
     const child = spawn(pwshLookup, args, { windowsHide: true });
     let allStdout = "";
     let leftover = "";
-    let totalFields = 0;
     const win = BrowserWindow.getAllWindows()[0];
     const emit = (chunk) => {
       allStdout += chunk;
@@ -1094,48 +1846,219 @@ ipcMain.handle("dp2:hbr-pack-into-game", async () => {
       leftover = lines.pop() || "";
       for (const ln of lines) {
         if (!ln.trim()) continue;
-        const fm = ln.match(/\[PATCHED\][^\n]*fields=(\d+)/);
-        if (fm) totalFields += parseInt(fm[1], 10) || 0;
-        try { win?.webContents.send("dp2:hbr-pack-progress", ln); } catch {}
+        try { win?.webContents.send(progressChannel, ln); } catch {}
       }
     };
     child.stdout.on("data", (d) => emit(d.toString()));
     child.stderr.on("data", (d) => emit(d.toString()));
-    const finalize = async (result) => {
-      // Persist log to disk — корисно для діагностики, бо консолі юзер не бачить.
-      try {
-        let toolsDir = settings.toolsDir;
-        if (!toolsDir) toolsDir = path.join(app.getPath("documents"), "SWERY-Localization-Tool");
-        const logsDir = path.join(toolsDir, "LOGS", "HBR");
-        await fs.mkdir(logsDir, { recursive: true });
-        const ts = new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19);
-        const logPath = path.join(logsDir, `hbr-pack-${ts}.log`);
-        await fs.writeFile(logPath, allStdout, "utf8");
-        result.logPath = logPath;
-      } catch {}
-      try {
-        const st = await fs.stat(bundlePath);
-        result.bundleSize = st.size;
-        result.bundlePath = bundlePath;
-        try { const sb = await fs.stat(bundlePath + ".bak"); result.bakSize = sb.size; result.bakPath = bundlePath + ".bak"; } catch {}
-      } catch {}
-      result.totalFields = totalFields;
-      resolve(result);
-    };
-    child.on("error", (err) => finalize({ ok: false, error: err.message, log: allStdout }));
+    child.on("error", (err) => resolve({ ok: false, error: err.message, log: allStdout }));
     child.on("exit", (code) => {
-      if (leftover.trim()) { try { win?.webContents.send("dp2:hbr-pack-progress", leftover); } catch {} }
+      if (leftover.trim()) {
+        try { win?.webContents.send(progressChannel, leftover); } catch {}
+      }
       if (code !== 0) {
-        const tail = allStdout.split("\n").slice(-25).join("\n").trim();
-        finalize({ ok: false, error: tail || `Exit ${code}`, log: allStdout });
+        const tail = allStdout.split("\n").slice(-15).join("\n").trim();
+        resolve({ ok: false, error: tail || `Exit ${code}`, log: allStdout });
         return;
       }
       let summary = null;
       const m = allStdout.match(/RESULT_JSON:\s*(.+)$/m);
       if (m) { try { summary = JSON.parse(m[1]); } catch {} }
-      finalize({ ok: true, summary, log: allStdout });
+      resolve({ ok: true, outDir, summary, log: allStdout });
     });
   });
+}
+
+ipcMain.handle("dp2:hbr-fonts-atlas-export", async () => {
+  return await hbrRunFontsScript({
+    scriptName: "hbr-fonts-atlas-export.ps1",
+    outSubdir: "Atlas",
+    progressChannel: "dp2:hbr-fonts-atlas-progress",
+  });
+});
+
+ipcMain.handle("dp2:hbr-fonts-mono-export", async () => {
+  return await hbrRunFontsScript({
+    scriptName: "hbr-fonts-mono-export.ps1",
+    outSubdir: "MonoBehaviour",
+    progressChannel: "dp2:hbr-fonts-mono-progress",
+  });
+});
+
+// Pack fonts back into the bundle — повертає JSON+PNG з HBR/Fonts/{MonoBehaviour,Atlas}
+// у той самий bundle, де живе текст. Скрипт пише ОДНИМ uncompressed-Write —
+// той самий патерн, що hbr-text-import, інакше Unity видає CRC mismatch.
+ipcMain.handle("dp2:hbr-fonts-import", async () => {
+  const settings = await readSettings();
+  if (!settings.hbrBundlePath) return { ok: false, error: "hbrBundlePath not set" };
+  try { await fs.access(settings.hbrBundlePath); }
+  catch { return { ok: false, error: "bundle-not-found: " + settings.hbrBundlePath }; }
+  if (!settings.uabeaPath) return { ok: false, error: "UABEA path not set" };
+  const pwshLookup = await findPwsh(settings);
+  if (!pwshLookup) return { ok: false, error: "PowerShell 7 not found" };
+  const root = hbrFontsRoot(settings);
+  if (!root) return { ok: false, error: "toolsDir not set" };
+  const atlasDir = path.join(root, "Atlas");
+  const monoDir = path.join(root, "MonoBehaviour");
+  const uabeaDir = path.dirname(settings.uabeaPath);
+  const scriptPath = resolveResource("scripts/hbr-fonts-import.ps1");
+  const args = [
+    "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass",
+    "-File", scriptPath,
+    "-BundlePath", settings.hbrBundlePath,
+    "-AtlasDir", atlasDir,
+    "-MonoDir", monoDir,
+    "-UabeaDir", uabeaDir,
+  ];
+  return await new Promise((resolve) => {
+    const child = spawn(pwshLookup, args, { windowsHide: true });
+    let allStdout = "";
+    let leftover = "";
+    const win = BrowserWindow.getAllWindows()[0];
+    const emit = (chunk) => {
+      allStdout += chunk;
+      leftover += chunk;
+      const lines = leftover.split(/\r?\n/);
+      leftover = lines.pop() || "";
+      for (const ln of lines) {
+        if (!ln.trim()) continue;
+        try { win?.webContents.send("dp2:hbr-fonts-import-progress", ln); } catch {}
+      }
+    };
+    child.stdout.on("data", (d) => emit(d.toString()));
+    child.stderr.on("data", (d) => emit(d.toString()));
+    child.on("error", (err) => resolve({ ok: false, error: err.message, log: allStdout }));
+    child.on("exit", (code) => {
+      if (leftover.trim()) {
+        try { win?.webContents.send("dp2:hbr-fonts-import-progress", leftover); } catch {}
+      }
+      if (code !== 0) {
+        const tail = allStdout.split("\n").slice(-20).join("\n").trim();
+        resolve({ ok: false, error: tail || `Exit ${code}`, log: allStdout });
+        return;
+      }
+      let summary = null;
+      const m = allStdout.match(/RESULT_JSON:\s*(.+)$/m);
+      if (m) { try { summary = JSON.parse(m[1]); } catch {} }
+      resolve({ ok: true, summary, log: allStdout });
+    });
+  });
+});
+
+// Запустити TMPUnity.exe з teki FontGenerator. Detached + unref — щоб додаток
+// не "тримав" процес TMPUnity і не падав разом з ним.
+ipcMain.handle("dp2:hbr-fontgen-launch", async () => {
+  const settings = await readSettings();
+  if (!settings.toolsDir) return { ok: false, error: "toolsDir not set" };
+  // hbrFontgenStatus повертає exePath — використаємо ту саму логіку, що й
+  // editor: підкласти у root FontGenerator/<TMPUnity>.exe. Реальний exe
+  // повертає сам hbr-fontgen-status (його ми вже маємо).
+  // Тут просто беремо те, що hbr-fontgen-status поверне ззовні — і запускаємо.
+  // Викликати інший хендлер з main process — некрасиво, тож копія мінімальної
+  // логіки: пошук .exe у root.
+  const root = path.join(settings.toolsDir, "HBR", "FontGenerator");
+  let exePath = null;
+  try {
+    const items = await fs.readdir(root, { withFileTypes: true });
+    const direct = items.find((x) => x.isFile() && /TMPUnity.*\.exe$/i.test(x.name));
+    if (direct) exePath = path.join(root, direct.name);
+    if (!exePath) {
+      // Шукати в підтеках першого рівня.
+      for (const sub of items) {
+        if (!sub.isDirectory()) continue;
+        try {
+          const inner = await fs.readdir(path.join(root, sub.name), { withFileTypes: true });
+          const hit = inner.find((x) => x.isFile() && /TMPUnity.*\.exe$/i.test(x.name));
+          if (hit) { exePath = path.join(root, sub.name, hit.name); break; }
+        } catch {}
+      }
+    }
+  } catch { return { ok: false, error: "FontGenerator folder not found: " + root }; }
+  if (!exePath) return { ok: false, error: "TMPUnity*.exe not found in " + root };
+  try {
+    const child = spawn(exePath, [], {
+      detached: true, stdio: "ignore", cwd: path.dirname(exePath),
+    });
+    child.unref();
+    return { ok: true, exePath };
+  } catch (e) {
+    return { ok: false, error: String(e?.message ?? e) };
+  }
+});
+
+// Запуск гри через steam://rungameid/<appId>.
+ipcMain.handle("dp2:launch-steam-game", async (_e, appId) => {
+  const id = String(appId || "").replace(/[^0-9]/g, "");
+  if (!id) return { ok: false, error: "bad appId" };
+  try {
+    await shell.openExternal("steam://rungameid/" + id);
+    return { ok: true };
+  } catch (e) { return { ok: false, error: String(e.message || e) }; }
+});
+
+// Build release: пак виконується звичайно, після успішного — копіюємо
+// catalog.json + bundle у Documents/SWERY-Localization-Tool/HBR/release/
+// з повторенням ігрової структури тек. Тоді користувач просто копіює
+// release/* у корінь HOTEL BARCELONA/ — і одразу грає.
+ipcMain.handle("dp2:hbr-build-release", async () => {
+  const settings = await readSettings();
+  let toolsDir = settings.toolsDir;
+  if (!toolsDir) toolsDir = path.join(app.getPath("documents"), "SWERY-Localization-Tool");
+  const bundlePath = settings.hbrBundlePath;
+  if (!bundlePath) return { ok: false, error: "hbrBundlePath not set" };
+  // Pack у гру напряму через спільну функцію (без ipcMain.listeners-хака —
+  // ipcMain.handle не реєструє у listeners, тому той трюк давав
+  // "pack handler missing").
+  const packResult = await hbrRunPack();
+  if (!packResult.ok) return { ok: false, error: packResult.error || "pack fail", packResult };
+
+  try {
+    // Структура: <toolsDir>/HBR/release/HOTEL BARCELONA_Data/StreamingAssets/aa/{catalog.json, StandaloneWindows64/<bundle>}
+    const releaseRoot = path.join(toolsDir, "HBR", "release");
+    // Очищаємо попередній release, щоб не змішувати старі/нові файли.
+    try {
+      await fs.rm(releaseRoot, { recursive: true, force: true });
+    } catch {}
+    const aaDir = path.dirname(path.dirname(bundlePath));   // .../aa
+    const catalogSrc = path.join(aaDir, "catalog.json");
+    const aaRelDst = path.join(releaseRoot, "HOTEL BARCELONA_Data", "StreamingAssets", "aa");
+    const swDirDst = path.join(aaRelDst, "StandaloneWindows64");
+    await fs.mkdir(swDirDst, { recursive: true });
+    // catalog.json
+    let catalogCopied = false;
+    try { await fs.copyFile(catalogSrc, path.join(aaRelDst, "catalog.json")); catalogCopied = true; }
+    catch (e) { return { ok: false, error: "Не вдалося скопіювати catalog.json: " + (e.message || e) }; }
+    // Копіюємо всі _resources*.bundle (включно з DLC) — їх може бути кілька.
+    const aaSwDir = path.dirname(bundlePath);
+    let swEntries = []; try { swEntries = await fs.readdir(aaSwDir); } catch {}
+    const bundlesToCopy = swEntries
+      .filter((f) => /^_resources.*\.bundle$/i.test(f) && !f.endsWith(".bak"));
+    const copiedBundles = [];
+    let totalSize = 0;
+    for (const bn of bundlesToCopy) {
+      try {
+        await fs.copyFile(path.join(aaSwDir, bn), path.join(swDirDst, bn));
+        const st = await fs.stat(path.join(swDirDst, bn));
+        copiedBundles.push({ name: bn, size: st.size });
+        totalSize += st.size;
+      } catch {}
+    }
+    const mainBundleName = path.basename(bundlePath);
+    const mainEntry = copiedBundles.find((b) => b.name === mainBundleName);
+
+    return {
+      ok: true,
+      releaseRoot,
+      catalogCopied,
+      bundleName: mainBundleName,
+      bundleSize: mainEntry ? mainEntry.size : totalSize,
+      bundles: copiedBundles,
+      packSummary: packResult.summary,
+      logPath: packResult.logPath,
+    };
+  } catch (e) {
+    return { ok: false, error: String(e.message || e) };
+  }
 });
 
 // Backup Done у BACKUPS/HotelBarcelona/<timestamp>/.
@@ -1191,6 +2114,9 @@ ipcMain.handle("dp2:hbr-text-list", async () => {
     const files = await fs.readdir(doneDir);
     for (const f of files) {
       if (!f.endsWith(".json")) continue;
+      // Пропускаємо службові dot-файли (`.hbr-status.json` + його `.bak.json`,
+      // `.preimport.bak.json` тощо). Ці sidecar-и не повинні з'являтись у списку.
+      if (f.startsWith(".")) continue;
       const donePath = path.join(doneDir, f);
       const origPath = path.join(originalDir, f);
       let size = 0;
@@ -1213,24 +2139,30 @@ ipcMain.handle("dp2:hbr-text-write", async (_e, payload) => {
   const { fullPath, raw } = payload || {};
   if (!fullPath || typeof raw !== "string") return { ok: false, error: "bad args" };
   try {
-    const bak = fullPath + ".bak";
-    try { await fs.access(bak); }
-    catch { try { await fs.copyFile(fullPath, bak); } catch {} }
-    await fs.writeFile(fullPath, raw, "utf8");
-    return { ok: true };
+    const safe = assertSafeWritePath(fullPath);
+    return await withFileLock(safe, async () => {
+      const bak = safe + ".bak";
+      try { await fs.access(bak); }
+      catch { try { await fs.copyFile(safe, bak); } catch {} }
+      await fs.writeFile(safe, raw, "utf8");
+      return { ok: true };
+    });
   } catch (e) { return { ok: false, error: String(e.message || e) }; }
 });
 
 // Restore Done/<file>.json from its sibling .bak (created on first save).
 ipcMain.handle("dp2:hbr-text-restore-bak", async (_e, fullPath) => {
   if (!fullPath || typeof fullPath !== "string") return { ok: false, error: "bad args" };
-  const bak = fullPath + ".bak";
-  try { await fs.access(bak); }
-  catch { return { ok: false, error: "no-bak" }; }
   try {
-    const raw = await fs.readFile(bak, "utf8");
-    await fs.writeFile(fullPath, raw, "utf8");
-    return { ok: true, raw };
+    const safe = assertSafeWritePath(fullPath);
+    const bak = safe + ".bak";
+    try { await fs.access(bak); }
+    catch { return { ok: false, error: "no-bak" }; }
+    return await withFileLock(safe, async () => {
+      const raw = await fs.readFile(bak, "utf8");
+      await fs.writeFile(safe, raw, "utf8");
+      return { ok: true, raw };
+    });
   } catch (e) { return { ok: false, error: String(e.message || e) }; }
 });
 
@@ -1240,36 +2172,106 @@ ipcMain.handle("dp2:hbr-text-restore-bak", async (_e, fullPath) => {
 ipcMain.handle("dp2:hbr-corpus-stats", async () => {
   try {
     const { originalDir, doneDir } = await hbrTextDirs();
-    let entries; try { entries = await fs.readdir(originalDir); }
-    catch { return { ok: false, error: "no extracted text" }; }
-    let total = 0; let translated = 0; let files = 0;
-    for (const fname of entries) {
-      if (!fname.endsWith(".json")) continue;
-      const origPath = path.join(originalDir, fname);
-      const donePath = path.join(doneDir, fname);
-      let origRaw; let doneRaw;
-      try { origRaw = await fs.readFile(origPath, "utf8"); } catch { continue; }
-      try { doneRaw = await fs.readFile(donePath, "utf8"); } catch { doneRaw = origRaw; }
-      try {
-        const orig = JSON.parse(origRaw);
-        const done = JSON.parse(doneRaw);
-        const origList = (orig && orig._List && orig._List.Array) || [];
-        const doneList = (done && done._List && done._List.Array) || [];
-        for (let i = 0; i < doneList.length; i++) {
-          const dTexts = (doneList[i] && doneList[i]._Texts && doneList[i]._Texts.Array) || [];
-          const oTexts = (origList[i] && origList[i]._Texts && origList[i]._Texts.Array) || [];
-          for (let j = 0; j < dTexts.length; j++) {
-            total++;
-            const d = (dTexts[j] && dTexts[j]._Text) || "";
-            const o = (oTexts[j] && oTexts[j]._Text) || d;
-            if (d !== o && d.trim().length > 0) translated++;
-          }
-        }
-        files++;
-      } catch {}
-    }
-    return { ok: true, files, total, translated };
+    return await callHeavy("hbr-corpus-stats", { originalDir, doneDir });
   } catch (e) { return { ok: false, error: String(e.message || e) }; }
+});
+
+// ── HBR Font Generator (TMPUnity by MrIkso) ────────────────────────
+// .zip via Dropbox direct link (dl=1 returns 302 to dl.dropboxusercontent.com).
+// setupTools.downloadFile already follows redirects so this just works.
+const HBR_FONTGEN_URL = "https://www.dropbox.com/scl/fi/zrf5k92drx89ttrey3nr9/TMPUnity.zip?rlkey=6aajtgdskxamh7davqyi3z6sz&st=nrb7tavk&dl=1";
+function hbrFontGenDir() {
+  const docs = app.getPath("documents");
+  return path.join(docs, "SWERY-Localization-Tool", "HBR", "FontGenerator");
+}
+async function hbrFontGenExecutable() {
+  // Best-effort lookup of the unpacked .exe (depth ≤ 3).
+  const root = hbrFontGenDir();
+  try { await fs.access(root); } catch { return null; }
+  const stack = [{ dir: root, depth: 0 }];
+  while (stack.length) {
+    const { dir, depth } = stack.shift();
+    let entries; try { entries = await fs.readdir(dir, { withFileTypes: true }); } catch { continue; }
+    for (const e of entries) {
+      const p = path.join(dir, e.name);
+      if (e.isDirectory()) { if (depth < 3) stack.push({ dir: p, depth: depth + 1 }); }
+      else if (e.isFile() && /\.exe$/i.test(e.name)) return p;
+    }
+  }
+  return null;
+}
+ipcMain.handle("dp2:hbr-fontgen-status", async () => {
+  const root = hbrFontGenDir();
+  let installed = false; let exePath = null;
+  try { await fs.access(root); installed = true; } catch {}
+  if (installed) exePath = await hbrFontGenExecutable();
+  return { ok: true, installed: !!exePath, root, exePath };
+});
+ipcMain.handle("dp2:hbr-fontgen-download", async () => {
+  const root = hbrFontGenDir();
+  const zipPath = path.join(root, "TMPUnity.zip");
+  try {
+    await fs.mkdir(root, { recursive: true });
+    // Already unpacked? skip.
+    const existing = await hbrFontGenExecutable();
+    if (existing) {
+      try {
+        mainWindow?.webContents.send("dp2:hbr-fontgen-progress", {
+          phase: "done", i18nKey: "hbr.fontgen.alreadyHave",
+          total: 0, downloaded: 0, percent: 100, bytesPerSec: 0,
+        });
+      } catch {}
+      return { ok: true, root, exePath: existing, alreadyExisted: true };
+    }
+    let lastEmit = 0; let lastBytes = 0; const startedAt = Date.now();
+    try {
+      mainWindow?.webContents.send("dp2:hbr-fontgen-progress", {
+        phase: "download", i18nKey: "hbr.fontgen.downloading",
+        i18nParams: { name: "TMPUnity.zip" },
+        total: 0, downloaded: 0, percent: 0, bytesPerSec: 0,
+      });
+    } catch {}
+    const res = await setupTools.downloadFile(HBR_FONTGEN_URL, zipPath, (p) => {
+      const now = Date.now();
+      const dt = (now - (lastEmit || startedAt)) / 1000;
+      const bps = dt > 0 ? (p.downloaded - lastBytes) / dt : 0;
+      lastEmit = now; lastBytes = p.downloaded;
+      try {
+        mainWindow?.webContents.send("dp2:hbr-fontgen-progress", {
+          phase: "download", i18nKey: "hbr.fontgen.downloading",
+          i18nParams: { name: "TMPUnity.zip" },
+          total: p.total, downloaded: p.downloaded, percent: p.percent,
+          bytesPerSec: bps,
+        });
+      } catch {}
+    }, { skipIfExists: false });
+    // Unpack.
+    try {
+      mainWindow?.webContents.send("dp2:hbr-fontgen-progress", {
+        phase: "extract", i18nKey: "hbr.fontgen.extracting",
+        total: res.bytes, downloaded: res.bytes, percent: 100, bytesPerSec: 0,
+      });
+    } catch {}
+    await setupTools.extractZip(zipPath, root);
+    await setupTools.flattenIfSingleSubdir(root);
+    try { await fs.unlink(zipPath); } catch {}
+    const exePath = await hbrFontGenExecutable();
+    try {
+      mainWindow?.webContents.send("dp2:hbr-fontgen-progress", {
+        phase: "done", i18nKey: "hbr.fontgen.installed",
+        total: res.bytes, downloaded: res.bytes, percent: 100, bytesPerSec: 0,
+      });
+    } catch {}
+    return { ok: true, root, exePath, bytes: res.bytes };
+  } catch (e) {
+    try {
+      mainWindow?.webContents.send("dp2:hbr-fontgen-progress", {
+        phase: "error", message: String(e.message || e),
+        total: 0, downloaded: 0, percent: 0, bytesPerSec: 0,
+      });
+    } catch {}
+    return { ok: false, error: String(e.message || e) };
+  }
 });
 
 // ── HBR external tool: CatalogTool.exe ─────────────────────────────
@@ -1760,10 +2762,25 @@ ipcMain.handle("dp2:textures-export", async (_e, payload) => {
   return await new Promise((resolve) => {
     const child = spawn(pwshLookup, args, { windowsHide: true });
     let allStdout = "";
-    child.stdout.on("data", (d) => { allStdout += d.toString(); });
-    child.stderr.on("data", (d) => { allStdout += d.toString(); });
+    let leftover = "";
+    const win = BrowserWindow.getAllWindows()[0];
+    const emit = (chunk) => {
+      allStdout += chunk;
+      leftover += chunk;
+      const lines = leftover.split(/\r?\n/);
+      leftover = lines.pop() || "";
+      for (const ln of lines) {
+        if (!ln.trim()) continue;
+        try { win?.webContents.send("dp2:textures-export-progress", ln); } catch {}
+      }
+    };
+    child.stdout.on("data", (d) => emit(d.toString()));
+    child.stderr.on("data", (d) => emit(d.toString()));
     child.on("error", (err) => resolve({ success: false, error: err.message }));
     child.on("exit", (code) => {
+      if (leftover.trim()) {
+        try { win?.webContents.send("dp2:textures-export-progress", leftover); } catch {}
+      }
       if (code !== 0) {
         const tail = allStdout.split("\n").slice(-20).join("\n").trim();
         resolve({ success: false, error: tail || `Exit ${code}`, log: allStdout });
@@ -1994,11 +3011,14 @@ ipcMain.handle("dp2:tgl-fonts-write-json", async (_e, payload) => {
   const { jsonPath, content } = payload || {};
   if (!jsonPath || typeof content !== "string") return { ok: false, error: "bad args" };
   try {
-    const bak = jsonPath + ".bak";
-    try { await fs.access(bak); }
-    catch { await fs.copyFile(jsonPath, bak); }
-    await fs.writeFile(jsonPath, content, "utf8");
-    return { ok: true, bakPath: bak };
+    const safe = assertSafeWritePath(jsonPath);
+    return await withFileLock(safe, async () => {
+      const bak = safe + ".bak";
+      try { await fs.access(bak); }
+      catch { await fs.copyFile(safe, bak); }
+      await fs.writeFile(safe, content, "utf8");
+      return { ok: true, bakPath: bak };
+    });
   } catch (e) { return { ok: false, error: String(e.message || e) }; }
 });
 
@@ -2136,11 +3156,14 @@ ipcMain.handle("dp2:tgl-fonts-write-atlas-base64", async (_e, payload) => {
   const { pngPath, base64 } = payload || {};
   if (!pngPath || typeof base64 !== "string") return { ok: false, error: "bad args" };
   try {
-    const bak = pngPath + ".bak";
-    try { await fs.access(bak); }
-    catch { await fs.copyFile(pngPath, bak); }
-    await fs.writeFile(pngPath, Buffer.from(base64, "base64"));
-    return { ok: true, bakPath: bak };
+    const safe = assertSafeWritePath(pngPath);
+    return await withFileLock(safe, async () => {
+      const bak = safe + ".bak";
+      try { await fs.access(bak); }
+      catch { await fs.copyFile(safe, bak); }
+      await fs.writeFile(safe, Buffer.from(base64, "base64"));
+      return { ok: true, bakPath: bak };
+    });
   } catch (e) { return { ok: false, error: String(e.message || e) }; }
 });
 
@@ -2186,67 +3209,1052 @@ ipcMain.handle("dp2:tgl-pack", async (_event, payload) => {
   }
 });
 
-// ── IPC: DP1 pack pipeline ───────────────────────────────────────
-// Кроки:
-//   1. Прочитати _ua_done.json (вже згенерований store'ом DP1).
-//   2. Застосувати rename-мапу (кирилиця → латинські гліфи DP-шрифту).
-//      Результат запишемо у _ua_done.replaced.json поруч.
-//   3. Викликати DPMsgTool.exe from-json <replaced.json> <outDir>.
-//   4. Знайти результуючий *_new.mes → перейменувати/перенести у game dir
-//      як mes_all.mes (поведінка bat-скрипта з оригінального DPMsgTool).
-const CYR_MAP = {
-  "О":"O","о":"o","А":"A","а":"a","Р":"P","р":"p","С":"C","с":"c","М":"M",
-  "В":"B","Е":"E","е":"e","Н":"H","Т":"T","І":"I","і":"i","Ї":"Í","ї":"ï",
-  "Х":"X","х":"x","у":"y","Б":"Ô","Г":"¿","Ґ":"Ù","Д":"Á","Є":"Â","Ж":"Ã",
-  "З":"Ä","И":"Å","Й":"Æ","К":"Ç","Л":"È","П":"É","У":"Ê","Ф":"Ë","Ц":"Ì",
-  "Ч":"Î","Ш":"Ï","Щ":"Ð","Ь":"Ñ","Ю":"Ò","Я":"Ó","б":"à","в":"á","г":"â",
-  "ґ":"ã","д":"ä","є":"å","ж":"æ","з":"ç","и":"è","й":"é","к":"ê","л":"ë",
-  "м":"ì","н":"í","п":"î","т":"ú","ф":"ñ","ц":"ò","ч":"ó","ш":"ô","щ":"õ",
-  "я":"ù","ю":"ø","ь":"û","—":"Ú","’":"'",
-};
-function applyCyrMap(s) {
-  if (typeof s !== "string" || !s) return s;
-  let out = "";
-  for (const ch of s) out += (CYR_MAP[ch] != null ? CYR_MAP[ch] : ch);
-  return out;
+// ── IPC: TGL text Monaco-editor (Documents/SWERY/TGL/Text/TRANSLATION) ──
+// Користувач хотів повноцінний Monaco-редактор для TGL замість list-view.
+// Файл-перекладу живе у `Documents\SWERY-Localization-Tool\TGL\Text\
+// TRANSLATION\<binName>.txt` і ДЗЕРКАЛИТЬСЯ у поточний `<binPath>.txt`
+// workfile, щоб існуюча pack-логіка (heavy-worker 'tgl-pack') бачила
+// останні зміни без додаткових змін.
+async function tglTextDirs() {
+  const settings = await readSettings();
+  let toolsDir = settings.toolsDir;
+  if (!toolsDir) {
+    toolsDir = path.join(app.getPath("documents"), "SWERY-Localization-Tool");
+  }
+  const baseDir = path.join(toolsDir, "TGL", "Text");
+  return {
+    baseDir,
+    originalDir: path.join(baseDir, "ORIGINAL"),
+    translationDir: path.join(baseDir, "TRANSLATION"),
+  };
 }
 
-ipcMain.handle("dp2:dp1-pack", async (_event, payload) => {
-  const donePath = String((payload && payload.donePath) || "").trim();
-  if (!donePath) return { error: "donePath не задано" };
+function tglBinName(binPath) {
+  return path.basename(binPath).replace(/\.bin$/i, "");
+}
 
+ipcMain.handle("dp2:tgl-text-prep", async (_event, payload) => {
+  const binPath = String((payload && payload.binPath) || "").trim();
+  if (!binPath) return { ok: false, error: "binPath not set" };
+  try { await fs.access(binPath); }
+  catch { return { ok: false, error: "bin not found: " + binPath }; }
+  const { translationDir, originalDir } = await tglTextDirs();
+  await fs.mkdir(translationDir, { recursive: true });
+  await fs.mkdir(originalDir, { recursive: true });
+  const base = tglBinName(binPath);
+  const translationPath = path.join(translationDir, `${base}.txt`);
+  const originalPath = path.join(originalDir, `${base}.txt`);
+
+  // Завантажуємо .bin через heavy worker — отримуємо EN records + поточний UA.
+  let load;
+  try { load = await callHeavy("tgl-load", { binPath }); }
+  catch (e) { return { ok: false, error: "tgl-load: " + (e.message || e) }; }
+  const records = Array.isArray(load.records) ? load.records : [];
+  const uaArr = Array.isArray(load.ua) ? load.ua : [];
+  const originalLines = records.map((r) => String(r.en ?? ""));
+
+  // ORIGINAL: завжди оновлюємо (snapshot EN з .bin для read-only-перегляду).
+  const originalContent = originalLines.join("\n");
+  try { await fs.writeFile(originalPath, originalContent, "utf8"); } catch {}
+
+  // TRANSLATION: якщо файл уже існує — беремо його. Інакше — з workfile
+  // (binPath + ".txt") якщо є, інакше — копія EN.
+  let translationContent;
+  try {
+    translationContent = await fs.readFile(translationPath, "utf8");
+  } catch {
+    try {
+      translationContent = await fs.readFile(binPath + ".txt", "utf8");
+    } catch {
+      translationContent = uaArr.length === records.length
+        ? uaArr.join("\n")
+        : originalContent;
+    }
+    try { await fs.writeFile(translationPath, translationContent, "utf8"); } catch {}
+  }
+  return {
+    ok: true,
+    binName: base,
+    translationPath,
+    originalPath,
+    originalContent,
+    translationContent,
+    lineCount: records.length,
+  };
+});
+
+ipcMain.handle("dp2:tgl-text-write", async (_event, payload) => {
+  const binPath = String((payload && payload.binPath) || "").trim();
+  const content = String((payload && payload.content) ?? "");
+  if (!binPath) return { ok: false, error: "binPath not set" };
+  const { translationDir } = await tglTextDirs();
+  await fs.mkdir(translationDir, { recursive: true });
+  const translationPath = path.join(translationDir, `${tglBinName(binPath)}.txt`);
+  try {
+    await fs.writeFile(translationPath, content, "utf8");
+    // Дзеркалимо у workfile поряд з .bin — pack-логіка читає звідти.
+    try { await fs.writeFile(binPath + ".txt", content, "utf8"); } catch {}
+    return { ok: true, translationPath };
+  } catch (e) {
+    return { ok: false, error: String(e?.message ?? e) };
+  }
+});
+
+// ── IPC: THE MISSING text pipeline ───────────────────────────────
+async function missingTextDirs() {
   const settings = await readSettings();
-  const toolPath = settings.dp1ToolPath;
-  const gameDir = settings.dp1GameDir;
-  if (!toolPath) return { error: "DPMsgTool.exe path not set (DP1 Settings)" };
-  try { await fs.access(toolPath); } catch { return { error: "DPMsgTool.exe не знайдено: " + toolPath }; }
+  let toolsDir = settings.toolsDir;
+  if (!toolsDir) toolsDir = path.join(app.getPath("documents"), "SWERY-Localization-Tool");
+  const baseDir = path.join(toolsDir, "MISSING", "Text");
+  return {
+    baseDir,
+    originalDir: path.join(baseDir, "Original"),
+    doneDir: path.join(baseDir, "Done"),
+    metaDir: path.join(baseDir, "Meta"),
+    metaFile: path.join(baseDir, "Meta", "missing-meta.json"),
+  };
+}
 
-  // 1) Завантажити _ua_done.json
-  let records;
+ipcMain.handle("dp2:missing-prep-status", async () => {
+  const settings = await readSettings();
+  const assetsPath = settings.missingAssetsPath || null;
+  let assetsOk = false;
+  try { if (assetsPath) { await fs.access(assetsPath); assetsOk = true; } } catch {}
+  const { originalDir, doneDir, metaFile } = await missingTextDirs();
+  let originalCount = 0, doneCount = 0, metaExists = false;
+  try { const e = await fs.readdir(originalDir); originalCount = e.filter((f) => f.endsWith(".dat")).length; } catch {}
+  try { const e = await fs.readdir(doneDir); doneCount = e.filter((f) => f.endsWith(".dat")).length; } catch {}
+  try { await fs.access(metaFile); metaExists = true; } catch {}
+  return { ok: true, assetsPath, assetsOk, originalDir, doneDir, metaFile, metaExists, originalCount, doneCount };
+});
+
+ipcMain.handle("dp2:missing-prep-extract", async () => {
+  const settings = await readSettings();
+  const assetsPath = settings.missingAssetsPath;
+  if (!assetsPath) return { ok: false, error: "missingAssetsPath not set" };
+  try { await fs.access(assetsPath); }
+  catch { return { ok: false, error: "assets-not-found: " + assetsPath }; }
+  const { uabeaPath } = settings;
+  if (!uabeaPath) return { ok: false, error: "UABEA not set" };
+  const { originalDir, metaFile } = await missingTextDirs();
+  await fs.mkdir(originalDir, { recursive: true });
+  await fs.mkdir(path.dirname(metaFile), { recursive: true });
+  const pwshLookup = await findPwsh(settings);
+  if (!pwshLookup) return { ok: false, error: "PowerShell 7 not found" };
+  const uabeaDir = path.dirname(uabeaPath);
+  const scriptPath = resolveResource("scripts/missing-text-export.ps1");
+  const win = BrowserWindow.getAllWindows()[0];
+  return await new Promise((resolve) => {
+    const args = [
+      "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass",
+      "-File", scriptPath,
+      "-AssetsPath", assetsPath,
+      "-OutDir", originalDir,
+      "-MetaPath", metaFile,
+      "-UabeaDir", uabeaDir,
+    ];
+    const child = spawn(pwshLookup, args, { windowsHide: true });
+    let leftover = "", all = "";
+    const emit = (chunk) => {
+      all += chunk;
+      leftover += chunk;
+      const lines = leftover.split(/\r?\n/);
+      leftover = lines.pop() || "";
+      for (const ln of lines) {
+        if (!ln.trim()) continue;
+        try { win?.webContents.send("dp2:missing-prep-progress", ln); } catch {}
+      }
+    };
+    child.stdout.on("data", (d) => emit(d.toString()));
+    child.stderr.on("data", (d) => emit(d.toString()));
+    child.on("error", (err) => resolve({ ok: false, error: err.message, log: all }));
+    child.on("exit", (code) => {
+      if (code !== 0) {
+        const tail = all.split("\n").slice(-25).join("\n").trim();
+        resolve({ ok: false, error: tail || `Exit ${code}`, log: all });
+        return;
+      }
+      let summary = null;
+      const m = all.match(/RESULT_JSON:\s*(.+)$/m);
+      if (m) { try { summary = JSON.parse(m[1]); } catch {} }
+      resolve({ ok: true, summary, log: all });
+    });
+  });
+});
+
+ipcMain.handle("dp2:missing-text-list", async () => {
+  const { originalDir, doneDir, metaFile } = await missingTextDirs();
+  let metaItems = [];
   try {
-    const raw = await fs.readFile(donePath, "utf8");
-    records = JSON.parse(raw);
-    if (!Array.isArray(records)) throw new Error("Очікується масив записів");
+    const raw = await fs.readFile(metaFile, "utf8");
+    const m = JSON.parse(raw);
+    if (Array.isArray(m.items)) metaItems = m.items;
+  } catch {}
+  // Доповнюємо метою інфо про наявність Original/Done.
+  const items = [];
+  for (const it of metaItems) {
+    const origPath = path.join(originalDir, it.file);
+    const donePath = path.join(doneDir, it.file);
+    let hasOrig = false, hasDone = false;
+    try { await fs.access(origPath); hasOrig = true; } catch {}
+    try { await fs.access(donePath); hasDone = true; } catch {}
+    items.push({
+      name: it.name,
+      file: it.file,
+      pathId: String(it.pathId),
+      scriptLen: it.scriptLen || 0,
+      origPath, donePath,
+      hasOrig, hasDone,
+    });
+  }
+  return { ok: true, items };
+});
+
+ipcMain.handle("dp2:missing-text-read", async (_e, fullPath) => {
+  try {
+    const buf = await fs.readFile(String(fullPath));
+    // Повертаємо base64 — JS-парсер у renderer перетворить у Uint8Array.
+    return { ok: true, base64: buf.toString("base64") };
+  } catch (e) { return { ok: false, error: String(e?.message ?? e) }; }
+});
+
+ipcMain.handle("dp2:missing-text-write", async (_e, payload) => {
+  const fullPath = String((payload && payload.fullPath) || "").trim();
+  const base64 = String((payload && payload.base64) || "");
+  if (!fullPath || !base64) return { ok: false, error: "fullPath/base64 missing" };
+  try {
+    const safe = assertSafeWritePath(fullPath);
+    return await withFileLock(safe, async () => {
+      await fs.mkdir(path.dirname(safe), { recursive: true });
+      await fs.writeFile(safe, Buffer.from(base64, "base64"));
+      return { ok: true };
+    });
+  } catch (e) { return { ok: false, error: String(e?.message ?? e) }; }
+});
+
+ipcMain.handle("dp2:missing-pack", async () => {
+  const settings = await readSettings();
+  const assetsPath = settings.missingAssetsPath;
+  if (!assetsPath) return { ok: false, error: "missingAssetsPath not set" };
+  try { await fs.access(assetsPath); }
+  catch { return { ok: false, error: "assets-not-found: " + assetsPath }; }
+  const { uabeaPath } = settings;
+  if (!uabeaPath) return { ok: false, error: "UABEA not set" };
+  const { doneDir, metaFile } = await missingTextDirs();
+  try { await fs.access(doneDir); } catch { return { ok: false, error: "Done dir empty" }; }
+  try { await fs.access(metaFile); } catch { return { ok: false, error: "Meta missing — run extract first" }; }
+  const pwshLookup = await findPwsh(settings);
+  if (!pwshLookup) return { ok: false, error: "PowerShell 7 not found" };
+  const uabeaDir = path.dirname(uabeaPath);
+  const scriptPath = resolveResource("scripts/missing-text-import.ps1");
+  const win = BrowserWindow.getAllWindows()[0];
+  return await new Promise((resolve) => {
+    const args = [
+      "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass",
+      "-File", scriptPath,
+      "-AssetsPath", assetsPath,
+      "-DoneDir", doneDir,
+      "-MetaPath", metaFile,
+      "-UabeaDir", uabeaDir,
+    ];
+    const child = spawn(pwshLookup, args, { windowsHide: true });
+    let leftover = "", all = "";
+    const emit = (chunk) => {
+      all += chunk;
+      leftover += chunk;
+      const lines = leftover.split(/\r?\n/);
+      leftover = lines.pop() || "";
+      for (const ln of lines) {
+        if (!ln.trim()) continue;
+        try { win?.webContents.send("dp2:missing-pack-progress", ln); } catch {}
+      }
+    };
+    child.stdout.on("data", (d) => emit(d.toString()));
+    child.stderr.on("data", (d) => emit(d.toString()));
+    child.on("error", (err) => resolve({ ok: false, error: err.message, log: all }));
+    child.on("exit", (code) => {
+      if (code !== 0) {
+        const tail = all.split("\n").slice(-25).join("\n").trim();
+        resolve({ ok: false, error: tail || `Exit ${code}`, log: all });
+        return;
+      }
+      let summary = null;
+      const m = all.match(/RESULT_JSON:\s*(.+)$/m);
+      if (m) { try { summary = JSON.parse(m[1]); } catch {} }
+      resolve({ ok: true, summary, log: all });
+    });
+  });
+});
+
+// Per-row UI state для MISSING: статус + закладка. Ключ = MsgEnum (стабільний
+// глобально через length-table). Зберігаємо у Meta/status.json.
+function missingStatusFile(metaDir) { return path.join(metaDir, "status.json"); }
+ipcMain.handle("dp2:missing-text-meta-read", async () => {
+  try {
+    const { metaDir } = await missingTextDirs();
+    const file = missingStatusFile(metaDir);
+    const raw = await fs.readFile(file, "utf8");
+    const parsed = JSON.parse(raw);
+    return { ok: true, rows: parsed?.rows ?? {} };
+  } catch { return { ok: true, rows: {} }; }
+});
+ipcMain.handle("dp2:missing-text-meta-write", async (_event, payload) => {
+  try {
+    const { metaDir } = await missingTextDirs();
+    await fs.mkdir(metaDir, { recursive: true });
+    const rows = (payload && payload.rows) || {};
+    await fs.writeFile(missingStatusFile(metaDir), JSON.stringify({ version: 1, rows }, null, 2), "utf8");
+    return { ok: true };
   } catch (e) {
-    return { error: "Не вдалося прочитати " + donePath + ": " + (e.message || e) };
+    return { ok: false, error: String(e.message || e) };
+  }
+});
+
+// Quick corpus-stats для MISSING — швидкий шлях для HomeV2 без завантаження
+// у renderer'і. Робить ті ж лічильники, що computeMissingCorpusStats() у
+// MissingEditor: total + translated. Парсер msg-формату — мінімальний (тільки
+// читання stringCount + strings).
+function missingParseMsgCounts(buf) {
+  // Skip Unity TextAsset wrap, якщо є (m_Name length + name + pad + scriptLen).
+  // Тут .dat вже без wrap (PS-скрипт стрипає), але про всяк перевіримо magic.
+  let script = buf;
+  if (buf.length >= 4 && (buf[0] !== 0x4D || buf[1] !== 0x53 || buf[2] !== 0x47)) {
+    // Має wrap — пропускаємо до "MSG.".
+    for (let i = 0; i < Math.min(buf.length - 4, 256); i++) {
+      if (buf[i] === 0x4D && buf[i+1] === 0x53 && buf[i+2] === 0x47 && buf[i+3] === 0x2E) {
+        script = buf.subarray(i);
+        break;
+      }
+    }
+  }
+  if (script.length < 0x40) return { strings: [] };
+  const dv = new DataView(script.buffer, script.byteOffset, script.byteLength);
+  const sto = dv.getUint32(0x10, true);
+  const sb  = dv.getUint32(0x14, true);
+  const sc  = dv.getUint32(0x30, true);
+  const strings = [];
+  for (let i = 0; i < sc; i++) {
+    const off = dv.getInt32(sto + i * 4, true);
+    let end = sb + off;
+    if (end < 0 || end > script.length) { strings.push(""); continue; }
+    while (end < script.length && script[end] !== 0) end++;
+    strings.push(Buffer.from(script.subarray(sb + off, end)).toString("utf8"));
+  }
+  return { strings };
+}
+const MISSING_PLACEHOLDER_RE = /^[A-Z_0-9]+_en$|^V_[A-Z]{2}_\d{3}$/;
+const MISSING_HAS_CYR = /[Ѐ-ӿ]/;
+
+ipcMain.handle("dp2:missing-corpus-stats-quick", async () => {
+  try {
+    const { originalDir, doneDir } = await missingTextDirs();
+    const r = await callHeavy("missing-corpus-stats-quick", { originalDir, doneDir });
+    return { ok: true, ...r };
+  } catch (e) {
+    return { ok: false, error: String(e.message || e), total: 0, translated: 0 };
+  }
+});
+
+// IMHeightInfo (box-sizes) extract/pack. Зберігаємо у Meta/heightinfo.bin
+// (orig) та Done/heightinfo.bin (модифікований; пакується у resources.assets
+// разом із текстом).
+function missingHeightInfoOrigFile(metaDir) { return path.join(metaDir, "heightinfo.bin"); }
+function missingHeightInfoDoneFile(doneDir) { return path.join(doneDir, "heightinfo.bin"); }
+
+ipcMain.handle("dp2:missing-boxsize-extract", async () => {
+  try {
+    const settings = await readSettings();
+    const assetsPath = settings.missingAssetsPath;
+    if (!assetsPath) return { ok: false, error: "missingAssetsPath не задано" };
+    const { metaDir } = await missingTextDirs();
+    await fs.mkdir(metaDir, { recursive: true });
+    const outFile = missingHeightInfoOrigFile(metaDir);
+    const result = await new Promise((resolve) => {
+      const child = spawn(settings.pwshPath || "pwsh", [
+        "-NoProfile", "-ExecutionPolicy", "Bypass",
+        "-File", path.join(scriptsDir, "missing-boxsize-extract.ps1"),
+        "-AssetsPath", assetsPath,
+        "-OutFile", outFile,
+        "-UabeaDir", settings.uabeaInstallDir || path.join(settings.toolsDir || path.join(app.getPath("documents"), "SWERY-Localization-Tool"), "uabea"),
+      ], { windowsHide: true });
+      let stdout = "", stderr = "";
+      child.stdout.on("data", (d) => { stdout += d.toString(); });
+      child.stderr.on("data", (d) => { stderr += d.toString(); });
+      child.on("exit", (code) => resolve({ code, stdout, stderr }));
+    });
+    if (result.code !== 0) return { ok: false, error: (result.stderr || result.stdout || "").trim() };
+    return { ok: true, outFile };
+  } catch (e) {
+    return { ok: false, error: String(e.message || e) };
+  }
+});
+
+// Завантажує IMHeightInfo bytes (Done/heightinfo.bin якщо є, інакше Original).
+ipcMain.handle("dp2:missing-boxsize-read", async () => {
+  try {
+    const { metaDir, doneDir } = await missingTextDirs();
+    const doneFile = missingHeightInfoDoneFile(doneDir);
+    const origFile = missingHeightInfoOrigFile(metaDir);
+    let path_;
+    try { await fs.access(doneFile); path_ = doneFile; }
+    catch { try { await fs.access(origFile); path_ = origFile; } catch { return { ok: false, error: "heightinfo.bin не знайдено. Зроби extract." }; } }
+    const bytes = await fs.readFile(path_);
+    return { ok: true, base64: bytes.toString("base64"), source: path_ === doneFile ? "done" : "original" };
+  } catch (e) {
+    return { ok: false, error: String(e.message || e) };
+  }
+});
+
+// Окремий read для Original (Meta/heightinfo.bin) — потрібен у Auto-fit як
+// нерухомий reference: без нього алгоритм мультиплікативно нарощує W на
+// кожен apply (origW читається з вже-модифікованого Done і ratio*padding
+// застосовується знову та знову).
+ipcMain.handle("dp2:missing-boxsize-read-original", async () => {
+  try {
+    const { metaDir } = await missingTextDirs();
+    const origFile = missingHeightInfoOrigFile(metaDir);
+    try { await fs.access(origFile); }
+    catch { return { ok: false, error: "Original heightinfo не знайдено. Зробіть extract." }; }
+    const bytes = await fs.readFile(origFile);
+    return { ok: true, base64: bytes.toString("base64") };
+  } catch (e) {
+    return { ok: false, error: String(e.message || e) };
+  }
+});
+
+// Зберігає модифіковані bytes у Done/heightinfo.bin.
+ipcMain.handle("dp2:missing-boxsize-save", async (_event, payload) => {
+  try {
+    const base64 = String((payload && payload.base64) || "");
+    if (!base64) return { ok: false, error: "empty base64" };
+    const bytes = Buffer.from(base64, "base64");
+    const { doneDir } = await missingTextDirs();
+    await fs.mkdir(doneDir, { recursive: true });
+    const file = missingHeightInfoDoneFile(doneDir);
+    await fs.writeFile(file, bytes);
+    return { ok: true, file, size: bytes.length };
+  } catch (e) {
+    return { ok: false, error: String(e.message || e) };
+  }
+});
+
+// Pack: пише Done/heightinfo.bin назад у resources.assets через PS-скрипт.
+// Викликається ОКРЕМО від основного pack-скрипта (текст), тому що той
+// працює лише з TextAsset'ами і не знає, як підмінити MonoBehaviour.
+ipcMain.handle("dp2:missing-boxsize-pack", async () => {
+  try {
+    const settings = await readSettings();
+    const assetsPath = settings.missingAssetsPath;
+    if (!assetsPath) return { ok: false, error: "missingAssetsPath не задано" };
+    const { doneDir } = await missingTextDirs();
+    const inFile = missingHeightInfoDoneFile(doneDir);
+    try { await fs.access(inFile); } catch { return { ok: true, skipped: true, error: "Done/heightinfo.bin відсутній — нічого паковати" }; }
+    const result = await new Promise((resolve) => {
+      const child = spawn(settings.pwshPath || "pwsh", [
+        "-NoProfile", "-ExecutionPolicy", "Bypass",
+        "-File", path.join(scriptsDir, "missing-boxsize-pack.ps1"),
+        "-AssetsPath", assetsPath,
+        "-InFile", inFile,
+        "-UabeaDir", settings.uabeaInstallDir || path.join(settings.toolsDir || path.join(app.getPath("documents"), "SWERY-Localization-Tool"), "uabea"),
+      ], { windowsHide: true });
+      let stdout = "", stderr = "";
+      child.stdout.on("data", (d) => { stdout += d.toString(); });
+      child.stderr.on("data", (d) => { stderr += d.toString(); });
+      child.on("exit", (code) => resolve({ code, stdout, stderr }));
+    });
+    if (result.code !== 0) return { ok: false, error: (result.stderr || result.stdout || "").trim() };
+    return { ok: true };
+  } catch (e) {
+    return { ok: false, error: String(e.message || e) };
+  }
+});
+
+// ── IPC: THE MISSING fonts pipeline ──────────────────────────────
+async function missingFontsDirs() {
+  const settings = await readSettings();
+  let toolsDir = settings.toolsDir;
+  if (!toolsDir) toolsDir = path.join(app.getPath("documents"), "SWERY-Localization-Tool");
+  const baseDir = path.join(toolsDir, "MISSING", "Fonts");
+  return {
+    baseDir,
+    originalDir: path.join(baseDir, "Original"),
+    replaceDir: path.join(baseDir, "Replacement"),
+    metaDir: path.join(baseDir, "Meta"),
+    metaFile: path.join(baseDir, "Meta", "missing-fonts-meta.json"),
+  };
+}
+
+ipcMain.handle("dp2:missing-fonts-status", async () => {
+  const settings = await readSettings();
+  const assetsPath = settings.missingAssetsPath || null;
+  let assetsOk = false;
+  try { if (assetsPath) { await fs.access(assetsPath); assetsOk = true; } } catch {}
+  const { originalDir, replaceDir, metaFile } = await missingFontsDirs();
+  let originalCount = 0, replaceCount = 0, metaExists = false;
+  try { const e = await fs.readdir(originalDir); originalCount = e.filter((f) => /\.(ttf|otf)$/i.test(f)).length; } catch {}
+  try { const e = await fs.readdir(replaceDir); replaceCount = e.filter((f) => /\.(ttf|otf)$/i.test(f)).length; } catch {}
+  try { await fs.access(metaFile); metaExists = true; } catch {}
+  return { ok: true, assetsPath, assetsOk, originalDir, replaceDir, metaFile, metaExists, originalCount, replaceCount };
+});
+
+ipcMain.handle("dp2:missing-fonts-export", async () => {
+  const settings = await readSettings();
+  const assetsPath = settings.missingAssetsPath;
+  if (!assetsPath) return { ok: false, error: "missingAssetsPath not set" };
+  try { await fs.access(assetsPath); } catch { return { ok: false, error: "assets-not-found" }; }
+  const { uabeaPath } = settings;
+  if (!uabeaPath) return { ok: false, error: "UABEA not set" };
+  const { originalDir, metaFile } = await missingFontsDirs();
+  await fs.mkdir(originalDir, { recursive: true });
+  await fs.mkdir(path.dirname(metaFile), { recursive: true });
+  const pwshLookup = await findPwsh(settings);
+  if (!pwshLookup) return { ok: false, error: "PowerShell 7 not found" };
+  const uabeaDir = path.dirname(uabeaPath);
+  const scriptPath = resolveResource("scripts/missing-fonts-export.ps1");
+  const win = BrowserWindow.getAllWindows()[0];
+  return await new Promise((resolve) => {
+    const args = ["-NoProfile","-NonInteractive","-ExecutionPolicy","Bypass","-File", scriptPath,
+      "-AssetsPath", assetsPath, "-OutDir", originalDir, "-MetaPath", metaFile, "-UabeaDir", uabeaDir];
+    const child = spawn(pwshLookup, args, { windowsHide: true });
+    let leftover = "", all = "";
+    const emit = (chunk) => {
+      all += chunk; leftover += chunk;
+      const lines = leftover.split(/\r?\n/); leftover = lines.pop() || "";
+      for (const ln of lines) { if (!ln.trim()) continue; try { win?.webContents.send("dp2:missing-fonts-progress", ln); } catch {} }
+    };
+    child.stdout.on("data", (d) => emit(d.toString()));
+    child.stderr.on("data", (d) => emit(d.toString()));
+    child.on("error", (e) => resolve({ ok: false, error: e.message, log: all }));
+    child.on("exit", (code) => {
+      if (code !== 0) { resolve({ ok: false, error: all.split("\n").slice(-20).join("\n"), log: all }); return; }
+      let summary = null; const m = all.match(/RESULT_JSON:\s*(.+)$/m);
+      if (m) { try { summary = JSON.parse(m[1]); } catch {} }
+      resolve({ ok: true, summary, log: all });
+    });
+  });
+});
+
+ipcMain.handle("dp2:missing-fonts-list", async () => {
+  const { originalDir, replaceDir, metaFile } = await missingFontsDirs();
+  let items = [];
+  try {
+    const raw = await fs.readFile(metaFile, "utf8");
+    const m = JSON.parse(raw);
+    items = Array.isArray(m.items) ? m.items : [];
+  } catch {}
+  const out = [];
+  for (const it of items) {
+    const origPath = path.join(originalDir, it.file);
+    const replacePath = path.join(replaceDir, it.file);
+    let hasOrig = false, hasReplace = false, replaceSize = 0;
+    try { await fs.access(origPath); hasOrig = true; } catch {}
+    try { const st = await fs.stat(replacePath); hasReplace = true; replaceSize = st.size; } catch {}
+    out.push({ ...it, pathId: String(it.pathId), origPath, replacePath, hasOrig, hasReplace, replaceSize });
+  }
+  return { ok: true, items: out };
+});
+
+ipcMain.handle("dp2:missing-fonts-pick-replace", async (_e, payload) => {
+  const item = payload && payload.item;
+  if (!item) return { ok: false, error: "no item" };
+  const res = await dialog.showOpenDialog({
+    title: `Заміна шрифту: ${item.name}`,
+    properties: ["openFile"],
+    filters: [{ name: "Fonts", extensions: ["ttf", "otf"] }],
+  });
+  if (res.canceled || res.filePaths.length === 0) return { ok: false, error: "cancelled" };
+  const src = res.filePaths[0];
+  const { replaceDir } = await missingFontsDirs();
+  await fs.mkdir(replaceDir, { recursive: true });
+  const dst = path.join(replaceDir, item.file);
+  await fs.copyFile(src, dst);
+  return { ok: true, replacePath: dst, src };
+});
+
+ipcMain.handle("dp2:missing-fonts-clear-replace", async (_e, payload) => {
+  const item = payload && payload.item;
+  if (!item) return { ok: false, error: "no item" };
+  const { replaceDir } = await missingFontsDirs();
+  const dst = path.join(replaceDir, item.file);
+  try { await fs.unlink(dst); return { ok: true }; }
+  catch (e) { return { ok: false, error: String(e?.message ?? e) }; }
+});
+
+ipcMain.handle("dp2:missing-fonts-pack", async () => {
+  const settings = await readSettings();
+  const assetsPath = settings.missingAssetsPath;
+  if (!assetsPath) return { ok: false, error: "missingAssetsPath not set" };
+  try { await fs.access(assetsPath); } catch { return { ok: false, error: "assets-not-found" }; }
+  const { uabeaPath } = settings;
+  if (!uabeaPath) return { ok: false, error: "UABEA not set" };
+  const { replaceDir, metaFile } = await missingFontsDirs();
+  try { await fs.access(replaceDir); } catch { return { ok: false, error: "no replacements" }; }
+  try { await fs.access(metaFile); } catch { return { ok: false, error: "Meta missing — run export first" }; }
+  const pwshLookup = await findPwsh(settings);
+  if (!pwshLookup) return { ok: false, error: "PowerShell 7 not found" };
+  const uabeaDir = path.dirname(uabeaPath);
+  const scriptPath = resolveResource("scripts/missing-fonts-import.ps1");
+  const win = BrowserWindow.getAllWindows()[0];
+  return await new Promise((resolve) => {
+    const args = ["-NoProfile","-NonInteractive","-ExecutionPolicy","Bypass","-File", scriptPath,
+      "-AssetsRoot", path.dirname(assetsPath), "-ReplaceDir", replaceDir, "-MetaPath", metaFile, "-UabeaDir", uabeaDir];
+    const child = spawn(pwshLookup, args, { windowsHide: true });
+    let leftover = "", all = "";
+    const emit = (chunk) => {
+      all += chunk; leftover += chunk;
+      const lines = leftover.split(/\r?\n/); leftover = lines.pop() || "";
+      for (const ln of lines) { if (!ln.trim()) continue; try { win?.webContents.send("dp2:missing-fonts-pack-progress", ln); } catch {} }
+    };
+    child.stdout.on("data", (d) => emit(d.toString()));
+    child.stderr.on("data", (d) => emit(d.toString()));
+    child.on("error", (e) => resolve({ ok: false, error: e.message, log: all }));
+    child.on("exit", (code) => {
+      if (code !== 0) { resolve({ ok: false, error: all.split("\n").slice(-20).join("\n"), log: all }); return; }
+      let summary = null; const m = all.match(/RESULT_JSON:\s*(.+)$/m);
+      if (m) { try { summary = JSON.parse(m[1]); } catch {} }
+      resolve({ ok: true, summary, log: all });
+    });
+  });
+});
+
+// ── IPC: THE MISSING textures pipeline ──────────────────────────
+// Перевикористовуємо DP2-скрипти textures-export.ps1 / textures-replace.ps1.
+// Правила екстракту: для кожного assets-file — список pathIds + regex по m_Name.
+// Wildcard "stamp" вирішується через NamePatterns у PS-скрипті: динамічно
+// знайдені текстури далі живуть як файли у Original/ (UI читає з диску).
+const MISSING_TEXTURE_RULES = [
+  {
+    assets: "resources.assets",
+    pathIds: [705, 475, 232, 661],
+    // new_01 — точна назва; stamp\d* — будь-які stamp-* textures.
+    namePatterns: "^new_01$|^stamp",
+  },
+  { assets: "sharedassets25.assets", pathIds: [21], namePatterns: "" },
+  { assets: "sharedassets44.assets", pathIds: [69], namePatterns: "" },
+];
+
+async function missingTexturesDirs() {
+  const settings = await readSettings();
+  let toolsDir = settings.toolsDir;
+  if (!toolsDir) toolsDir = path.join(app.getPath("documents"), "SWERY-Localization-Tool");
+  const baseDir = path.join(toolsDir, "MISSING", "Textures");
+  return {
+    baseDir,
+    originalDir: path.join(baseDir, "Original"),
+    replaceDir: path.join(baseDir, "Replacement"),
+  };
+}
+
+ipcMain.handle("dp2:missing-textures-status", async () => {
+  const settings = await readSettings();
+  const assetsPath = settings.missingAssetsPath || null;
+  const dataDir = assetsPath ? path.dirname(assetsPath) : null;
+  let assetsOk = false;
+  if (dataDir) {
+    assetsOk = true;
+    for (const r of MISSING_TEXTURE_RULES) {
+      const p = path.join(dataDir, r.assets);
+      try { await fs.access(p); } catch { assetsOk = false; break; }
+    }
+  }
+  const { originalDir, replaceDir } = await missingTexturesDirs();
+  // Items будуємо з фактично екстрактнутих .png файлів у Original/. Назва
+  // PowerShell-export'а: <m_Name>-<assets-file>.<ext>-<pathId>.png.
+  // Парсимо її назад у item.
+  const items = [];
+  let pngs = [];
+  try { pngs = (await fs.readdir(originalDir)).filter((f) => f.endsWith(".png")); } catch {}
+  for (const f of pngs) {
+    // <name>-<assets.assets>-<pathId>.png. assets-name містить ".assets",
+    // а name може мати дефіси, тому регекс на хвостову частину.
+    const m = f.match(/^(.+)-([^-]+\.assets)-(\d+)\.png$/i);
+    if (!m) continue;
+    const name = m[1];
+    const assets = m[2];
+    const pathId = parseInt(m[3], 10);
+    const origPath = path.join(originalDir, f);
+    const replacePath = path.join(replaceDir, f);
+    let hasReplace = false, replaceSize = 0;
+    try { const st = await fs.stat(replacePath); hasReplace = true; replaceSize = st.size; } catch {}
+    items.push({ name, pathId, assets, fileName: f, origPath, replacePath, hasOrig: true, hasReplace, replaceSize });
+  }
+  items.sort((a, b) => a.assets.localeCompare(b.assets) || a.name.localeCompare(b.name));
+  return { ok: true, assetsPath, assetsOk, originalDir, replaceDir, items };
+});
+
+ipcMain.handle("dp2:missing-textures-export", async () => {
+  const settings = await readSettings();
+  const assetsPath = settings.missingAssetsPath;
+  if (!assetsPath) return { ok: false, error: "missingAssetsPath not set" };
+  const dataDir = path.dirname(assetsPath);
+  const { uabeaPath } = settings;
+  if (!uabeaPath) return { ok: false, error: "UABEA not set" };
+  const pwshLookup = await findPwsh(settings);
+  if (!pwshLookup) return { ok: false, error: "PowerShell 7 not found" };
+  const uabeaDir = path.dirname(uabeaPath);
+  const scriptPath = resolveResource("scripts/textures-export.ps1");
+  const { originalDir } = await missingTexturesDirs();
+  await fs.mkdir(originalDir, { recursive: true });
+  const win = BrowserWindow.getAllWindows()[0];
+  let totalExported = 0;
+  let allLog = "";
+  for (const rule of MISSING_TEXTURE_RULES) {
+    const fullAssets = path.join(dataDir, rule.assets);
+    try { await fs.access(fullAssets); }
+    catch {
+      allLog += `[SKIP] ${rule.assets} not found\n`;
+      continue;
+    }
+    await new Promise((resolve) => {
+      const args = ["-NoProfile","-NonInteractive","-ExecutionPolicy","Bypass","-File", scriptPath,
+        "-AssetsPath", fullAssets, "-OutDir", originalDir, "-UabeaDir", uabeaDir,
+        "-PathIds", rule.pathIds.join(","),
+        "-NamePatterns", rule.namePatterns || ""];
+      const child = spawn(pwshLookup, args, { windowsHide: true });
+      let leftover = "";
+      const emit = (chunk) => {
+        allLog += chunk;
+        leftover += chunk;
+        const lines = leftover.split(/\r?\n/);
+        leftover = lines.pop() || "";
+        for (const ln of lines) {
+          if (!ln.trim()) continue;
+          if (/^Exported /.test(ln)) totalExported++;
+          try { win?.webContents.send("dp2:missing-textures-progress", ln); } catch {}
+        }
+      };
+      child.stdout.on("data", (d) => emit(d.toString()));
+      child.stderr.on("data", (d) => emit(d.toString()));
+      child.on("error", () => resolve());
+      child.on("exit", () => resolve());
+    });
+  }
+  return { ok: true, summary: { total: totalExported }, log: allLog };
+});
+
+ipcMain.handle("dp2:missing-textures-pick-replace", async (_e, payload) => {
+  const item = payload && payload.item;
+  if (!item) return { ok: false, error: "no item" };
+  const res = await dialog.showOpenDialog({
+    title: `Заміна текстури: ${item.name}`,
+    properties: ["openFile"],
+    filters: [{ name: "PNG", extensions: ["png"] }],
+  });
+  if (res.canceled || res.filePaths.length === 0) return { ok: false, error: "cancelled" };
+  const src = res.filePaths[0];
+  const { replaceDir } = await missingTexturesDirs();
+  await fs.mkdir(replaceDir, { recursive: true });
+  const dst = path.join(replaceDir, item.fileName);
+  await fs.copyFile(src, dst);
+  return { ok: true, replacePath: dst, src };
+});
+
+ipcMain.handle("dp2:missing-textures-clear-replace", async (_e, payload) => {
+  const item = payload && payload.item;
+  if (!item) return { ok: false, error: "no item" };
+  const { replaceDir } = await missingTexturesDirs();
+  try { await fs.unlink(path.join(replaceDir, item.fileName)); return { ok: true }; }
+  catch (e) { return { ok: false, error: String(e?.message ?? e) }; }
+});
+
+ipcMain.handle("dp2:missing-textures-pack", async () => {
+  const settings = await readSettings();
+  const assetsPath = settings.missingAssetsPath;
+  if (!assetsPath) return { ok: false, error: "missingAssetsPath not set" };
+  const dataDir = path.dirname(assetsPath);
+  const { uabeaPath } = settings;
+  if (!uabeaPath) return { ok: false, error: "UABEA not set" };
+  const pwshLookup = await findPwsh(settings);
+  if (!pwshLookup) return { ok: false, error: "PowerShell 7 not found" };
+  const uabeaDir = path.dirname(uabeaPath);
+  const scriptPath = resolveResource("scripts/textures-replace.ps1");
+  const { replaceDir } = await missingTexturesDirs();
+  const win = BrowserWindow.getAllWindows()[0];
+
+  // Збираємо список замін з реальних файлів у Replacement/. Файл має ім'я
+  // <name>-<assets>-<pathId>.png — з нього парсимо мапінг для PS-replace.
+  let replacements = [];
+  try {
+    const entries = await fs.readdir(replaceDir);
+    for (const f of entries) {
+      if (!f.endsWith(".png")) continue;
+      const m = f.match(/^(.+)-([^-]+\.assets)-(\d+)\.png$/i);
+      if (!m) continue;
+      replacements.push({ name: m[1], assets: m[2], pathId: parseInt(m[3], 10), fileName: f });
+    }
+  } catch {}
+
+  let applied = 0;
+  const failed = [];
+  const changedAssets = new Set();
+  let allLog = "";
+  for (const t of replacements) {
+    const replacePath = path.join(replaceDir, t.fileName);
+    const fullAssets = path.join(dataDir, t.assets);
+    // Бекап і tmp.
+    const bak = fullAssets + ".tex.bak";
+    try { await fs.access(bak); } catch { await fs.copyFile(fullAssets, bak); }
+    const tmp = fullAssets + ".tmp";
+    const res = await new Promise((resolve) => {
+      const args = ["-NoProfile","-NonInteractive","-ExecutionPolicy","Bypass","-File", scriptPath,
+        "-AssetsPath", fullAssets, "-PathId", String(t.pathId), "-NewPngFile", replacePath,
+        "-OutputPath", tmp, "-UabeaDir", uabeaDir];
+      const child = spawn(pwshLookup, args, { windowsHide: true });
+      let leftover = "", local = "";
+      const emit = (chunk) => {
+        allLog += chunk; local += chunk; leftover += chunk;
+        const lines = leftover.split(/\r?\n/);
+        leftover = lines.pop() || "";
+        for (const ln of lines) {
+          if (!ln.trim()) continue;
+          try { win?.webContents.send("dp2:missing-textures-pack-progress", `[${t.name}] ${ln}`); } catch {}
+        }
+      };
+      child.stdout.on("data", (d) => emit(d.toString()));
+      child.stderr.on("data", (d) => emit(d.toString()));
+      child.on("error", (e) => resolve({ ok: false, error: e.message, log: local }));
+      child.on("exit", (code) => resolve({ ok: code === 0, log: local }));
+    });
+    if (!res.ok) {
+      failed.push({ name: t.name, reason: res.log.split("\n").slice(-3).join(" ").trim() || "Exit !=0" });
+      try { await fs.unlink(tmp); } catch {}
+      continue;
+    }
+    // Swap.
+    try {
+      try { await fs.unlink(fullAssets); } catch {}
+      await fs.rename(tmp, fullAssets);
+      applied++;
+      changedAssets.add(t.assets);
+    } catch (e) {
+      failed.push({ name: t.name, reason: `swap fail: ${e.message}` });
+    }
+  }
+  return { ok: true, summary: { applied, failed, changedAssets: [...changedAssets] }, log: allLog };
+});
+
+// ── IPC: DP1 setup pipeline ──────────────────────────────────────
+// Що ми робимо при першому запуску DP1:
+//   Крок 1. Завантажити DPMsgTool by MrIkso (Dropbox .zip) і розпакувати
+//           у Documents\SWERY-Localization-Tool\DP1\Text\Tool.
+//   Крок 2. Скопіювати mes_all.mes з теки гри
+//           (<dp1Root>\updata_eu\_us\message\output\mes_all.mes), або
+//           попросити користувача обрати файл вручну. Потім запустити
+//           DPMsgTool.exe з mes-файлом як аргументом (drag&drop-режим) —
+//           він створить JSON-дамп поруч.
+const DP1_TOOL_URL = "https://www.dropbox.com/scl/fi/z19fx6x588ivohnr41gdw/DPMsgTool.zip?rlkey=dk1io871upc6345iipmcdfpag&st=g93q9vkq&dl=1";
+
+function dp1TextRoot() {
+  const docs = app.getPath("documents");
+  return path.join(docs, "SWERY-Localization-Tool", "DP1", "Text");
+}
+function dp1ToolDir()     { return path.join(dp1TextRoot(), "Tool"); }
+function dp1OriginalDir() { return path.join(dp1TextRoot(), "Original"); }
+function dp1DoneDir()     { return path.join(dp1TextRoot(), "Done"); }
+function dp1MetaDir()     { return path.join(dp1TextRoot(), "Meta"); }
+function dp1OriginalJson(){ return path.join(dp1OriginalDir(), "mes_all.json"); }
+function dp1DoneJson()    { return path.join(dp1DoneDir(), "mes_all.json"); }
+function dp1MetaFile()    { return path.join(dp1MetaDir(), "meta.json"); }
+
+// Прибирає всі вкладені {XXX} токени і повертає довжину printable-частини.
+// Правило DPMsgTool by MrIkso: FSL = довжина substring до першого segment-break,
+// з якого прибрано всі інші {…} токени. Якщо segment-break нема — вся стрічка.
+function dp1ComputeFsl(text) {
+  if (!text) return 0;
+  const re = /\{NEXT_SEGMENT\}|\{NEXT_FRAME\b[^}]*\}/;
+  const m = text.match(re);
+  const head = m ? text.slice(0, m.index) : text;
+  return head.replace(/\{[^{}]*\}/g, "").length;
+}
+
+// Серіалізація JSON для DPMsgTool: 2-space indent + CRLF. Бінарно ідентично
+// тому, що генерує сама DPMsgTool — це доведено round-trip тестом.
+function dp1StringifyRecords(records) {
+  return JSON.stringify(records, null, 2).replace(/\n/g, "\r\n");
+}
+
+async function dp1FindToolExe() {
+  const root = dp1ToolDir();
+  try { await fs.access(root); } catch { return null; }
+  const stack = [{ dir: root, depth: 0 }];
+  while (stack.length) {
+    const { dir, depth } = stack.shift();
+    let entries;
+    try { entries = await fs.readdir(dir, { withFileTypes: true }); } catch { continue; }
+    for (const e of entries) {
+      const p = path.join(dir, e.name);
+      if (e.isDirectory()) { if (depth < 3) stack.push({ dir: p, depth: depth + 1 }); }
+      else if (e.isFile() && /^DPMsgTool\.exe$/i.test(e.name)) return p;
+    }
+  }
+  return null;
+}
+
+async function dp1FindMesInGame(dp1Root) {
+  if (!dp1Root) return null;
+  const candidate = path.join(dp1Root, "updata_eu", "_us", "message", "output", "mes_all.mes");
+  try { await fs.access(candidate); return candidate; } catch { return null; }
+}
+
+async function dp1FindJsonDump(toolDir) {
+  // Після drag&drop DPMsgTool кладе JSON-дамп поруч. Зазвичай це eng.json
+  // (його canonical-ім'я), але можемо ловити будь-який .json з масивом
+  // записів — найновіший за mtime.
+  try {
+    const entries = await fs.readdir(toolDir, { withFileTypes: true });
+    let best = null;
+    for (const e of entries) {
+      if (!e.isFile() || !/\.json$/i.test(e.name)) continue;
+      const full = path.join(toolDir, e.name);
+      try {
+        const st = await fs.stat(full);
+        if (!best || st.mtimeMs > best.mtime) best = { path: full, mtime: st.mtimeMs, size: st.size };
+      } catch {}
+    }
+    return best;
+  } catch { return null; }
+}
+
+ipcMain.handle("dp2:dp1-setup-status", async () => {
+  const root = dp1ToolDir();
+  let toolDirExists = false;
+  try { await fs.access(root); toolDirExists = true; } catch {}
+  const exePath = toolDirExists ? await dp1FindToolExe() : null;
+  const mesPath = toolDirExists ? path.join(root, "mes_all.mes") : null;
+  let mesCopied = false;
+  if (mesPath) { try { await fs.access(mesPath); mesCopied = true; } catch {} }
+  const jsonInfo = toolDirExists ? await dp1FindJsonDump(root) : null;
+
+  // Перевіряємо також Original/Done/Meta теки (їх може ще не бути на
+  // першому запуску).
+  let originalExists = false; let doneExists = false; let metaExists = false;
+  try { await fs.access(dp1OriginalJson()); originalExists = true; } catch {}
+  try { await fs.access(dp1DoneJson()); doneExists = true; } catch {}
+  try { await fs.access(dp1MetaFile()); metaExists = true; } catch {}
+  return {
+    ok: true,
+    root,
+    exePath,
+    mesPath,
+    mesCopied,
+    jsonPath: jsonInfo?.path ?? null,
+    jsonSize: jsonInfo?.size ?? 0,
+    textRoot: dp1TextRoot(),
+    originalJson: dp1OriginalJson(),
+    doneJson: dp1DoneJson(),
+    metaFile: dp1MetaFile(),
+    originalExists,
+    doneExists,
+    metaExists,
+  };
+});
+
+ipcMain.handle("dp2:dp1-download-tool", async () => {
+  const root = dp1ToolDir();
+  const zipPath = path.join(root, "DPMsgTool.zip");
+  try {
+    await fs.mkdir(root, { recursive: true });
+    const existing = await dp1FindToolExe();
+    if (existing) {
+      try {
+        mainWindow?.webContents.send("dp2:dp1-tool-progress", {
+          phase: "done", i18nKey: "dp1.setup.alreadyHave",
+          total: 0, downloaded: 0, percent: 100, bytesPerSec: 0,
+        });
+      } catch {}
+      return { ok: true, root, exePath: existing, alreadyExisted: true };
+    }
+    let lastEmit = 0; let lastBytes = 0; const startedAt = Date.now();
+    try {
+      mainWindow?.webContents.send("dp2:dp1-tool-progress", {
+        phase: "download", i18nKey: "dp1.setup.downloading",
+        i18nParams: { name: "DPMsgTool.zip" },
+        total: 0, downloaded: 0, percent: 0, bytesPerSec: 0,
+      });
+    } catch {}
+    const res = await setupTools.downloadFile(DP1_TOOL_URL, zipPath, (p) => {
+      const now = Date.now();
+      const dt = (now - (lastEmit || startedAt)) / 1000;
+      const bps = dt > 0 ? (p.downloaded - lastBytes) / dt : 0;
+      lastEmit = now; lastBytes = p.downloaded;
+      try {
+        mainWindow?.webContents.send("dp2:dp1-tool-progress", {
+          phase: "download", i18nKey: "dp1.setup.downloading",
+          i18nParams: { name: "DPMsgTool.zip" },
+          total: p.total, downloaded: p.downloaded, percent: p.percent,
+          bytesPerSec: bps,
+        });
+      } catch {}
+    }, { skipIfExists: false });
+    try {
+      mainWindow?.webContents.send("dp2:dp1-tool-progress", {
+        phase: "extract", i18nKey: "dp1.setup.extracting",
+        total: res.bytes, downloaded: res.bytes, percent: 100, bytesPerSec: 0,
+      });
+    } catch {}
+    await setupTools.extractZip(zipPath, root);
+    await setupTools.flattenIfSingleSubdir(root);
+    try { await fs.unlink(zipPath); } catch {}
+    const exePath = await dp1FindToolExe();
+    try {
+      mainWindow?.webContents.send("dp2:dp1-tool-progress", {
+        phase: "done", i18nKey: "dp1.setup.installed",
+        total: res.bytes, downloaded: res.bytes, percent: 100, bytesPerSec: 0,
+      });
+    } catch {}
+    return { ok: true, root, exePath, bytes: res.bytes };
+  } catch (e) {
+    try {
+      mainWindow?.webContents.send("dp2:dp1-tool-progress", {
+        phase: "error", message: String(e.message || e),
+        total: 0, downloaded: 0, percent: 0, bytesPerSec: 0,
+      });
+    } catch {}
+    return { ok: false, error: String(e.message || e) };
+  }
+});
+
+// Копіює mes_all.mes у Tool dir (з гри або вибраний користувачем) і запускає
+// DPMsgTool.exe з шляхом до mes як аргументом — той сам згенерує JSON-дамп
+// поруч. Повертає шлях до згенерованого .json + кількість записів.
+ipcMain.handle("dp2:dp1-prep-mes", async (_event, payload) => {
+  const overrideMes = String((payload && payload.mesPath) || "").trim();
+  const settings = await readSettings();
+  const root = dp1ToolDir();
+  try { await fs.mkdir(root, { recursive: true }); } catch {}
+  const exePath = await dp1FindToolExe();
+  if (!exePath) return { ok: false, error: "DPMsgTool.exe не знайдено. Спершу завантажте інструмент." };
+
+  // 1) Знаходимо джерело mes_all.mes
+  let sourceMes = overrideMes;
+  if (!sourceMes) sourceMes = await dp1FindMesInGame(settings.dp1Root) ?? "";
+  if (!sourceMes) {
+    return { ok: false, needsPick: true, error: "Не знайшов mes_all.mes у грі. Виберіть файл вручну." };
+  }
+  try { await fs.access(sourceMes); } catch {
+    return { ok: false, error: "mes_all.mes не існує: " + sourceMes };
   }
 
-  // 2) Застосувати rename-мапу і зберегти у _ua_done.replaced.json
-  const replaced = records.map((r) => ({ ...r, Text: applyCyrMap(r.Text) }));
-  const replacedPath = donePath.replace(/\.json$/i, ".replaced.json");
+  // 2) Копіюємо у tool dir
+  const targetMes = path.join(root, "mes_all.mes");
   try {
-    await fs.writeFile(replacedPath, JSON.stringify(replaced, null, 2), "utf8");
+    await fs.copyFile(sourceMes, targetMes);
   } catch (e) {
-    return { error: "Не вдалося записати " + replacedPath + ": " + (e.message || e) };
+    return { ok: false, error: "Не вдалося скопіювати mes_all.mes: " + (e.message || e) };
   }
 
-  // 3) Викликати DPMsgTool.exe from-json
-  const toolDir = path.dirname(toolPath);
-  const outDir = toolDir; // DPMsgTool пише поруч з замінений json
+  // 3) Запам'ятовуємо снапшот існуючих JSON, щоб після прогону відрізнити
+  // новий дамп (DPMsgTool сам обирає ім'я; зазвичай це eng.json).
+  let before = new Set();
+  try {
+    const items = await fs.readdir(root);
+    for (const n of items) if (/\.json$/i.test(n)) before.add(n.toLowerCase());
+  } catch {}
+
+  // 4) Запускаємо DPMsgTool.exe <mesPath> — як drag&drop із Провідника.
   const result = await new Promise((resolve) => {
-    const args = ["from-json", replacedPath, outDir];
-    const child = spawn(toolPath, args, { windowsHide: true, cwd: toolDir });
-    let stdout = "", stderr = "";
+    const child = spawn(exePath, [targetMes], { windowsHide: true, cwd: root });
+    let stdout = ""; let stderr = "";
     child.stdout.on("data", (d) => { stdout += d.toString(); });
     child.stderr.on("data", (d) => { stderr += d.toString(); });
     child.on("error", (err) => resolve({ code: -1, stdout, stderr: stderr + "\n" + err.message }));
@@ -2254,47 +4262,424 @@ ipcMain.handle("dp2:dp1-pack", async (_event, payload) => {
   });
   if (result.code !== 0) {
     return {
+      ok: false,
       error: "DPMsgTool exit=" + result.code + ":\n" + (result.stderr || result.stdout || "").trim(),
     };
   }
 
-  // 4) Знайти результуючий .mes (за угодою з batch скрипту: <base>_new.mes)
-  const baseName = path.basename(replacedPath, ".json");
-  const candidate1 = path.join(outDir, baseName + "_new.mes");
-  const candidate2 = path.join(outDir, baseName + ".mes");
-  let mesPath = null;
-  for (const p of [candidate1, candidate2]) {
-    try { await fs.access(p); mesPath = p; break; } catch {}
-  }
-  if (!mesPath) {
-    // Шукаємо будь-який *_new.mes у outDir
-    try {
-      const items = await fs.readdir(outDir);
-      const found = items.find((n) => /_new\.mes$/i.test(n));
-      if (found) mesPath = path.join(outDir, found);
-    } catch {}
-  }
-  if (!mesPath) {
-    return { error: "Не знайшов результуючий .mes після DPMsgTool у " + outDir };
+  // 5) Знаходимо новостворений .json (або найновіший, якщо нічого не з'явилось).
+  let producedJson = null;
+  try {
+    const items = await fs.readdir(root, { withFileTypes: true });
+    let best = null;
+    for (const e of items) {
+      if (!e.isFile() || !/\.json$/i.test(e.name)) continue;
+      const lower = e.name.toLowerCase();
+      const isNew = !before.has(lower);
+      const full = path.join(root, e.name);
+      const st = await fs.stat(full);
+      const cand = { path: full, mtime: st.mtimeMs, size: st.size, isNew };
+      if (!best ||
+          (cand.isNew && !best.isNew) ||
+          (cand.isNew === best.isNew && cand.mtime > best.mtime)) {
+        best = cand;
+      }
+    }
+    producedJson = best;
+  } catch {}
+
+  if (!producedJson) {
+    return {
+      ok: false,
+      error: "DPMsgTool відпрацював, але JSON-дамп у " + root + " не знайдено.",
+      stdout: result.stdout, stderr: result.stderr,
+    };
   }
 
-  // 5) Перенести у gameDir як mes_all.mes (якщо gameDir заданий)
-  let outputPath = mesPath;
-  if (gameDir) {
-    try {
-      await fs.mkdir(gameDir, { recursive: true });
-      const target = path.join(gameDir, "mes_all.mes");
-      await fs.rename(mesPath, target);
-      outputPath = target;
-    } catch (e) {
+  // 6) Підраховуємо кількість записів і копіюємо JSON у Original/, Done/, Meta/.
+  let recordCount = 0;
+  let parsedRecords = null;
+  try {
+    const raw = await fs.readFile(producedJson.path, "utf8");
+    const parsed = JSON.parse(raw);
+    if (Array.isArray(parsed)) {
+      parsedRecords = parsed;
+      recordCount = parsed.length;
+    }
+  } catch {}
+
+  // Створюємо теки і копіюємо JSON.
+  // Original — завжди перезаписуємо (це еталон з гри).
+  // Done — лише якщо порожньо (інакше — збережений переклад користувача).
+  // Meta — пишемо meta.json з summary.
+  try {
+    await fs.mkdir(dp1OriginalDir(), { recursive: true });
+    await fs.mkdir(dp1DoneDir(), { recursive: true });
+    await fs.mkdir(dp1MetaDir(), { recursive: true });
+    await fs.copyFile(producedJson.path, dp1OriginalJson());
+    let doneExists = false;
+    try { await fs.access(dp1DoneJson()); doneExists = true; } catch {}
+    if (!doneExists) {
+      await fs.copyFile(producedJson.path, dp1DoneJson());
+    }
+    const meta = {
+      sourceMes,
+      sourceMesMtime: (await fs.stat(sourceMes)).mtimeMs,
+      extractedAt: Date.now(),
+      recordCount,
+      visibleCount: parsedRecords
+        ? parsedRecords.reduce((n, r) => n + (r && r.EmptyRecord ? 0 : 1), 0)
+        : 0,
+    };
+    await fs.writeFile(dp1MetaFile(), JSON.stringify(meta, null, 2), "utf8");
+  } catch (e) {
+    return {
+      ok: false,
+      error: "DPMsgTool ОК, але запис у Original/Done/Meta не вдався: " + (e.message || e),
+      jsonPath: producedJson.path,
+    };
+  }
+
+  return {
+    ok: true,
+    root,
+    exePath,
+    mesPath: targetMes,
+    jsonPath: producedJson.path,
+    jsonSize: producedJson.size,
+    recordCount,
+    sourceMes,
+    originalJson: dp1OriginalJson(),
+    doneJson: dp1DoneJson(),
+    metaFile: dp1MetaFile(),
+  };
+});
+
+// ── DP1 text editor IPC ──────────────────────────────────────────
+// Завантажує Original + Done JSON у пам'ять renderer'а. Розмір ~8-10 MB
+// разом (20003 записів) — у межах безпечного IPC payload.
+ipcMain.handle("dp2:dp1-text-load", async () => {
+  try {
+    const r = await callHeavy("dp1-text-load", {
+      originalJson: dp1OriginalJson(),
+      doneJson: dp1DoneJson(),
+      metaFile: dp1MetaFile(),
+    });
+    return { ok: true, ...r };
+  } catch (e) {
+    return { ok: false, error: String(e.message || e) };
+  }
+});
+
+// Запис цілого Done JSON. Перерахунок FSL виконується тут — щоб renderer
+// не дублював логіку. Правило: якщо doneText[i] === originalText[i] —
+// passthrough originalFSL; інакше — рерахунок через dp1ComputeFsl().
+ipcMain.handle("dp2:dp1-text-save", async (_event, payload) => {
+  const records = payload && Array.isArray(payload.done) ? payload.done : null;
+  if (!records) return { ok: false, error: "payload.done must be array" };
+  try {
+    // Worker сам тримає write через withFileLock? — ні, write робить через
+    // fs.writeFile напряму. Lock тут не потрібен бо dp1 mes_all.json пише
+    // тільки цей шлях (DPMsgTool runs паралельно лише при pack — і pack чекає save).
+    const r = await callHeavy("dp1-text-save", {
+      originalJson: dp1OriginalJson(),
+      doneJson: dp1DoneJson(),
+      metaFile: dp1MetaFile(),
+      records,
+    });
+    return { ok: true, bytesWritten: r.bytesWritten };
+  } catch (e) {
+    return { ok: false, error: String(e.message || e) };
+  }
+});
+
+// Швидкі агрегати — для CorpusStatsModal (mode="dp1") та виводу на Home.
+ipcMain.handle("dp2:dp1-text-corpus-stats", async () => {
+  try {
+    const r = await callHeavy("dp1-corpus-stats", {
+      originalJson: dp1OriginalJson(),
+      doneJson: dp1DoneJson(),
+    });
+    return { ok: true, ...r };
+  } catch (e) {
+    return { ok: false, error: String(e.message || e) };
+  }
+});
+
+// Pre-pack lint: порівнює набори маркерів у Original vs Done.
+// Повертає рядки, де перекладач втратив маркер, або додав сторонній.
+ipcMain.handle("dp2:dp1-text-lint-markers", async () => {
+  try {
+    const r = await callHeavy("dp1-lint-markers", {
+      originalJson: dp1OriginalJson(),
+      doneJson: dp1DoneJson(),
+    });
+    return { ok: true, scannedRows: r.scannedRows, violations: r.violations };
+  } catch (e) {
+    return { ok: false, error: String(e.message || e) };
+  }
+});
+
+// Export combined.txt — як у MISSING/HBR: easy offline workflow.
+// Формат: блок на запис із сепаратором та маркером готовності.
+ipcMain.handle("dp2:dp1-text-export-combined", async (_event, payload) => {
+  try {
+    const origRaw = await fs.readFile(dp1OriginalJson(), "utf8");
+    const doneRaw = await fs.readFile(dp1DoneJson(), "utf8");
+    const original = JSON.parse(origRaw);
+    const done = JSON.parse(doneRaw);
+    const target = String((payload && payload.path) || "").trim()
+      || path.join(dp1TextRoot(), "mes_all-combined.txt");
+    const lines = [];
+    lines.push("# DP1 mes_all.json combined export");
+    lines.push("# Edit only UA blocks. Keep all {…} tokens intact.");
+    lines.push("");
+    for (let i = 0; i < original.length; i++) {
+      const o = original[i] || {};
+      if (o.EmptyRecord) continue;
+      const d = done[i] || o;
+      lines.push(`===== [${i}] Id1=${o.Id1} Id2=${o.Id2} =====`);
+      lines.push(`EN: ${o.Text ?? ""}`);
+      lines.push(`UA: ${d.Text ?? ""}`);
+      lines.push("");
+    }
+    const out = lines.join("\r\n");
+    await fs.writeFile(target, out, "utf8");
+    return { ok: true, path: target, bytes: Buffer.byteLength(out) };
+  } catch (e) {
+    return { ok: false, error: String(e.message || e) };
+  }
+});
+
+ipcMain.handle("dp2:dp1-text-import-combined", async (_event, payload) => {
+  const src = String((payload && payload.path) || "").trim();
+  if (!src) return { ok: false, error: "Шлях не задано" };
+  try {
+    const raw = await fs.readFile(src, "utf8");
+    const origJson = JSON.parse(await fs.readFile(dp1OriginalJson(), "utf8"));
+    const doneJson = JSON.parse(await fs.readFile(dp1DoneJson(), "utf8"));
+    const lines = raw.replace(/^﻿/, "").split(/\r?\n/);
+    let applied = 0, skipped = 0;
+    const fakeDiffs = [];
+    const HDR_RE = /^=====\s*\[(\d+)\]\s*Id1=(-?\d+)\s+Id2=(-?\d+)\s*=====/;
+    let i = 0;
+    while (i < lines.length) {
+      const m = lines[i].match(HDR_RE);
+      if (!m) { i++; continue; }
+      const idx = parseInt(m[1], 10);
+      // Чітко очікуємо EN: на i+1 і UA: на i+2 (експорт пише саме так).
+      // Якщо формат «з'їхав» — зупиняємось на наступному ===== хедері,
+      // щоб не з'їсти EN/UA сусіднього блоку.
+      let en = null; let ua = null;
+      const enLine = lines[i + 1];
+      const uaLine = lines[i + 2];
+      if (enLine != null && !HDR_RE.test(enLine) && enLine.startsWith("EN: ")) {
+        en = enLine.slice(4);
+      }
+      if (uaLine != null && !HDR_RE.test(uaLine) && uaLine.startsWith("UA: ")) {
+        ua = uaLine.slice(4);
+      }
+      i++;
+      if (idx < 0 || idx >= origJson.length || ua == null) { skipped++; continue; }
+      const o = origJson[idx];
+      if (!o || o.EmptyRecord) { skipped++; continue; }
+      // Sanity-check: EN із файлу має збігатись із Original (інакше зсув).
+      // Толерантні до trailing whitespace — текстові редактори часто його
+      // обрізають при збереженні, але це не привід пропускати рядок:
+      // порівнюємо стрімкі тілам (без trailing space/tab/CR).
+      if (en !== null) {
+        const expected = (o.Text ?? "").replace(/[ \t\r]+$/, "");
+        const found = en.replace(/[ \t\r]+$/, "");
+        if (expected !== found) {
+          if (fakeDiffs.length < 5) fakeDiffs.push({ index: idx, expected: o.Text, found: en });
+          skipped++;
+          continue;
+        }
+      }
+      const prev = doneJson[idx]?.Text ?? o.Text ?? "";
+      if (prev !== ua) {
+        doneJson[idx] = { ...(doneJson[idx] || o), Text: ua };
+        applied++;
+      }
+    }
+    if (applied > 0) {
+      const out = dp1StringifyRecords(doneJson);
+      await fs.writeFile(dp1DoneJson(), out, "utf8");
+    }
+    return { ok: true, applied, skipped, fakeDiffs };
+  } catch (e) {
+    return { ok: false, error: String(e.message || e) };
+  }
+});
+
+// Per-row UI стан: статус (draft/review/approved) + закладки. Зберігаємо
+// окремо у Meta/status.json, щоб не міксувати з Done JSON (який пакується
+// у гру). Формат:
+//   { version: 1, rows: { "<index>": { status?: "draft"|"review"|"approved", bookmark?: true } } }
+function dp1StatusFile() { return path.join(dp1MetaDir(), "status.json"); }
+
+// Glyph-map (заміна кирилиці на латинські гліфи з кастомного шрифту гри).
+// За замовчуванням — мапа, перевірена на практиці. Користувач може
+// редагувати у модалці; зберігаємо у Meta/glyphmap.json. Mapping застосо-
+// вується до КОЖНОГО рядка `Text` перед запуском DPMsgTool from-json.
+function dp1GlyphMapFile() { return path.join(dp1MetaDir(), "glyphmap.json"); }
+const DP1_DEFAULT_GLYPHMAP = {
+  "О": "O", "о": "o", "А": "A", "а": "a", "Р": "P", "р": "p",
+  "С": "C", "с": "c", "М": "M", "В": "B", "Е": "E", "е": "e",
+  "Н": "H", "Т": "T", "І": "I", "і": "i", "Ї": "Í", "ї": "ï",
+  "Х": "X", "х": "x", "у": "y",
+  "Б": "Ô", "Г": "¿", "Ґ": "Ù", "Д": "Á", "Є": "Â", "Ж": "Ã",
+  "З": "Ä", "И": "Å", "Й": "Æ", "К": "Ç", "Л": "È", "П": "É",
+  "У": "Ê", "Ф": "Ë", "Ц": "Ì", "Ч": "Î", "Ш": "Ï", "Щ": "Ð",
+  "Ь": "Ñ", "Ю": "Ò", "Я": "Ó",
+  "б": "à", "в": "á", "г": "â", "ґ": "ã", "д": "ä", "є": "å",
+  "ж": "æ", "з": "ç", "и": "è", "й": "é", "к": "ê", "л": "ë",
+  "м": "ì", "н": "í", "п": "î", "т": "ú", "ф": "ñ", "ц": "ò",
+  "ч": "ó", "ш": "ô", "щ": "õ", "я": "ù", "ю": "ø", "ь": "û",
+  "—": "Ú",
+};
+async function dp1ReadGlyphMap() {
+  try {
+    const raw = await fs.readFile(dp1GlyphMapFile(), "utf8");
+    const parsed = JSON.parse(raw);
+    if (parsed && typeof parsed.map === "object" && parsed.map) return parsed.map;
+  } catch {}
+  return { ...DP1_DEFAULT_GLYPHMAP };
+}
+function dp1ApplyGlyphMap(text, map) {
+  if (typeof text !== "string" || !text) return text;
+  let out = "";
+  for (const ch of text) out += (map[ch] != null ? map[ch] : ch);
+  return out;
+}
+
+ipcMain.handle("dp2:dp1-glyphmap-read", async () => {
+  const map = await dp1ReadGlyphMap();
+  return { ok: true, map, defaults: DP1_DEFAULT_GLYPHMAP };
+});
+ipcMain.handle("dp2:dp1-glyphmap-write", async (_event, payload) => {
+  try {
+    await fs.mkdir(dp1MetaDir(), { recursive: true });
+    const map = (payload && payload.map) || {};
+    await fs.writeFile(dp1GlyphMapFile(), JSON.stringify({ version: 1, map }, null, 2), "utf8");
+    return { ok: true };
+  } catch (e) {
+    return { ok: false, error: String(e.message || e) };
+  }
+});
+
+ipcMain.handle("dp2:dp1-text-meta-read", async () => {
+  try {
+    const raw = await fs.readFile(dp1StatusFile(), "utf8");
+    const parsed = JSON.parse(raw);
+    return { ok: true, rows: parsed?.rows ?? {} };
+  } catch {
+    return { ok: true, rows: {} };
+  }
+});
+
+ipcMain.handle("dp2:dp1-text-meta-write", async (_event, payload) => {
+  try {
+    await fs.mkdir(dp1MetaDir(), { recursive: true });
+    const rows = (payload && payload.rows) || {};
+    await fs.writeFile(dp1StatusFile(), JSON.stringify({ version: 1, rows }, null, 2), "utf8");
+    return { ok: true };
+  } catch (e) {
+    return { ok: false, error: String(e.message || e) };
+  }
+});
+
+// Pack: копіює Done/mes_all.json у Tool/, запускає DPMsgTool from-json,
+// результат (.mes) кладе у <dp1Root>\updata_eu\_us\message\output\mes_all.mes
+// з .bak попередньої версії.
+ipcMain.handle("dp2:dp1-pack", async () => {
+  try {
+    const settings = await readSettings();
+    const exePath = await dp1FindToolExe();
+    if (!exePath) return { ok: false, error: "DPMsgTool.exe не знайдено" };
+    try { await fs.access(dp1DoneJson()); }
+    catch { return { ok: false, error: "Done/mes_all.json не знайдено. Зробіть extract." }; }
+
+    // 1) Беремо Done JSON, застосовуємо glyph-map до кожного Text, пишемо
+    //    у Tool/mes_all.json. Без glyph-map кирилиця у грі не намалюється
+    //    (кастомний шрифт гри не має нативних UCS-кодпоінтів кирилиці).
+    const toolDir = dp1ToolDir();
+    const targetJson = path.join(toolDir, "mes_all.json");
+    const glyphMap = await dp1ReadGlyphMap();
+    const doneRaw = await fs.readFile(dp1DoneJson(), "utf8");
+    const doneArr = JSON.parse(doneRaw);
+    if (!Array.isArray(doneArr)) return { ok: false, error: "Done/mes_all.json не масив" };
+    const mapped = doneArr.map((r) => ({
+      ...r,
+      Text: dp1ApplyGlyphMap(r?.Text ?? "", glyphMap),
+    }));
+    await fs.writeFile(targetJson, dp1StringifyRecords(mapped), "utf8");
+
+    // 2) Запускаємо DPMsgTool — drag&drop стиль (без mode-аргумента; tool
+    // сам визначає за розширенням, що це from-json).
+    const result = await new Promise((resolve) => {
+      const child = spawn(exePath, [targetJson], { windowsHide: true, cwd: toolDir });
+      let stdout = ""; let stderr = "";
+      child.stdout.on("data", (d) => { stdout += d.toString(); });
+      child.stderr.on("data", (d) => { stderr += d.toString(); });
+      child.on("error", (err) => resolve({ code: -1, stdout, stderr: stderr + "\n" + err.message }));
+      child.on("exit", (code) => resolve({ code, stdout, stderr }));
+    });
+    if (result.code !== 0) {
       return {
-        error: "DPMsgTool ОК, але перенесення в " + gameDir + " не вдалось: " + (e.message || e),
-        intermediatePath: mesPath,
+        ok: false,
+        error: "DPMsgTool exit=" + result.code + ":\n" + (result.stderr || result.stdout || "").trim(),
       };
     }
-  }
+    // 3) Знаходимо створений *_new.mes.
+    let producedMes = null;
+    try {
+      const items = await fs.readdir(toolDir);
+      const newer = items.find((n) => /_new\.mes$/i.test(n));
+      if (newer) producedMes = path.join(toolDir, newer);
+    } catch {}
+    if (!producedMes) {
+      // Деякі версії DPMsgTool пишуть як mes_all.mes (перезаписує).
+      const fallback = path.join(toolDir, "mes_all.mes");
+      try { await fs.access(fallback); producedMes = fallback; } catch {}
+    }
+    if (!producedMes) {
+      return { ok: false, error: "Не знайшов створений .mes у " + toolDir, stdout: result.stdout };
+    }
 
-  return { ok: true, outputPath, intermediatePath: mesPath };
+    // 4) Куди ставимо: <dp1Root>\updata_eu\_us\message\output\mes_all.mes
+    let targetMes = null;
+    if (settings.dp1Root) {
+      const outputDir = path.join(settings.dp1Root, "updata_eu", "_us", "message", "output");
+      try { await fs.mkdir(outputDir, { recursive: true }); } catch {}
+      targetMes = path.join(outputDir, "mes_all.mes");
+    }
+    if (!targetMes) {
+      return {
+        ok: true,
+        intermediatePath: producedMes,
+        warning: "dp1Root не задано — .mes лишається у " + producedMes,
+      };
+    }
+
+    // .bak попередньої версії.
+    let bakPath = null;
+    try {
+      await fs.access(targetMes);
+      bakPath = targetMes + ".bak";
+      try { await fs.unlink(bakPath); } catch {}
+      await fs.copyFile(targetMes, bakPath);
+    } catch {}
+
+    await fs.copyFile(producedMes, targetMes);
+    // Прибираємо проміжний *_new.mes після успішного копіювання.
+    if (producedMes !== targetMes && /_new\.mes$/i.test(producedMes)) {
+      try { await fs.unlink(producedMes); } catch {}
+    }
+    return { ok: true, outputPath: targetMes, intermediatePath: producedMes, bakPath };
+  } catch (e) {
+    return { ok: false, error: String(e.message || e) };
+  }
 });
 
 // ── IPC: launch UABEA Next ───────────────────────────────────────
@@ -2323,6 +4708,327 @@ ipcMain.handle("dp2:launch-uabea", async () => {
 // ── IPC: open folder in explorer ─────────────────────────────────
 ipcMain.handle("dp2:open-folder", async (_event, folder) => {
   if (folder) await shell.openPath(folder);
+});
+
+// ── IPC: open external URL (для GitHub release links з update-banner) ───
+ipcMain.handle("dp2:open-external", async (_event, url) => {
+  if (typeof url !== "string") return { ok: false, error: "url must be string" };
+  // Дозволяємо тільки http(s) і steam:// — щоб renderer не міг відкрити
+  // file:/// або довільний exec-протокол.
+  if (!/^(https?|steam):\/\//i.test(url)) return { ok: false, error: "unsupported protocol" };
+  try { await shell.openExternal(url); return { ok: true }; }
+  catch (e) { return { ok: false, error: String(e?.message ?? e) }; }
+});
+
+// ── IPC: GitHub update check ──────────────────────────────────────
+// Опитуємо releases/latest. Кеш у settings (lastUpdateCache + ts), TTL 6h.
+// Якщо latest > app.getVersion() — renderer показує банер. Користувач може
+// "приховати" версію → у settings.dismissedUpdateVersion записується tag.
+const UPDATE_REPO = "LittleBitUA/Deadly-Premonition-Localization-Tool";
+const UPDATE_TTL_MS = 6 * 60 * 60 * 1000;
+
+function compareSemver(a, b) {
+  // Робастно: бере цифрові частини мажор.мінор.патч (ігнорує суфікси -alpha тощо)
+  const norm = (v) => String(v).replace(/^v/i, "").split(/[.\-+]/).map((x) => parseInt(x, 10) || 0);
+  const pa = norm(a); const pb = norm(b);
+  for (let i = 0; i < Math.max(pa.length, pb.length, 3); i++) {
+    const va = pa[i] ?? 0; const vb = pb[i] ?? 0;
+    if (va !== vb) return va < vb ? -1 : 1;
+  }
+  return 0;
+}
+
+ipcMain.handle("dp2:check-update", async (_event, payload) => {
+  const force = !!(payload && payload.force);
+  const settings = await readSettings();
+  const now = Date.now();
+  if (!force && settings.lastUpdateCache && settings.lastUpdateCheck &&
+      (now - settings.lastUpdateCheck) < UPDATE_TTL_MS) {
+    return settings.lastUpdateCache;
+  }
+  try {
+    const url = `https://api.github.com/repos/${UPDATE_REPO}/releases/latest`;
+    const res = await fetch(url, {
+      headers: {
+        "User-Agent": "SWERY-Localization-Tool",
+        "Accept": "application/vnd.github+json",
+      },
+    });
+    if (!res.ok) return { ok: false, error: `HTTP ${res.status}` };
+    const data = await res.json();
+    const tag = String(data.tag_name || "").replace(/^v/i, "");
+    if (!tag) return { ok: false, error: "release has no tag_name" };
+    const current = app.getVersion();
+    const available = compareSemver(current, tag) < 0;
+    const result = {
+      ok: true,
+      available,
+      current,
+      latest: tag,
+      htmlUrl: data.html_url,
+      publishedAt: data.published_at,
+      name: data.name || tag,
+      body: data.body || "",
+    };
+    await writeSettings({ ...settings, lastUpdateCheck: now, lastUpdateCache: result });
+    return result;
+  } catch (e) {
+    return { ok: false, error: String(e?.message ?? e) };
+  }
+});
+
+ipcMain.handle("dp2:app-version", () => app.getVersion());
+
+// ── Auto-update: download .exe asset → swap → restart ─────────────────
+// Підхід — той самий, що в DP1 Launcher: знаходимо .exe asset у latest
+// release, завантажуємо у %TEMP% з прогресом, пишемо .bat що чекає поки
+// поточний exe закриється, копіює новий на місце і запускає назад.
+// VBS-обгортка над .bat — щоб не блимало консольне вікно (windowsHide
+// ігнорується для detached child-процесів).
+function findLatestExeAsset() {
+  const https = require("node:https");
+  return new Promise((resolve, reject) => {
+    https.request({
+      hostname: "api.github.com",
+      path: `/repos/${UPDATE_REPO}/releases/latest`,
+      method: "GET",
+      headers: {
+        "User-Agent": `SWERY-Localization-Tool/${app.getVersion()}`,
+        "Accept": "application/vnd.github+json",
+      },
+      timeout: 10000,
+    }, (res) => {
+      if (res.statusCode !== 200) {
+        res.resume();
+        return reject(new Error(`HTTP ${res.statusCode}`));
+      }
+      let raw = ""; res.setEncoding("utf8");
+      res.on("data", (c) => { raw += c; });
+      res.on("end", () => {
+        try {
+          const data = JSON.parse(raw);
+          // Шукаємо `portable.exe` як найпріоритетніший (наш artifact),
+          // інакше будь-який .exe. .zip також підтримуємо як fallback.
+          const assets = data.assets || [];
+          const pick = assets.find((a) => /portable\.exe$/i.test(a.name))
+            || assets.find((a) => /\.exe$/i.test(a.name))
+            || assets.find((a) => /\.zip$/i.test(a.name));
+          if (!pick) return reject(new Error("No .exe/.zip asset in latest release"));
+          resolve({
+            url: pick.browser_download_url,
+            name: pick.name,
+            size: pick.size,
+            isZip: /\.zip$/i.test(pick.name),
+          });
+        } catch (err) { reject(err); }
+      });
+    }).on("error", reject).end();
+  });
+}
+
+function downloadToFile(url, destPath, onProgress) {
+  const https = require("node:https");
+  return new Promise((resolve, reject) => {
+    const fsNode = require("node:fs");
+    let downloaded = 0; let total = 0;
+    const start = Date.now();
+    const file = fsNode.createWriteStream(destPath);
+    const cleanup = (err) => {
+      try { file.close(); } catch {}
+      fs.unlink(destPath).catch(() => {});
+      reject(err);
+    };
+    const go = (currentUrl, redirectsLeft) => {
+      let parsed;
+      try { parsed = new URL(currentUrl); } catch (e) { return cleanup(e); }
+      const req = https.get(parsed, {
+        headers: { "User-Agent": `SWERY-Localization-Tool/${app.getVersion()}` },
+        timeout: 30000,
+      }, (res) => {
+        if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
+          res.resume();
+          if (redirectsLeft <= 0) return cleanup(new Error("Too many redirects"));
+          return go(new URL(res.headers.location, currentUrl).toString(), redirectsLeft - 1);
+        }
+        if (res.statusCode !== 200) {
+          res.resume();
+          return cleanup(new Error(`HTTP ${res.statusCode}`));
+        }
+        total = parseInt(res.headers["content-length"] || "0", 10) || 0;
+        res.on("data", (chunk) => {
+          downloaded += chunk.length;
+          if (onProgress) {
+            const elapsed = (Date.now() - start) / 1000;
+            const speed = elapsed > 0 ? downloaded / elapsed : 0;
+            onProgress({ downloaded, total, speed });
+          }
+        });
+        res.pipe(file);
+        file.on("finish", () => { file.close(() => resolve({ size: downloaded })); });
+        file.on("error", cleanup);
+      });
+      req.on("timeout", () => req.destroy(new Error("Request timeout")));
+      req.on("error", cleanup);
+    };
+    go(url, 5);
+  });
+}
+
+ipcMain.handle("dp2:apply-update", async () => {
+  const win = BrowserWindow.getAllWindows()[0];
+  const send = (type, extra = {}) => {
+    try { win?.webContents.send("dp2:update-progress", { type, ...extra }); } catch {}
+  };
+  if (!app.isPackaged) {
+    send("error", { error: "Auto-update вимкнено в dev-режимі (запущено un-packaged Electron)." });
+    return { ok: false, error: "dev-mode" };
+  }
+  try {
+    send("locating");
+    const asset = await findLatestExeAsset();
+    const stamp = Date.now();
+    const tmpAsset = path.join(os.tmpdir(), `swery-update-${stamp}-${asset.name}`);
+    send("downloading", { name: asset.name, downloaded: 0, total: asset.size, speed: 0 });
+    await downloadToFile(asset.url, tmpAsset, (p) => send("downloading", { ...p, name: asset.name }));
+
+    const installDir = path.dirname(process.execPath);
+    const exeName = path.basename(process.execPath);
+    const targetExe = path.join(installDir, exeName);
+    const batchPath = path.join(os.tmpdir(), `swery-update-${stamp}.bat`);
+    const vbsPath = path.join(os.tmpdir(), `swery-update-${stamp}.vbs`);
+
+    // Простий swap для single-exe portable: чекаємо exit + copy/move з ретраями
+    // (файл може бути ще locked десь секунду після quit).
+    const batch =
+      "@echo off\r\n" +
+      "chcp 65001 >nul\r\n" +
+      "timeout /t 2 /nobreak >nul\r\n" +
+      ":retry\r\n" +
+      `copy /Y "${tmpAsset}" "${targetExe}" >nul 2>&1\r\n` +
+      "if errorlevel 1 (timeout /t 1 /nobreak >nul & goto retry)\r\n" +
+      `start "" "${targetExe}"\r\n` +
+      `del "${tmpAsset}" >nul 2>&1\r\n` +
+      `del "${vbsPath}" >nul 2>&1\r\n` +
+      "del \"%~f0\"\r\n";
+    await fs.writeFile(batchPath, batch, { encoding: "utf8" });
+    const vbs = `CreateObject("WScript.Shell").Run "cmd /c ""${batchPath}""", 0, False\r\n`;
+    await fs.writeFile(vbsPath, vbs, { encoding: "utf8" });
+
+    send("installing");
+    spawn("wscript.exe", [vbsPath], {
+      detached: true, stdio: "ignore", windowsHide: true, shell: false,
+    }).unref();
+    setTimeout(() => app.quit(), 1500);
+    return { ok: true };
+  } catch (e) {
+    const msg = String(e?.message ?? e);
+    try { win?.webContents.send("dp2:update-progress", { type: "error", error: msg }); } catch {}
+    return { ok: false, error: msg };
+  }
+});
+
+// ── IPC: Steam game auto-detect ──────────────────────────────────────
+// Знаходить теку common/<folderName> по всіх Steam-бібліотеках. Реєстр
+// HKCU\Software\Valve\Steam → SteamPath, потім steamapps/libraryfolders.vdf
+// → список library-paths. Працює навіть якщо гра встановлена на іншому диску.
+async function readSteamPath() {
+  // 1) Через реєстр (Windows): reg query HKCU\Software\Valve\Steam /v SteamPath
+  try {
+    const { execSync } = require("node:child_process");
+    const stdout = execSync('reg query "HKCU\\Software\\Valve\\Steam" /v SteamPath', {
+      windowsHide: true, timeout: 4000,
+    }).toString("utf8");
+    const m = stdout.match(/SteamPath\s+REG_SZ\s+(.+)/i);
+    if (m) return m[1].trim().replace(/\//g, "\\");
+  } catch {}
+  // 2) Fallback: дефолтні шляхи.
+  for (const guess of [
+    "C:\\Program Files (x86)\\Steam",
+    "C:\\Program Files\\Steam",
+  ]) {
+    try { await fs.access(guess); return guess; } catch {}
+  }
+  return null;
+}
+
+async function findSteamGame(folderName) {
+  const steamPath = await readSteamPath();
+  if (!steamPath) return { ok: false, error: "Steam path not found in registry" };
+  const vdfPath = path.join(steamPath, "steamapps", "libraryfolders.vdf");
+  let vdf = "";
+  try { vdf = await fs.readFile(vdfPath, "utf8"); }
+  catch { /* fallback — лише сам steamPath */ }
+  // Витягуємо всі "path" "<value>" ключі — це самі library-теки.
+  const libraries = new Set();
+  libraries.add(steamPath);
+  const re = /"path"\s*"([^"]+)"/g;
+  let m;
+  while ((m = re.exec(vdf)) !== null) {
+    libraries.add(m[1].replace(/\\\\/g, "\\"));
+  }
+  for (const lib of libraries) {
+    const candidate = path.join(lib, "steamapps", "common", folderName);
+    try { const st = await fs.stat(candidate); if (st.isDirectory()) return { ok: true, path: candidate }; } catch {}
+  }
+  return { ok: false, error: `Game folder "${folderName}" not found in any Steam library` };
+}
+
+ipcMain.handle("dp2:steam-find-game", async (_event, folderName) => {
+  if (typeof folderName !== "string" || !folderName.trim()) {
+    return { ok: false, error: "folderName required" };
+  }
+  return await findSteamGame(folderName.trim());
+});
+
+// 5 останніх релізів GitHub для секції "Що нового" на Home. Той самий cache
+// підхід що у check-update (settings.lastReleasesCache + TTL 6h).
+const RELEASES_TTL_MS = 6 * 60 * 60 * 1000;
+ipcMain.handle("dp2:fetch-releases", async (_event, payload) => {
+  const force = !!(payload && payload.force);
+  const settings = await readSettings();
+  const now = Date.now();
+  if (!force && settings.lastReleasesCache && settings.lastReleasesCheck &&
+      (now - settings.lastReleasesCheck) < RELEASES_TTL_MS) {
+    return settings.lastReleasesCache;
+  }
+  const https = require("node:https");
+  try {
+    const data = await new Promise((resolve, reject) => {
+      https.request({
+        hostname: "api.github.com",
+        path: `/repos/${UPDATE_REPO}/releases?per_page=5`,
+        method: "GET",
+        headers: {
+          "User-Agent": `SWERY-Localization-Tool/${app.getVersion()}`,
+          "Accept": "application/vnd.github+json",
+        },
+        timeout: 10000,
+      }, (res) => {
+        if (res.statusCode !== 200) { res.resume(); return reject(new Error(`HTTP ${res.statusCode}`)); }
+        let raw = ""; res.setEncoding("utf8");
+        res.on("data", (c) => { raw += c; });
+        res.on("end", () => { try { resolve(JSON.parse(raw)); } catch (e) { reject(e); } });
+      }).on("error", reject).end();
+    });
+    const items = (Array.isArray(data) ? data : []).slice(0, 5).map((r) => ({
+      tag: String(r.tag_name || "").replace(/^v/i, ""),
+      name: r.name || r.tag_name || "",
+      htmlUrl: r.html_url,
+      publishedAt: r.published_at,
+      prerelease: !!r.prerelease,
+    })).filter((r) => r.tag);
+    const result = { ok: true, items };
+    await writeSettings({ ...settings, lastReleasesCheck: now, lastReleasesCache: result });
+    return result;
+  } catch (e) {
+    return { ok: false, error: String(e?.message ?? e) };
+  }
+});
+
+ipcMain.handle("dp2:dismiss-update-version", async (_event, version) => {
+  const settings = await readSettings();
+  await writeSettings({ ...settings, dismissedUpdateVersion: String(version || "") });
+  return { ok: true };
 });
 
 app.whenReady().then(async () => {

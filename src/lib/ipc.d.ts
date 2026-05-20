@@ -25,8 +25,8 @@ declare global {
       readAutosave: (fullPath: string) => Promise<{ content: string; autosaveMtime: number; originalMtime: number } | null>;
       deleteAutosave: (fullPath: string) => Promise<boolean>;
       readAll: (folder: string) => Promise<Array<{ path: string; content: string; bakContent: string | null }>>;
-      buildTmWorker: (payload: { dp2Folder: string | null; dp1EngPath: string | null }) => Promise<Array<{
-        source: "dp1" | "dp2"; src: string; tgt: string; jp: string;
+      buildTmWorker: (payload: { dp2Folder: string | null }) => Promise<Array<{
+        source: "dp2"; src: string; tgt: string; jp: string;
         filePath: string; fileName: string; charaName?: string;
       }>>;
       searchAllWorker: (payload: { folder: string; opts: { query: string; field: string; caseSensitive: boolean; regex: boolean } }) => Promise<{
@@ -73,6 +73,46 @@ declare global {
       onFontsExportProgress: (cb: (line: string) => void) => () => void;
       onFontsReplaceProgress: (cb: (line: string) => void) => () => void;
       openFolder: (folder: string) => Promise<void>;
+      openExternal: (url: string) => Promise<{ ok: boolean; error?: string }>;
+      appVersion: () => Promise<string>;
+      // Auto-detect Steam game folder. Reads HKCU\Software\Valve\Steam → SteamPath,
+      // parses libraryfolders.vdf, returns first existing steamapps/common/<name>/.
+      steamFindGame: (folderName: string) => Promise<{ ok: boolean; path?: string; error?: string }>;
+      // Full auto-update: downloads latest GitHub release asset, schedules a
+      // detached batch swap, then quits.
+      applyUpdate: () => Promise<{ ok: boolean; error?: string }>;
+      onUpdateProgress: (cb: (p: {
+        type: "locating" | "downloading" | "extracting" | "installing" | "error";
+        name?: string;
+        downloaded?: number;
+        total?: number;
+        speed?: number;
+        error?: string;
+      }) => void) => () => void;
+      checkUpdate: (payload?: { force?: boolean }) => Promise<{
+        ok: boolean;
+        error?: string;
+        available?: boolean;
+        current?: string;
+        latest?: string;
+        htmlUrl?: string;
+        publishedAt?: string;
+        name?: string;
+        body?: string;
+      }>;
+      dismissUpdateVersion: (version: string) => Promise<{ ok: boolean }>;
+      // Last 5 GitHub releases — for the "What's new" Home section.
+      fetchReleases: (payload?: { force?: boolean }) => Promise<{
+        ok: boolean;
+        error?: string;
+        items?: Array<{
+          tag: string;
+          name: string;
+          htmlUrl: string;
+          publishedAt: string;
+          prerelease: boolean;
+        }>;
+      }>;
 
       // Setup / onboarding
       setupStatus: () => Promise<SetupStatus>;
@@ -80,12 +120,133 @@ declare global {
       setupReset: () => Promise<{ ok: boolean }>;
       onSetupProgress: (cb: (p: SetupProgress) => void) => () => void;
 
-      // DP1 pack
-      dp1Pack: (payload: { donePath: string }) => Promise<{
-        ok?: boolean;
+      // DP1 setup: download DPMsgTool (by MrIkso) into
+      // Documents/SWERY-Localization-Tool/DP1/Text/Tool, copy mes_all.mes
+      // from <dp1Root>/updata_eu/_us/message/output and convert to JSON.
+      dp1SetupStatus: () => Promise<{
+        ok: boolean;
+        root: string;
+        exePath: string | null;
+        mesPath: string | null;
+        mesCopied: boolean;
+        jsonPath: string | null;
+        jsonSize: number;
+        textRoot?: string;
+        originalJson?: string;
+        doneJson?: string;
+        metaFile?: string;
+        originalExists?: boolean;
+        doneExists?: boolean;
+        metaExists?: boolean;
+      }>;
+      dp1DownloadTool: () => Promise<{
+        ok: boolean;
+        error?: string;
+        root?: string;
+        exePath?: string | null;
+        bytes?: number;
+        alreadyExisted?: boolean;
+      }>;
+      dp1PrepMes: (payload?: { mesPath?: string }) => Promise<{
+        ok: boolean;
+        error?: string;
+        needsPick?: boolean;
+        root?: string;
+        exePath?: string;
+        mesPath?: string;
+        jsonPath?: string;
+        jsonSize?: number;
+        recordCount?: number;
+        sourceMes?: string;
+        stdout?: string;
+        stderr?: string;
+      }>;
+      onDp1ToolProgress: (cb: (p: {
+        phase: "download" | "extract" | "done" | "error";
+        i18nKey?: string;
+        i18nParams?: Record<string, string | number>;
+        message?: string;
+        total?: number;
+        downloaded?: number;
+        percent?: number;
+        bytesPerSec?: number;
+      }) => void) => () => void;
+
+      // DP1 text editor — work on Original/Done/Meta JSON dump.
+      dp1TextLoad: () => Promise<{
+        ok: boolean;
+        error?: string;
+        original?: Dp1Record[];
+        done?: Dp1Record[];
+        meta?: Dp1Meta | null;
+      }>;
+      dp1TextSave: (payload: { done: Dp1Record[] }) => Promise<{
+        ok: boolean;
+        error?: string;
+        bytesWritten?: number;
+      }>;
+      dp1TextCorpusStats: () => Promise<{
+        ok: boolean;
+        error?: string;
+        files?: number;
+        totalEntries?: number;
+        translatedEntries?: number;
+        percent?: number;
+        uaWords?: number;
+        enWords?: number;
+        uaChars?: number;
+        enChars?: number;
+        topFiles?: Array<{
+          fileName: string;
+          filePath: string;
+          total: number;
+          translated: number;
+          percent: number;
+        }>;
+      }>;
+      dp1TextLintMarkers: () => Promise<{
+        ok: boolean;
+        error?: string;
+        scannedRows?: number;
+        violations?: Array<{
+          index: number;
+          id1: number;
+          id2: number;
+          missing: string[];
+          extra: string[];
+          original: string;
+          current: string;
+        }>;
+      }>;
+      dp1TextExportCombined: (payload?: { path?: string }) => Promise<{
+        ok: boolean;
+        error?: string;
+        path?: string;
+        bytes?: number;
+      }>;
+      dp1TextImportCombined: (payload: { path: string }) => Promise<{
+        ok: boolean;
+        error?: string;
+        applied?: number;
+        skipped?: number;
+        fakeDiffs?: Array<{ index: number; expected: string; found: string }>;
+      }>;
+      dp1Pack: () => Promise<{
+        ok: boolean;
         error?: string;
         outputPath?: string;
         intermediatePath?: string;
+        bakPath?: string | null;
+        warning?: string;
+      }>;
+      dp1GlyphMapRead: () => Promise<{
+        ok: boolean;
+        map: Record<string, string>;
+        defaults: Record<string, string>;
+      }>;
+      dp1GlyphMapWrite: (payload: { map: Record<string, string> }) => Promise<{
+        ok: boolean;
+        error?: string;
       }>;
 
       // DP2 Textures
@@ -123,6 +284,172 @@ declare global {
       }>;
       texturesList: () => Promise<{ dir: string | null; files: Array<{ name: string; path: string }> }>;
       texturesReadBase64: (filePath: string) => Promise<string | null>;
+      onTexturesExportProgress: (cb: (line: string) => void) => () => void;
+      onTexturesReplaceProgress: (cb: (line: string) => void) => () => void;
+
+      // HBR corpus stats — повна структура, схожа на CorpusStats (DP2),
+      // щоб переюзати CorpusStatsModal через mode="hbr".
+      hbrCorpusStats: () => Promise<{
+        ok: boolean;
+        error?: string;
+        files?: number;
+        totalEntries?: number;
+        translatedEntries?: number;
+        percent?: number;
+        uaWords?: number;
+        enWords?: number;
+        uaChars?: number;
+        enChars?: number;
+        topFiles?: Array<{
+          fileName: string;
+          filePath: string;
+          total: number;
+          translated: number;
+          percent: number;
+        }>;
+      }>;
+
+      // HBR text — patch migration. Check returns whether new bundle hash differs
+      // from meta, migrate performs backup + re-extract + merge of translations.
+      hbrPatchMigrateCheck: () => Promise<{
+        ok: boolean;
+        error?: string;
+        hasMeta?: boolean;
+        needed?: boolean;
+        newBundle?: string;
+        oldBundle?: string;
+        metaItemsCount?: number;
+        doneCount?: number;
+      }>;
+      hbrPatchMigrate: () => Promise<{
+        ok: boolean;
+        error?: string;
+        mergedFiles?: number;
+        translated?: number;
+        newCells?: number;
+        keptEnglish?: number;
+        backup?: string;
+      }>;
+
+      // HBR text — paths + counters (called from status-sidecar loader, etc.)
+      hbrTextPrepStatus: () => Promise<{
+        ok: boolean;
+        error?: string;
+        bundlePath?: string | null;
+        bundleOk?: boolean;
+        originalDir?: string;
+        doneDir?: string;
+        metaDir?: string;
+        metaFile?: string;
+        metaExists?: boolean;
+        originalCount?: number;
+        doneCount?: number;
+      }>;
+
+      // HBR text — remove DLC traces (Done/Original files + meta items)
+      hbrTextPurgeDlc: () => Promise<{ ok: boolean; removedFiles: number; removedMeta: number }>;
+
+      // HBR text — pre-pack placeholder lint. Scans Done vs Original for tag-set
+      // mismatches per row; pack-flow asks user before running if violations > 0.
+      hbrTextLintPlaceholders: () => Promise<{
+        ok: boolean;
+        error?: string;
+        scannedFiles?: number;
+        scannedRows?: number;
+        violations?: Array<{
+          file: string;
+          textId: string;
+          variantIdx: number;
+          missing: string[];
+          extra: string[];
+          original: string;
+          current: string;
+        }>;
+      }>;
+
+      // HBR Font Generator (TMPUnity tool from Dropbox)
+      hbrFontgenStatus: () => Promise<{ ok: boolean; installed: boolean; root: string; exePath: string | null }>;
+      hbrFontgenDownload: () => Promise<{ ok: boolean; error?: string; exePath?: string | null }>;
+      hbrFontgenLaunch: () => Promise<{ ok: boolean; error?: string; exePath?: string }>;
+      onHbrFontgenProgress: (cb: (p: {
+        phase: "download" | "extract" | "done" | "error";
+        i18nKey?: string;
+        i18nParams?: Record<string, string | number>;
+        message?: string;
+        total?: number;
+        downloaded?: number;
+        percent?: number;
+        bytesPerSec?: number;
+      }) => void) => () => void;
+
+      // HBR Fonts (Atlas PNG + TMP_FontAsset MonoBehaviour JSON)
+      hbrFontsStatus: () => Promise<{
+        ok: boolean;
+        error?: string;
+        root?: string;
+        atlasDir?: string;
+        monoDir?: string;
+        atlasCount?: number;
+        monoCount?: number;
+        bundlePath?: string | null;
+        bundleOk?: boolean;
+      }>;
+      hbrFontsAtlasExport: () => Promise<{
+        ok: boolean;
+        error?: string;
+        outDir?: string;
+        summary?: {
+          ok: boolean;
+          outDir: string;
+          bundle: string;
+          total: number;
+          skipped: number;
+          exported: Array<{
+            name: string;
+            pathId: number;
+            width: number;
+            height: number;
+            format: number;
+            file: string;
+            size: number;
+            assetsFile: string;
+          }>;
+        } | null;
+        log?: string;
+      }>;
+      hbrFontsMonoExport: () => Promise<{
+        ok: boolean;
+        error?: string;
+        outDir?: string;
+        summary?: {
+          ok: boolean;
+          outDir: string;
+          bundle: string;
+          total: number;
+          scannedMono: number;
+          exported: Array<{ pathId: number; name: string; file: string; assetsFile: string }>;
+          failed: Array<{ pathId: number; name?: string; error: string }>;
+        } | null;
+        log?: string;
+      }>;
+      onHbrFontsAtlasProgress: (cb: (line: string) => void) => () => void;
+      onHbrFontsMonoProgress: (cb: (line: string) => void) => () => void;
+
+      hbrFontsImport: () => Promise<{
+        ok: boolean;
+        error?: string;
+        summary?: {
+          ok: boolean;
+          bundle: string;
+          size: number;
+          bakSize: number;
+          monoApplied: number;
+          atlasApplied: number;
+          failed: Array<{ file: string; reason: string }>;
+        } | null;
+        log?: string;
+      }>;
+      onHbrFontsImportProgress: (cb: (line: string) => void) => () => void;
 
       // TGL Fonts
       tglFontsList: () => Promise<{
@@ -183,6 +510,23 @@ declare global {
         error?: string;
         workPath?: string;
       }>;
+      // TGL Monaco-editor: окрема директорія TRANSLATION/<name>.txt
+      // дзеркалиться у <binPath>.txt workfile (для pack).
+      tglTextPrep: (payload: { binPath: string }) => Promise<{
+        ok: boolean;
+        error?: string;
+        binName?: string;
+        translationPath?: string;
+        originalPath?: string;
+        originalContent?: string;
+        translationContent?: string;
+        lineCount?: number;
+      }>;
+      tglTextWrite: (payload: { binPath: string; content: string }) => Promise<{
+        ok: boolean;
+        error?: string;
+        translationPath?: string;
+      }>;
       tglPack: (payload: { binPath: string; ua: string[] }) => Promise<{
         ok?: boolean;
         error?: string;
@@ -195,6 +539,26 @@ declare global {
       }>;
     };
   }
+}
+
+export interface Dp1Record {
+  Id1: number;
+  Id2: number;
+  Flag1: number;
+  Flag2: number;
+  FirstSegmentLenght: number;
+  Text: string;
+  EmptyRecord: boolean;
+}
+
+export interface Dp1Meta {
+  sourceMes?: string;
+  sourceMesMtime?: number;
+  extractedAt?: number;
+  recordCount?: number;
+  visibleCount?: number;
+  lastSavedAt?: number;
+  translatedCount?: number;
 }
 
 export interface CorpusStats {
@@ -319,6 +683,32 @@ export interface DpSettings {
   dp1GameDir?: string;
   // TGL (The Good Life)
   tglBinPath?: string;
+  // Update check
+  lastUpdateCheck?: number;
+  lastUpdateCache?: {
+    ok: boolean; available?: boolean; current?: string; latest?: string;
+    htmlUrl?: string; publishedAt?: string; name?: string; body?: string;
+  };
+  dismissedUpdateVersion?: string;
+  // Cache для "What's new" — 5 останніх релізів, TTL 6h.
+  lastReleasesCheck?: number;
+  lastReleasesCache?: {
+    ok: boolean;
+    items?: Array<{
+      tag: string; name: string; htmlUrl: string;
+      publishedAt: string; prerelease: boolean;
+    }>;
+  };
+  // HBR fonts guide — показуємо повноекранну інструкцію один раз після
+  // успішного extract'у шрифтів. Прапор стає true, коли користувач натиснув
+  // "Зрозуміло". Кнопка "Інструкція" у Step 3 завжди дозволяє відкрити її.
+  hbrFontsGuideSeen?: boolean;
+  // Користувач натиснув «Очистити» на блоці «Нещодавно відкриті» — секція
+  // ховається на Home, шляхи у settings лишаються (карти ігор працюють).
+  recentItemsDismissed?: boolean;
+  // Autosave (crash-recovery)
+  autosaveDir?: string;       // якщо задано — всі .autosave.json пишуться сюди
+  autosaveIntervalMin?: number; // debounce у хвилинах (мін 0.25, дефолт 1)
 }
 
 export interface SetupStatus {

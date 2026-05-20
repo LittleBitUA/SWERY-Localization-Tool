@@ -11,7 +11,7 @@ import { useEffect, useState } from "react";
 import { useT } from "./i18n";
 
 export type DialogKind = "alert" | "confirm";
-export type DialogTone = "default" | "danger" | "success";
+export type DialogTone = "default" | "danger" | "success" | "warning";
 
 interface DialogRequest {
   kind: DialogKind;
@@ -114,6 +114,7 @@ export function DialogHost() {
   const okClass =
     dlg.tone === "danger" ? "dp-btn dp-btn--primary !bg-[var(--danger)]"
     : dlg.tone === "success" ? "dp-btn dp-btn--success"
+    : dlg.tone === "warning" ? "dp-btn dp-btn--primary !bg-[var(--warning,#d97706)]"
     : "dp-btn dp-btn--primary";
 
   const okLabel = dlg.okLabel ?? (isConfirm ? t("dialog.yes") : t("dialog.ok"));

@@ -32,6 +32,33 @@ export function OnboardingScreen({ status, onComplete }: OnboardingScreenProps) 
   const [dp1Root, setDp1Root] = useState<string>((status.settings as any).dp1Root || "");
   const [hbrRoot, setHbrRoot] = useState<string>((status.settings as any).hbrRoot || "");
 
+  // Auto-detect через Steam-бібліотеки (HKCU\Software\Valve\Steam → SteamPath
+  // → libraryfolders.vdf → перебір common/). Запускаємо ОДИН РАЗ на mount,
+  // тихо: якщо поле порожнє і Steam знайшов гру — підставляємо. Користувач
+  // потім бачить заповнені шляхи на step 3 і просто натискає «Завершити».
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      const probes: Array<[string, string | undefined, (p: string) => void]> = [
+        ["Deadly Premonition 2",                  dp2Root, setDp2Root],
+        ["The Good Life",                         tglRoot, setTglRoot],
+        ["Deadly Premonition The Director's Cut", dp1Root, setDp1Root],
+        ["HOTEL BARCELONA",                       hbrRoot, setHbrRoot],
+      ];
+      for (const [folderName, current, setter] of probes) {
+        if (cancelled) return;
+        if (current && current.trim()) continue;
+        try {
+          const r = await window.dp2.steamFindGame(folderName);
+          if (cancelled) return;
+          if (r.ok && r.path) setter(r.path);
+        } catch { /* silent */ }
+      }
+    })();
+    return () => { cancelled = true; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   // Чекбокси download'у: за замовч. вмикаємо, якщо інструмента ще немає.
   // Якщо обидва уже валідні — show "everything is up to date" і дозволяємо
   // одразу Continue без download.

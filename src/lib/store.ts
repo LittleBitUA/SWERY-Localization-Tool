@@ -7,7 +7,15 @@ import { invalidateTm } from "./tm";
 import { recordTranslation } from "./metrics";
 import { buildTxt, parseTxt, blockToStorage, type ExportEntry } from "./txtRoundtrip";
 import { confirm as showConfirm } from "./dialogs";
+import { showError } from "../components/Toast";
 import { t } from "./i18n";
+
+// Generation counter: кожен loadFile інкрементує його перед await.
+// Якщо до моменту resolve user встиг клікнути інший файл — generation
+// у замиканні не збігається з поточним, і ми відкидаємо результат.
+// Без цього стара завершена IO-операція могла перезаписати entries
+// свіжіше обраного файла (last-completed wins).
+let _loadFileGen = 0;
 import {
   emptyStatusFile,
   pruneEntry,
@@ -63,6 +71,8 @@ interface State {
   saveTick: number;
   /** ms unix-таймстамп останнього успішного autosave для поточного файла, або null. */
   lastAutosaveAt: number | null;
+  /** Текст останньої saveFile-помилки. Сетиться у саппорт SaveStatusBadge. */
+  lastSaveError: string | null;
   /** Side-car статуси (підвантажуються разом з folder). */
   statuses: StatusFile;
   /** Undo-стек для масових операцій (імпорт .txt, bulk, find&replace). */
@@ -177,6 +187,7 @@ export const useStore = create<State>((set, get) => ({
   error: null,
   saveTick: 0,
   lastAutosaveAt: null,
+  lastSaveError: null,
   statuses: emptyStatusFile(),
   undoStack: [],
 
@@ -246,25 +257,29 @@ export const useStore = create<State>((set, get) => ({
   },
 
   async loadFile(fullPath) {
+    const gen = ++_loadFileGen;
     set({ loading: true, error: null });
+    const stale = () => gen !== _loadFileGen;
     try {
       let rawForTree = await window.dp2.readFile(fullPath);
+      if (stale()) return;
       let restoredFromAutosave = false;
 
       // Якщо є autosave свіжіший за файл — пропонуємо відновити. Це сценарій
       // крашу/закриття без Ctrl+S: незбережені правки сидять у sidecar.
       const auto = await window.dp2.readAutosave(fullPath);
+      if (stale()) return;
       if (auto && auto.autosaveMtime > auto.originalMtime + 100) {
         const ago = Math.max(1, Math.round((Date.now() - auto.autosaveMtime) / 60000));
         const yes = await showConfirm(
           t("autosave.recover.title"),
           t("autosave.recover.body", { minutes: ago }),
         );
+        if (stale()) return;
         if (yes) {
           rawForTree = auto.content;
           restoredFromAutosave = true;
         } else {
-          // Користувач відмовився — autosave більше не потрібен.
           try { await window.dp2.deleteAutosave(fullPath); } catch {}
         }
       }
@@ -273,27 +288,28 @@ export const useStore = create<State>((set, get) => ({
 
       let originalTree: any = null;
       const bak = await window.dp2.readBackup(fullPath);
+      if (stale()) return;
       if (bak) {
         try { originalTree = JSON.parse(bak); } catch { /* corrupted, ignore */ }
       }
 
       const entries = flatten(fullPath, tree, originalTree);
+      if (stale()) return;
       set({
         selectedFilePath: fullPath,
         currentTree: tree,
         entries,
         activeIndex: entries.length ? 0 : null,
-        // Якщо відновили з autosave — це і є незбережений стан, треба
-        // показати кнопку Save як активну.
         dirty: restoredFromAutosave,
         lastAutosaveAt: null,
         loading: false,
       });
       get().refreshFileMeta(fullPath);
-      // Запам'ятовуємо для авто-відкриття наступного запуску.
       try { await window.dp2.saveSettings({ dp2LastFile: fullPath }); } catch {}
     } catch (e: any) {
+      if (stale()) return;
       set({ loading: false, error: String(e) });
+      showError(e, t("toast.loadFailed"));
     }
   },
 
@@ -634,11 +650,19 @@ export const useStore = create<State>((set, get) => ({
     const { selectedFilePath, currentTree } = get();
     if (!selectedFilePath || !currentTree) return;
     const json = JSON.stringify(currentTree, null, 2);
-    await window.dp2.writeFile(selectedFilePath, json);
+    try {
+      await window.dp2.writeFile(selectedFilePath, json);
+    } catch (e) {
+      // Антивірус/lock/permissions — не залишаємо користувача з ілюзією,
+      // що файл збережено. dirty залишається true → індикатор горить.
+      const msg = e instanceof Error ? e.message : String(e);
+      set({ lastSaveError: msg });
+      showError(e, t("toast.saveFailed"));
+      throw e;
+    }
     invalidateTm();
-    // Стерти autosave: реальний файл актуальний, sidecar більше не потрібен.
     try { await window.dp2.deleteAutosave(selectedFilePath); } catch {}
-    set({ dirty: false, saveTick: get().saveTick + 1, lastAutosaveAt: null });
+    set({ dirty: false, saveTick: get().saveTick + 1, lastAutosaveAt: null, lastSaveError: null });
     get().refreshFileMeta(selectedFilePath);
   },
 
