@@ -7,9 +7,13 @@ interface Props {
 }
 const {
   title = "SWERY Localization Tool — Federal Bureau of Localization",
-  description = "Open-source desktop editor that bundles the entire Ukrainian-localization workflow for five Swery Suehiro / White Owls titles: Deadly Premonition, Deadly Premonition 2, The Good Life, Hotel Barcelona, THE MISSING.",
+  description = "Open-source desktop editor that bundles the entire Ukrainian-localization workflow for five Hidetaka Suehiro (SWERY) / White Owls titles: Deadly Premonition, Deadly Premonition 2, The Good Life, Hotel Barcelona, THE MISSING.",
 } = Astro.props;
-const url = `${Astro.site}${import.meta.env.BASE_URL}`;
+const site = String(Astro.site).replace(/\/$/, "");
+const base = import.meta.env.BASE_URL.replace(/\/$/, "");
+const url = `${site}${base}/`;
+const ogImage = `${site}${base}/og.png`;
+const ogDesc = "One desktop app instead of five — text, fonts, textures, per-string box sizes — for the entire SWERY catalog.";
 ---
 <!doctype html>
 <html lang="uk">
@@ -19,11 +23,53 @@ const url = `${Astro.site}${import.meta.env.BASE_URL}`;
   <meta name="theme-color" content="#0a0806" />
   <title>{title}</title>
   <meta name="description" content={description} />
-  <meta property="og:title" content="SWERY Localization Tool" />
-  <meta property="og:description" content="One desktop app instead of five — text, fonts, textures, per-string box sizes — for the entire SWERY catalog." />
+  <meta name="keywords" content="SWERY, Hidetaka Suehiro, White Owls, Deadly Premonition, Deadly Premonition 2, The Good Life, Hotel Barcelona, THE MISSING, localization, Ukrainian, translation tool, modding, Electron, open source" />
+  <meta name="author" content="Dmytro Bidlov" />
+  <meta name="robots" content="index, follow" />
+  <link rel="canonical" href={url} />
+
   <meta property="og:type" content="website" />
+  <meta property="og:site_name" content="SWERY Localization Tool" />
+  <meta property="og:title" content="SWERY Localization Tool — Federal Bureau of Localization" />
+  <meta property="og:description" content={ogDesc} />
   <meta property="og:url" content={url} />
+  <meta property="og:image" content={ogImage} />
+  <meta property="og:image:secure_url" content={ogImage} />
+  <meta property="og:image:type" content="image/png" />
+  <meta property="og:image:width" content="1200" />
+  <meta property="og:image:height" content="630" />
+  <meta property="og:image:alt" content="SWERY Localization Tool — Federal Bureau of Localization" />
+  <meta property="og:locale" content="uk_UA" />
+  <meta property="og:locale:alternate" content="en_US" />
+
+  <meta name="twitter:card" content="summary_large_image" />
+  <meta name="twitter:title" content="SWERY Localization Tool" />
+  <meta name="twitter:description" content={ogDesc} />
+  <meta name="twitter:image" content={ogImage} />
+  <meta name="twitter:image:alt" content="SWERY Localization Tool — Federal Bureau of Localization" />
+
   <link rel="icon" href="data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><rect width='100' height='100' fill='%230a0806'/><text x='50' y='70' font-family='Constantia,Georgia,serif' font-size='62' font-weight='700' font-style='italic' fill='%23d8c89a' text-anchor='middle'>S</text></svg>" />
+
+  <script type="application/ld+json" is:inline set:html={JSON.stringify({
+    "@context": "https://schema.org",
+    "@type": "SoftwareApplication",
+    "name": "SWERY Localization Tool",
+    "alternateName": "Federal Bureau of Localization",
+    "description": description,
+    "url": url,
+    "image": ogImage,
+    "applicationCategory": "DeveloperApplication",
+    "operatingSystem": "Windows",
+    "author": {
+      "@type": "Person",
+      "name": "Dmytro Bidlov",
+      "url": "https://steamcommunity.com/id/bidlochuk/"
+    },
+    "license": "https://opensource.org/licenses/MIT",
+    "softwareVersion": "1.0.0",
+    "downloadUrl": "https://github.com/LittleBitUA/SWERY-Localization-Tool/releases/latest",
+    "offers": { "@type": "Offer", "price": "0", "priceCurrency": "USD" }
+  })} />
 </head>
 <body>
   <div class="bg-stage" aria-hidden="true"></div>
