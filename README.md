@@ -1,142 +1,38 @@
 <div align="center">
 
-<img src="ico.png" alt="Deadly Premonition Localization Tool" width="96" height="96" />
+<img src="ico.png" alt="SWERY Localization Tool" width="96" height="96" />
 
 # SWERY Localization Tool
 
-**Універсальний редактор українізації для ігор Swery / White Owls** &nbsp;·&nbsp;
-**A unified Ukrainian-localization editor for Swery / White Owls games**
+**Універсальний редактор українізації для ігор Hidetaka Suehiro (SWERY) / White Owls** &nbsp;·&nbsp;
+**A unified Ukrainian-localization editor for Hidetaka Suehiro (SWERY) / White Owls games**
 
 [![Latest Release](https://img.shields.io/github/v/release/LittleBitUA/SWERY-Localization-Tool?style=flat-square&color=58a6ff&label=release)](https://github.com/LittleBitUA/SWERY-Localization-Tool/releases/latest)
 [![Downloads](https://img.shields.io/github/downloads/LittleBitUA/SWERY-Localization-Tool/total?style=flat-square&color=3fb950)](https://github.com/LittleBitUA/SWERY-Localization-Tool/releases)
 [![License](https://img.shields.io/badge/license-MIT-d29922?style=flat-square)](LICENSE)
 [![Platform](https://img.shields.io/badge/platform-Windows-0d1117?style=flat-square)](https://github.com/LittleBitUA/SWERY-Localization-Tool/releases/latest)
+[![Site](https://img.shields.io/badge/site-github.io-a82a25?style=flat-square)](https://littlebitua.github.io/SWERY-Localization-Tool/)
 [![Electron](https://img.shields.io/badge/Electron-33.4-9feaf9?style=flat-square&logo=electron&logoColor=black)](https://www.electronjs.org/)
 [![React](https://img.shields.io/badge/React-18-61dafb?style=flat-square&logo=react&logoColor=black)](https://react.dev/)
 
-### [⬇️ Завантажити останню версію / Download latest release ⬇️](https://github.com/LittleBitUA/SWERY-Localization-Tool/releases/latest)
+### [⬇️ Завантажити portable / Download portable ⬇️](https://github.com/LittleBitUA/SWERY-Localization-Tool/releases/latest)
+
+### 🌐 [littlebitua.github.io/SWERY-Localization-Tool](https://littlebitua.github.io/SWERY-Localization-Tool/) — landing site / overview
 
 </div>
 
 ---
 
-> 🇺🇦 [**Українська**](#-українська) &nbsp;·&nbsp; 🇬🇧 [**English**](#-english)
-
-## 🇺🇦 Українська
-
-**SWERY Localization Tool** — настільний редактор з відкритим кодом для українізації **п'яти** ігор Swery Suehiro / White Owls: **Deadly Premonition** (Director's Cut), **Deadly Premonition 2: A Blessing in Disguise**, **The Good Life**, **Hotel Barcelona** і **THE MISSING: J.J. Macfield and the Island of Memories**. Один інструмент замість п'яти — від редагування JSON-дампів і бінарних `MSG.*` контейнерів до запаковки готового патчу, з вбудованим редактором шрифтів, текстур і per-string box-sizes.
-
-### ✨ Можливості
-
-**Робота з текстом**
-- 🎮 **П'ять ігор в одному хабі**: Deadly Premonition (DPMsgTool by MrIkso), Deadly Premonition 2 (UABEA-формат), **The Good Life** (власний бінарний `loc/English`), **Hotel Barcelona** (Unity Addressables bundle) і **THE MISSING** (`MSG.*` payload з length-table). Тематичний головний екран у стилі FBI-дозьє з лічильниками прогресу для кожної гри.
-- 🎯 **THE MISSING — повний цикл**: парсинг/збірка `msg*en.dat` із збереженням offset-table, length-table з захистом від int16-overflow, окремий редактор `IMHeightInfo` (box-sizes) із **Auto-fit** алгоритмом (ratio × padding, idempotent проти повторних apply), на льоту lint placeholder/voice-key рядків.
-- 💾 **Запаковка одним кліком**: для DP1 — підстановка кириличних гліфів і `DPMsgTool.exe from-json`; для DP2 — `import-to-assets.ps1` через PowerShell 7 + UABEA. Готовий файл одразу у директорії гри.
-- 🧠 **Пам'ять перекладів (TM)** з обох корпусів — cross-search DP1↔DP2, Jaccard fuzzy. **Bulk TM auto-fill (1:1)** — авто-заповнення неперекладених рядків з exact-match source (без substring-замін).
-- 📖 **Спільний глосарій** + **перевірка термінологічної консистентності** — всюди де `src` зустрічається, `tgt` має бути присутній.
-- 👤 **Перевірка консистентності імен героїв** (DP2): шукає типос-варіанти (`Йорк / Йорг`), one-click exact-equality перейменування по всіх файлах.
-- 🔍 **Глобальний пошук** по корпусу: regex, case-sensitive, фільтр по полю. `Ctrl+Shift+F`.
-- ♻️ **Cross-file Find & Replace** (DP2): pre-flight з прев'ю кожної заміни → confirm → execute по всіх файлах із автоматичним `.bak`.
-
-**Якість і навігація**
-- 🏷️ **Статуси і закладки**: `draft / review / approved` + 🔖. Sidecar-файли, JSON гри не чіпається.
-- 📐 **Smart subtitle break ("Драбинка")**: балансує переклад у симетричні рядки без розривів слів і сирітських прийменників — per-entry та **cross-file batch** для всього корпусу.
-- 🎨 **Підсвічування плейсхолдерів** (`{NEXT_SEGMENT}`, `<color=red>`, `\n`) у Monaco + live-діагностика втрачених/зайвих тегів.
-- 🔤 **DP1 glyph audit**: позначає символи поза мапою підміни (74 гліфи) у редакторі + загальний аудит — production-баги до запаковки.
-- 📺 **In-game preview**: рендерить активний рядок у стилі реальних субтитрів DP2 — використовується **справжній шрифт гри** (`FOT-NewCinemaAStd-D`), з курсивом `[i]…[/i]`, плейсхолдер-чіпами і ▽-маркером.
-- 📊 **Огляд готовності корпусу**: підсумок % завершеності, UA/EN слова й символи, топ-15 файлів за обсягом.
-
-**Hotel Barcelona**
-- 🏨 **Повний цикл**: extract → edit → repack для Unity Addressables-бандла (`_resources_assets_all_<hash>.bundle`). Auto-resolve хешу при patching гри (хеш міняється з кожним апдейтом).
-- 🛠️ **Patch migration**: коли White Owls випустили новий патч, програма автоматично переносить переклади зі старого хешу на новий + банер у редакторі попереджує перед збереженням якщо bundle оновлено.
-- 🛡️ **Integrity check**: перевірка що кількість `_Text` у raw збігається з items.length перед записом — захист від silent byte-shift корупції коли структура змінилася між extract і save.
-
-**THE MISSING**
-- 📐 **Per-string box-sizes editor**: GUI для редагування `IMHeightInfo` MonoBehaviour (W × H × 4 language slots × тисячі рядків). Side-by-side preview + Auto-fit з multiplier-слайдером (×1.00 — ×1.50), мін. запас у пікселях, idempotent reference-based ratio (не наростає при повторному apply).
-- 🔐 **int16-overflow guard**: довжина рядка у `MSG.*` length-table — signed int16 (max 32767 байтів). Програма ловить overflow при build і кидає toast з кнопкою "Перейти →" що стрибає на проблемний рядок — замість silent `len & 0xFFFF` корупції.
-- 🎨 **MsgEnum-based стабільні ID**: глобальний enum `msgBase × 10000 + i` — у combined.txt і у logs ID не зсувається при росту/скороченні рядків.
-
-**Спільне для всіх редакторів**
-- 🧊 **Glassmorphic update banner**: новий стиль (macOS-like) — `backdrop-blur` + матове скло з рамкою-highlight. Прогрес-бар скачування + швидкість.
-- 🟢 **SaveStatusBadge у Header**: кольорова крапка показує стан файла (⚪ збережено, 🟡 dirty, 🟢 autosaved, 🔴 помилка) з tooltip-ом + ім'я файла.
-- 📏 **Monaco font-size**: `[-] [size] [+]` у footer редактора, синхронізовано між DP2/HBR/MISSING/DP1.
-- 🔀 **Diff EN↔UA modal**: Monaco DiffEditor у side-by-side fullscreen — миттєво видно зайві крапки, втрачені теги, різницю whitespace.
-- 📊 **EditorFooter**: статус-бар з лічильниками `Видно / Усього / Перекладено % / Позиція / Незбережено` для DP1/HBR/MISSING.
-- 🦺 **Race-free saves**: per-path write-queue у Electron main — `saveFile` + `autosave` не race-аться на створенні `.bak`.
-- 🚪 **Path-traversal guard + settings allow-list**: renderer не може писати у системні директорії; `dp2:save-settings` приймає тільки whitelisted-ключі.
-
-**Робота зі шрифтами (DP2)**
-- 🔠 **Font workshop**: окрема вкладка "Шрифти" на DP2-картці — експорт 7 ассетних шрифтів (`FOT-NewRodinProN-DB`, `FOT-NewCezannePro-DB`, `FOT-NewCezannePro-M`, `FOT-NewCinemaAStd-D`, `FOT-Wentworth`, `FOT-UDKakugo_LargePro-R`, `FOT-MatisseProN-UB`) з `resources.assets` і `sharedassets0.assets` як TTF/OTF, заміна на свій + repack у відповідний `.assets` файл із `.bak`.
-- 🔬 **Live preview**: щойно експортовано — шрифт реєструється через FontFace API. Після заміни — миттєвий cache-bust і preview оновлюється без re-export з гри.
-
-**Робота з текстурами (DP2)**
-- 🖼️ **Texture workshop**: експорт PNG обличчя персонажів з `resources.assets` (DXT5/BC3 → PNG), заміна на свій + in-place patching `.assets` + `.resS` (зі збереженням offset table). 22 текстури в готовому списку (Френсіс, Сімон, родини Кларксонів, Вудс, Девіс і т.д.).
-- 📦 **Export all одним кліком**: масово витягуємо всі прев'ю у `Documents\DP2-Localization-Tools\dp2-textures\`.
-
-**Шрифти The Good Life**
-- 🔡 **Bitmap-font editor**: розпаковка bundle-файлу `c0718fc478f6943d` (Unity Asset Bundle із Font + Texture2D), правка `m_CharacterRects.Array`, додавання/видалення гліфів просто на атласі.
-- ✏️ **AddGlyph модалка**: вибираєш TTF з відсутніми літерами (Є є І і Ї ї Ґ ґ), задаєш ціль "Є, є, і, ..." — програма знаходить вільне місце на атласі, малює гліф з правильним Y-flip-ом, оновлює `uv`/`vert`/`advance` і запаковує назад у CAB-bundle.
-- 🎯 **In-game preview** з реального атласу та `vert.x/y`-метрик — бачиш точно те, що покаже рушій.
-- 🗑️ **Delete-клавіша** на вибраному гліфі: видаляє запис + затирає bitmap-ділянку прозорим прямокутником, щоб не "залипало" на атласі.
-- 🌐 **Зовнішні файли локалізації**: `userData/locales/{uk,en}.json` мерджаться поверх вбудованих — інші перекладачі можуть правити рядки без перебудови програми.
-
-**Workflow і безпека**
-- 💼 **Auto-save + crash recovery**: незбережені правки скидаються у `.autosave.json` через 30с; при наступному відкритті — пропонує відновити.
-- 📤 **`.txt` round-trip** для зовнішніх перекладачів (ID-based mapping, preserve-translated).
-- 🔧 **Bulk-операції**: copy-original, trim, mark-approved — масово.
-- 🍞 **Toast-сповіщення** у правому нижньому куті — статус-меседжі не ламають layout.
-- 🌐 **Інтерфейс UK / EN** з миттєвим перемиканням.
-- ⚙️ **Майстер першого запуску**: автозавантажує UABEA Next і PowerShell 7.
-- 🚀 **Worker-threads + JSON cache** (LRU 300 файлів, mtime-валідація) — повторні cross-file операції миттєві.
-
-### 📦 Швидкий старт
-
-1. Завантаж portable `.exe` з [Releases](https://github.com/LittleBitUA/SWERY-Localization-Tool/releases/latest).
-2. Запусти — пройди майстер налаштування (вкаже шлях до гри і автоматично завантажить інструменти).
-3. На головному екрані обери гру:
-   - **Deadly Premonition** → вкажи `eng.json` від DPMsgTool.
-   - **Deadly Premonition 2** → відкрий теку з JSON-дампами `sharedassets0.assets`.
-4. Перекладай. Натисни **Запакувати .mes** (DP1) або **Зберегти та зібрати** (DP2) — готовий файл одразу опиняється у грі.
-
-### 🛠️ Шорткати
-
-| Дія | Шорткат |
-| --- | --- |
-| Зберегти + наступний неперекладений | `Ctrl+Enter` |
-| Наступний неперекладений | `Ctrl+J` |
-| Між рядками таблиці | `Alt+↑/↓` |
-| Копіювати оригінал | `Ctrl+D` |
-| Зберегти | `Ctrl+S` |
-| Find & Replace у файлі | `Ctrl+H` |
-| Глобальний пошук | `Ctrl+Shift+F` |
-| Глосарій | `Ctrl+G` |
-| TM-панель (toggle) | `Ctrl+Shift+T` |
-| Focus mode | `Ctrl+\` |
-| Закладка | `Ctrl+B` |
-| Статус draft / review / approved | `Alt+1` / `Alt+2` / `Alt+3` |
-
-### 🧩 Збірка з джерел
-
-```bash
-git clone https://github.com/LittleBitUA/SWERY-Localization-Tool.git
-cd SWERY-Localization-Tool
-npm install
-npm run dev          # Vite + Electron у dev-режимі
-npm run build:exe    # Portable .exe → release/
-```
-
-Потрібно: Node.js 18+ та Windows для збірки портативного `.exe`.
-
----
+> 🇬🇧 [**English**](#-english) &nbsp;·&nbsp; 🇺🇦 [**Українська**](#-українська)
 
 ## 🇬🇧 English
 
-**SWERY Localization Tool** is an open-source desktop editor that bundles the entire translation workflow for **five** Swery Suehiro / White Owls titles: **Deadly Premonition** (Director's Cut), **Deadly Premonition 2: A Blessing in Disguise**, **The Good Life**, **Hotel Barcelona**, and **THE MISSING: J.J. Macfield and the Island of Memories**. One app instead of five — from editing JSON dumps and binary `MSG.*` containers to packing the final patch, with built-in font, texture and per-string box-size editors.
+**SWERY Localization Tool** is an open-source desktop editor that bundles the entire translation workflow for **five** Hidetaka Suehiro (SWERY) / White Owls titles: **Deadly Premonition** (Director's Cut), **Deadly Premonition 2: A Blessing in Disguise**, **The Good Life**, **Hotel Barcelona**, and **THE MISSING: J.J. Macfield and the Island of Memories**. One app instead of five — from editing JSON dumps and binary `MSG.*` containers to packing the final patch, with built-in font, texture and per-string box-size editors.
 
 ### ✨ Features
 
 **Text workflow**
-- 🎮 **Five games in one hub**: Deadly Premonition (via [DPMsgTool by MrIkso](https://github.com/MrIkso/DPMsgTool)), Deadly Premonition 2 (UABEA format), **The Good Life** (custom binary `loc/English` container), **Hotel Barcelona** (Unity Addressables bundle), and **THE MISSING** (`MSG.*` payload with length-table + IMHeightInfo). Themed FBI-dossier home screen with per-game progress counters.
+- 🎮 **Five games in one hub**: Deadly Premonition (via DPMsgTool by [MrIkso](https://github.com/MrIkso)), Deadly Premonition 2 (UABEA format), **The Good Life** (custom binary `loc/English` container), **Hotel Barcelona** (Unity Addressables bundle), and **THE MISSING** (`MSG.*` payload with length-table + IMHeightInfo). Themed FBI-dossier home screen with per-game progress counters.
 - 🎯 **THE MISSING — full cycle**: parse/build `msg*en.dat` with stable offset-table, length-table with int16-overflow protection, dedicated `IMHeightInfo` (box-sizes) editor with **Auto-fit** algorithm (ratio × padding, idempotent against repeated apply), on-the-fly lint for placeholder / voice-key rows.
 - 💾 **One-click packing**: DP1 — cyrillic glyph substitution + `DPMsgTool.exe from-json`; DP2 — `import-to-assets.ps1` via PowerShell 7 + UABEA. Output goes straight into the game directory.
 - 🧠 **Translation Memory (TM)** across both corpora — DP1↔DP2 cross-search with Jaccard fuzzy match. **Bulk TM auto-fill (1:1)** — auto-applies exact source matches (no substring guesswork).
@@ -153,10 +49,16 @@ npm run build:exe    # Portable .exe → release/
 - 📺 **In-game preview**: renders the active row in DP2 subtitle style — uses the **real game font** (`FOT-NewCinemaAStd-D`) with italic `[i]…[/i]`, placeholder chips and ▽ marker.
 - 📊 **Corpus readiness overview**: % completion, UA/EN word & char counts, top-15 files by volume.
 
+**Deadly Premonition**
+- 🎮 **Text**: parses `mes_all.json` from DPMsgTool (~20,000 records), CRLF+2-space round-trip, FSL recalculated automatically.
+- 🔤 **DP1 Fonts editor (FONTWIDE.DDS)**: pure-JS BC1 decoder/encoder, canvas preview, drag-selection, snap-to-grid, click-to-pick a cell, move with cut+paste, draw-letter modal with Cinema Calligraphy 31.5pt + X/Y offset sliders. `Ctrl+Z` undo. Auto-downloads the official OTF from Dropbox on first run. GlyphMap proposal banner offsets char code by −2 automatically (extended ASCII only) to match the game's render offset.
+- 🗜️ **DP1 Textures editor (XPC2)**: custom format reversed — `"XPC2"` magic + zlib-stream DDS/PNG. Recursive scan, extract-all / pack-all with streamed progress, `.bak` on first pack, path-traversal guard.
+
 **Hotel Barcelona**
 - 🏨 **Full cycle**: extract → edit → repack for the Unity Addressables bundle (`_resources_assets_all_<hash>.bundle`). Auto-resolves hash when patching the game (hash changes with each update).
 - 🛠️ **Patch migration**: when White Owls ship a new patch, the toolkit ports translations from the old hash to the new one automatically + an editor banner warns before saving if the bundle changed.
 - 🛡️ **Integrity check**: verifies that `_Text` count in raw matches `items.length` before write — protects against silent byte-shift corruption when bundle structure changes between extract and save.
+- ✓ **Right-click → translated**: for template references like `[Continue]` that render as ready text — completion % stays accurate.
 
 **THE MISSING**
 - 📐 **Per-string box-sizes editor**: GUI for editing the `IMHeightInfo` MonoBehaviour (W × H × 4 language slots × thousands of rows). Side-by-side preview + Auto-fit with a multiplier slider (×1.00 — ×1.50), min-padding in pixels, idempotent reference-based ratio (no runaway growth on repeated apply).
@@ -234,7 +136,121 @@ npm run build:exe    # Portable .exe → release/
 
 Requires Node.js 18+ and Windows for the portable `.exe` artifact.
 
+
 ---
+
+## 🇺🇦 Українська
+
+**SWERY Localization Tool** — настільний редактор з відкритим кодом для українізації **п'яти** ігор Hidetaka Suehiro (SWERY) / White Owls: **Deadly Premonition** (Director's Cut), **Deadly Premonition 2: A Blessing in Disguise**, **The Good Life**, **Hotel Barcelona** і **THE MISSING: J.J. Macfield and the Island of Memories**. Один інструмент замість п'яти — від редагування JSON-дампів і бінарних `MSG.*` контейнерів до запаковки готового патчу, з вбудованим редактором шрифтів, текстур і per-string box-sizes.
+
+### ✨ Можливості
+
+**Робота з текстом**
+- 🎮 **П'ять ігор в одному хабі**: Deadly Premonition (DPMsgTool by MrIkso), Deadly Premonition 2 (UABEA-формат), **The Good Life** (власний бінарний `loc/English`), **Hotel Barcelona** (Unity Addressables bundle) і **THE MISSING** (`MSG.*` payload з length-table). Тематичний головний екран у стилі FBI-дозьє з лічильниками прогресу для кожної гри.
+- 🎯 **THE MISSING — повний цикл**: парсинг/збірка `msg*en.dat` із збереженням offset-table, length-table з захистом від int16-overflow, окремий редактор `IMHeightInfo` (box-sizes) із **Auto-fit** алгоритмом (ratio × padding, idempotent проти повторних apply), на льоту lint placeholder/voice-key рядків.
+- 💾 **Запаковка одним кліком**: для DP1 — підстановка кириличних гліфів і `DPMsgTool.exe from-json`; для DP2 — `import-to-assets.ps1` через PowerShell 7 + UABEA. Готовий файл одразу у директорії гри.
+- 🧠 **Пам'ять перекладів (TM)** з обох корпусів — cross-search DP1↔DP2, Jaccard fuzzy. **Bulk TM auto-fill (1:1)** — авто-заповнення неперекладених рядків з exact-match source (без substring-замін).
+- 📖 **Спільний глосарій** + **перевірка термінологічної консистентності** — всюди де `src` зустрічається, `tgt` має бути присутній.
+- 👤 **Перевірка консистентності імен героїв** (DP2): шукає типос-варіанти (`Йорк / Йорг`), one-click exact-equality перейменування по всіх файлах.
+- 🔍 **Глобальний пошук** по корпусу: regex, case-sensitive, фільтр по полю. `Ctrl+Shift+F`.
+- ♻️ **Cross-file Find & Replace** (DP2): pre-flight з прев'ю кожної заміни → confirm → execute по всіх файлах із автоматичним `.bak`.
+
+**Якість і навігація**
+- 🏷️ **Статуси і закладки**: `draft / review / approved` + 🔖. Sidecar-файли, JSON гри не чіпається.
+- 📐 **Smart subtitle break ("Драбинка")**: балансує переклад у симетричні рядки без розривів слів і сирітських прийменників — per-entry та **cross-file batch** для всього корпусу.
+- 🎨 **Підсвічування плейсхолдерів** (`{NEXT_SEGMENT}`, `<color=red>`, `\n`) у Monaco + live-діагностика втрачених/зайвих тегів.
+- 🔤 **DP1 glyph audit**: позначає символи поза мапою підміни (74 гліфи) у редакторі + загальний аудит — production-баги до запаковки.
+- 📺 **In-game preview**: рендерить активний рядок у стилі реальних субтитрів DP2 — використовується **справжній шрифт гри** (`FOT-NewCinemaAStd-D`), з курсивом `[i]…[/i]`, плейсхолдер-чіпами і ▽-маркером.
+- 📊 **Огляд готовності корпусу**: підсумок % завершеності, UA/EN слова й символи, топ-15 файлів за обсягом.
+
+**Deadly Premonition**
+- 🎮 **Текст**: парсинг `mes_all.json` від DPMsgTool (20 000+ записів), CRLF+2-space round-trip, FSL перерахунок.
+- 🔤 **DP1 Fonts editor (FONTWIDE.DDS)**: pure-JS BC1 decoder/encoder, canvas-preview, drag-selection прямокутника, snap-to-grid, click-to-pick клітинки, move (cut+paste), draw-letter модалка з Cinema Calligraphy 31.5pt + X/Y offset слайдерами. `Ctrl+Z` undo. Auto-download офіційного OTF з Dropbox при першому open. GlyphMap proposal banner з −2 char-code offset для extended ASCII.
+- 🗜️ **DP1 Textures editor (XPC2)**: custom-формат розкритий — magic `"XPC2"` + zlib-stream DDS/PNG. Recursive scan, extract all / pack all з streamed progress, `.bak` на перший pack, path-traversal guard.
+
+**Hotel Barcelona**
+- 🏨 **Повний цикл**: extract → edit → repack для Unity Addressables-бандла (`_resources_assets_all_<hash>.bundle`). Auto-resolve хешу при patching гри (хеш міняється з кожним апдейтом).
+- 🛠️ **Patch migration**: коли White Owls випустили новий патч, програма автоматично переносить переклади зі старого хешу на новий + банер у редакторі попереджує перед збереженням якщо bundle оновлено.
+- 🛡️ **Integrity check**: перевірка що кількість `_Text` у raw збігається з items.length перед записом — захист від silent byte-shift корупції коли структура змінилася між extract і save.
+- ✓ **Right-click → перекладено**: для template references типу `[Continue]` що рендеряться як готовий текст — % завершення рахується точніше.
+
+**THE MISSING**
+- 📐 **Per-string box-sizes editor**: GUI для редагування `IMHeightInfo` MonoBehaviour (W × H × 4 language slots × тисячі рядків). Side-by-side preview + Auto-fit з multiplier-слайдером (×1.00 — ×1.50), мін. запас у пікселях, idempotent reference-based ratio (не наростає при повторному apply).
+- 🔐 **int16-overflow guard**: довжина рядка у `MSG.*` length-table — signed int16 (max 32767 байтів). Програма ловить overflow при build і кидає toast з кнопкою "Перейти →" що стрибає на проблемний рядок — замість silent `len & 0xFFFF` корупції.
+- 🎨 **MsgEnum-based стабільні ID**: глобальний enum `msgBase × 10000 + i` — у combined.txt і у logs ID не зсувається при росту/скороченні рядків.
+
+**Спільне для всіх редакторів**
+- 🧊 **Glassmorphic update banner**: новий стиль (macOS-like) — `backdrop-blur` + матове скло з рамкою-highlight. Прогрес-бар скачування + швидкість.
+- 🟢 **SaveStatusBadge у Header**: кольорова крапка показує стан файла (⚪ збережено, 🟡 dirty, 🟢 autosaved, 🔴 помилка) з tooltip-ом + ім'я файла.
+- 📏 **Monaco font-size**: `[-] [size] [+]` у footer редактора, синхронізовано між DP2/HBR/MISSING/DP1.
+- 🔀 **Diff EN↔UA modal**: Monaco DiffEditor у side-by-side fullscreen — миттєво видно зайві крапки, втрачені теги, різницю whitespace.
+- 📊 **EditorFooter**: статус-бар з лічильниками `Видно / Усього / Перекладено % / Позиція / Незбережено` для DP1/HBR/MISSING.
+- 🦺 **Race-free saves**: per-path write-queue у Electron main — `saveFile` + `autosave` не race-аться на створенні `.bak`.
+- 🚪 **Path-traversal guard + settings allow-list**: renderer не може писати у системні директорії; `dp2:save-settings` приймає тільки whitelisted-ключі.
+
+**Робота зі шрифтами (DP2)**
+- 🔠 **Font workshop**: окрема вкладка "Шрифти" на DP2-картці — експорт 7 ассетних шрифтів (`FOT-NewRodinProN-DB`, `FOT-NewCezannePro-DB`, `FOT-NewCezannePro-M`, `FOT-NewCinemaAStd-D`, `FOT-Wentworth`, `FOT-UDKakugo_LargePro-R`, `FOT-MatisseProN-UB`) з `resources.assets` і `sharedassets0.assets` як TTF/OTF, заміна на свій + repack у відповідний `.assets` файл із `.bak`.
+- 🔬 **Live preview**: щойно експортовано — шрифт реєструється через FontFace API. Після заміни — миттєвий cache-bust і preview оновлюється без re-export з гри.
+
+**Робота з текстурами (DP2)**
+- 🖼️ **Texture workshop**: експорт PNG обличчя персонажів з `resources.assets` (DXT5/BC3 → PNG), заміна на свій + in-place patching `.assets` + `.resS` (зі збереженням offset table). 22 текстури в готовому списку (Френсіс, Сімон, родини Кларксонів, Вудс, Девіс і т.д.).
+- 📦 **Export all одним кліком**: масово витягуємо всі прев'ю у `Documents\DP2-Localization-Tools\dp2-textures\`.
+
+**Шрифти The Good Life**
+- 🔡 **Bitmap-font editor**: розпаковка bundle-файлу `c0718fc478f6943d` (Unity Asset Bundle із Font + Texture2D), правка `m_CharacterRects.Array`, додавання/видалення гліфів просто на атласі.
+- ✏️ **AddGlyph модалка**: вибираєш TTF з відсутніми літерами (Є є І і Ї ї Ґ ґ), задаєш ціль "Є, є, і, ..." — програма знаходить вільне місце на атласі, малює гліф з правильним Y-flip-ом, оновлює `uv`/`vert`/`advance` і запаковує назад у CAB-bundle.
+- 🎯 **In-game preview** з реального атласу та `vert.x/y`-метрик — бачиш точно те, що покаже рушій.
+- 🗑️ **Delete-клавіша** на вибраному гліфі: видаляє запис + затирає bitmap-ділянку прозорим прямокутником, щоб не "залипало" на атласі.
+- 🌐 **Зовнішні файли локалізації**: `userData/locales/{uk,en}.json` мерджаться поверх вбудованих — інші перекладачі можуть правити рядки без перебудови програми.
+
+**Workflow і безпека**
+- 💼 **Auto-save + crash recovery**: незбережені правки скидаються у `.autosave.json` через 30с; при наступному відкритті — пропонує відновити.
+- 📤 **`.txt` round-trip** для зовнішніх перекладачів (ID-based mapping, preserve-translated).
+- 🔧 **Bulk-операції**: copy-original, trim, mark-approved — масово.
+- 🍞 **Toast-сповіщення** у правому нижньому куті — статус-меседжі не ламають layout.
+- 🌐 **Інтерфейс UK / EN** з миттєвим перемиканням.
+- ⚙️ **Майстер першого запуску**: автозавантажує UABEA Next і PowerShell 7.
+- 🚀 **Worker-threads + JSON cache** (LRU 300 файлів, mtime-валідація) — повторні cross-file операції миттєві.
+
+### 📦 Швидкий старт
+
+1. Завантаж portable `.exe` з [Releases](https://github.com/LittleBitUA/SWERY-Localization-Tool/releases/latest).
+2. Запусти — пройди майстер налаштування (вкаже шлях до гри і автоматично завантажить інструменти).
+3. На головному екрані обери гру:
+   - **Deadly Premonition** → вкажи `eng.json` від DPMsgTool.
+   - **Deadly Premonition 2** → відкрий теку з JSON-дампами `sharedassets0.assets`.
+4. Перекладай. Натисни **Запакувати .mes** (DP1) або **Зберегти та зібрати** (DP2) — готовий файл одразу опиняється у грі.
+
+### 🛠️ Шорткати
+
+| Дія | Шорткат |
+| --- | --- |
+| Зберегти + наступний неперекладений | `Ctrl+Enter` |
+| Наступний неперекладений | `Ctrl+J` |
+| Між рядками таблиці | `Alt+↑/↓` |
+| Копіювати оригінал | `Ctrl+D` |
+| Зберегти | `Ctrl+S` |
+| Find & Replace у файлі | `Ctrl+H` |
+| Глобальний пошук | `Ctrl+Shift+F` |
+| Глосарій | `Ctrl+G` |
+| TM-панель (toggle) | `Ctrl+Shift+T` |
+| Focus mode | `Ctrl+\` |
+| Закладка | `Ctrl+B` |
+| Статус draft / review / approved | `Alt+1` / `Alt+2` / `Alt+3` |
+
+### 🧩 Збірка з джерел
+
+```bash
+git clone https://github.com/LittleBitUA/SWERY-Localization-Tool.git
+cd SWERY-Localization-Tool
+npm install
+npm run dev          # Vite + Electron у dev-режимі
+npm run build:exe    # Portable .exe → release/
+```
+
+Потрібно: Node.js 18+ та Windows для збірки портативного `.exe`.
+
+
 
 ## 📚 Modding notes
 
@@ -254,10 +270,9 @@ Both write-ups are useful even if you don't use this app — they're written for
 
 ## 🙏 Credits
 
-- [MrIkso/DPMsgTool](https://github.com/MrIkso/DPMsgTool) — the `.mes`↔JSON CLI for DP1, used as-is for packing.
+- [MrIkso](https://github.com/MrIkso) — `.mes`↔JSON CLI (DPMsgTool) for DP1 packing.
 - [nesrak1/UABEA](https://github.com/nesrak1/UABEA) — Unity asset editor whose libraries (`AssetsTools.NET.dll`, `classdata.tpk`) drive DP2 packing.
 - [PowerShell/PowerShell](https://github.com/PowerShell/PowerShell) — PS7 portable bundled at first run.
-- Команда **Little Bit UA** — за ідеї, фідбек і нескінченні підказки в процесі розробки.
 
 ## 📜 License
 

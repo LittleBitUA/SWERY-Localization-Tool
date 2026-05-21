@@ -61,7 +61,7 @@
       "icon": "ico.png"
     },
     "portable": {
-      "artifactName": "DeadlyPremonition-Localization-${version}-portable.exe"
+      "artifactName": "SweryLocalizationTool-${version}-portable.exe"
     }
   }
 }
