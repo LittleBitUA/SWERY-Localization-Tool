@@ -97,7 +97,7 @@ export function AppSettingsModal({ open, onClose }: Props) {
       lastUpdateCache: {
         ok: true, available: true,
         current: appVer, latest: "99.99.0",
-        htmlUrl: "https://github.com/LittleBitUA/Deadly-Premonition-Localization-Tool/releases",
+        htmlUrl: "https://github.com/LittleBitUA/SWERY-Localization-Tool/releases",
         publishedAt: new Date().toISOString(),
         name: "Mock v99.99.0", body: "",
       },

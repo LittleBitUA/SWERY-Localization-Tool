@@ -1,0 +1,369 @@
+================================================================================
+THE MISSING — J.J. Macfield and the Island of Memories
+MODDING & LOCALIZATION NOTES
+================================================================================
+
+This document describes the internal layout discovered while implementing
+the Ukrainian localization for THE MISSING (White Owls Inc., 2018). It is
+written for modders who want to write their own tools or modify the game's
+text and per-string box dimensions directly, without going through this
+toolkit.
+
+THE MISSING is a Unity title built for StandaloneWindows64. Text and box
+metadata live in standard Unity .assets containers but use custom binary
+payloads stored inside Unity TextAsset / MonoBehaviour objects. The data
+is shaped by the same engine the developers used for Deadly Premonition
+Origins (PathID conventions match), and large parts of the bitstream
+layout are compatible with TranslationFramework2 (Kaplas80) — though the
+format described here was re-derived from scratch without reading any
+TF2 source code.
+
+
+--------------------------------------------------------------------------------
+1. DIRECTORY LAYOUT
+--------------------------------------------------------------------------------
+
+  THE MISSING/
+    TheMISSING_Data/        ← retail build
+      resources.assets      ← all localized text + IMHeightInfo lives here
+      sharedassets*.assets  ← textures, audio, scenes
+      Mono/                 ← managed assemblies (Assembly-CSharp.dll etc.)
+      …
+    TheMISSING_Demo_Data/   ← Steam demo build (same shape, different path)
+
+Both retail and demo are supported. The toolkit's `missingRoot` setting
+points at the Steam install root; `missingAssetsPath` is auto-resolved
+to either `TheMISSING_Data/resources.assets` or
+`TheMISSING_Demo_Data/resources.assets`.
+
+
+--------------------------------------------------------------------------------
+2. WHERE TEXT LIVES
+--------------------------------------------------------------------------------
+
+All localized text strings are stored inside Unity TextAsset objects whose
+m_Name follows the pattern:
+
+    msgNNNNen     ← English (and target language — see §3)
+
+Examples: `msg0101en`, `msg0613en`, `msg1010en`. The number is the global
+message base. The "en" suffix is misleading — this is THE active text
+slot for the running language, not a guarantee of English content. The
+game switches languages by swapping which msg*.dat file the resources.assets
+points to via PathID; the file name itself is reused.
+
+To dump these TextAssets you can use any UABEA-compatible tool:
+
+  - UABEANext (recommended; cross-platform, our toolkit can auto-download it)
+  - UABEA classic (Windows only)
+  - UnityEX (an older russian-language GUI; produces files named
+    "resources_00001.-13" etc. — these are RAW MonoBehaviour bytes, not
+    a Unity Asset Bundle. The "-13" is UnityEX's internal pathID-encoding;
+    the asset's actual m_Name is `IMHeightInfo` — see §5)
+
+After "Edit Data → Save Bin" in UABEA you get one .dat file per msg.
+Our toolkit puts these under:
+
+    Documents/SWERY-Localization-Tool/MISSING/Text/Original/   ← reference
+    Documents/SWERY-Localization-Tool/MISSING/Text/Done/        ← editable
+    Documents/SWERY-Localization-Tool/MISSING/Text/Meta/        ← side-car
+
+
+--------------------------------------------------------------------------------
+3. m_Script PAYLOAD — THE "MSG." FORMAT
+--------------------------------------------------------------------------------
+
+A raw TextAsset .dat dumped from UABEA has this overall shape:
+
+  ┌─ Unity TextAsset wrap (0x14 bytes minimum) ────────────────────────┐
+  │ uint32 LE   nameLen                                                │
+  │ char[nameLen]  m_Name              (e.g. "msg0613en")              │
+  │ pad to 4-byte alignment            (usually 3 × 0x00)              │
+  │ uint32 LE   scriptLen                                              │
+  └────────────────────────────────────────────────────────────────────┘
+  ┌─ m_Script payload (custom MSG container) ──────────────────────────┐
+  │ 0x00   "MSG."   4-byte magic                                       │
+  │ 0x04   uint32   section[0]                                         │
+  │ 0x08   uint32   section[1]                                         │
+  │ 0x0C   uint32   lengthTableOffset                                  │
+  │ 0x10   uint32   stringOffsetTable                                  │
+  │ 0x14   uint32   stringBase                                         │
+  │ 0x18   uint32   stringOffsetTable2  (second-section offset table) │
+  │ 0x1C   uint32   stringBase2 / EOF                                  │
+  │ 0x20   int32[4] reserved             (= 0x42 in observed builds)   │
+  │ 0x2C   uint32   lengthCount          (rows in the length-table)    │
+  │ 0x30   uint32   stringCount          (entries in section 1)        │
+  │ 0x34   uint32   stringCount2         (entries in section 2)        │
+  │ 0x38   uint32   msgBase              (e.g. 613 for msg0613en)      │
+  │ 0x3C…  more reserved flags (passthrough on re-pack)                │
+  │                                                                    │
+  │ lengthTable[lengthCount]   ← see §4 (16 bytes per row)             │
+  │ stringOffsetTable[stringCount]    int32 LE × stringCount           │
+  │ stringBase                 ← null-terminated UTF-8 strings, packed │
+  │ stringOffsetTable2 / stringBase2  ← second section (often empty)   │
+  └────────────────────────────────────────────────────────────────────┘
+
+The header field at 0x38 is the **MSG base**. For `msg0613en` it equals 613.
+Combined with the position in lengthTable this produces a stable global
+identifier we call **msgEnum** — see §4.
+
+The wrap MUST be re-emitted byte-identically on re-pack. The toolkit uses
+`stripUnityTextAssetWrap()` to undo it and `wrapUnityTextAsset()` to put
+the new payload back inside an identically-sized header. Misalignment of
+the scriptLen prefix corrupts every following asset in the .assets file.
+
+The string blob uses **UTF-8** with a null terminator at the end of each
+string. The engine reads each string by following stringOffsetTable[i]
+relative to stringBase and stopping at the first 0x00 byte.
+
+Offsets in the offset-table are **local** (relative to stringBase). The
+absolute file offset is `stringBase + offsetTable[i]`. The offset you see
+in TF2-style exports (the "OFFSET" column) is the absolute one — and it
+is NOT stable after a re-pack, because growing/shrinking earlier strings
+shifts everything downstream.
+
+
+--------------------------------------------------------------------------------
+4. THE LENGTH-TABLE — `(int32 stringIndex, int16 length, …)`
+--------------------------------------------------------------------------------
+
+The lengthTable is THE KEY structure that makes the format usable as a
+localization target. It is an array of `lengthCount` × 16 bytes:
+
+    offset 0     int32  stringIndex     (index into stringOffsetTable)
+    offset 4     int16  length          (string byte length minus 1)
+    offset 6     int16  pad             (passthrough; usually 0)
+    offset 8     8 bytes — reserved/per-row metadata
+                            (we copy through unchanged on re-pack)
+
+Each row is a *reference* from a global enum slot to one of the strings.
+The position `i` of the row in the table is the **local enum offset**:
+
+    msgEnum = msgBase * 10000 + i
+
+Several different enum slots can reference the same string. We call these
+**placeholders**: a single physical string `"NO_TEXT_en"` (or a voice key
+like `V_EM_001`) is shared by dozens of enum slots that haven't been
+filled in yet by the writers. When you edit that string, the change
+applies to all enum slots that point at it.
+
+Our toolkit exposes the `enumCount` field per entry so the UI can tag
+multi-referenced placeholders (badge "×3" in the MsgEnum column).
+
+The reverse map is what we call `enumsByIndex` — Map<stringIndex, [enumIdx]>.
+
+### CRITICAL: int16 overflow
+
+The `length` field is a SIGNED INT16 — maximum 32767. For Ukrainian
+translation this is a real cliff: Cyrillic letters take 2 bytes each in
+UTF-8, so a string of ~16,000 characters already overflows. Earlier
+versions of TF2 silently masked the overflow with `(len & 0xFFFF)` which
+produces undetectable binary corruption (the game reads a wrong-sized
+string and the next records become garbage).
+
+Our `buildMissingMsg()` aborts with a descriptive error if any encoded
+string would exceed 32767 bytes:
+
+    MISSING length-table overflow: row #<id> takes <N> bytes in UTF-8,
+    but the format stores length as int16 (max 32767). Shorten the
+    translation. Preview: "<first 60 chars>…"
+
+The UI also surfaces a "Перейти →" toast action that jumps the editor to
+the offending row.
+
+
+--------------------------------------------------------------------------------
+5. PER-STRING BOX SIZES — IMHeightInfo MonoBehaviour
+--------------------------------------------------------------------------------
+
+THE MISSING ships a single MonoBehaviour named `IMHeightInfo` that holds
+per-msgEnum **box dimensions** for every language slot. This is what the
+in-game text renderer uses to lay out long strings inside dialogue panels
+and pop-up boxes. If your translated string is wider than the original
+EN box, the game clips it — you must adjust the box.
+
+PathID inside resources.assets: **12881** (observed; do not hard-code if
+you re-pack the bundle).
+
+When dumped (e.g. via UnityEX which names it `resources_00001.-13`, or
+via UABEA's "Save MonoBehaviour"), the binary layout is:
+
+  ┌─ MonoBehaviour header (44 bytes — passthrough) ─────────────────────┐
+  │ 12 bytes  m_GameObject           PPtr<GameObject>                   │
+  │  4 bytes  m_Enabled (UInt8) + align-to-4 pad                        │
+  │ 12 bytes  m_Script               PPtr<MonoScript>                   │
+  │  4 + 12   m_Name length (=12) + "IMHeightInfo" (no pad)             │
+  └─────────────────────────────────────────────────────────────────────┘
+  ┌─ Custom payload ────────────────────────────────────────────────────┐
+  │ int32  headerField   (= 9 in shipping build; role unknown; PT)      │
+  │ ranges[]:                                                            │
+  │   int32 len + string + align-to-4 pad                                │
+  │   (No explicit count prefix. Read while next int32 looks like an    │
+  │    ASCII-string length, i.e. 1..16. The first int32 that does NOT   │
+  │    fit this heuristic is interpreted as entryCount.)                 │
+  │ int32  entryCount                                                    │
+  │ entries[entryCount]:                                                 │
+  │   int32 nameLen + name + align-to-4   (e.g. "1010061" — usually     │
+  │                                        a decimal representation of   │
+  │                                        msgEnum, but free-form)      │
+  │   int32 msgEnum                                                      │
+  │   int32 langCount                     (= 4 in current build)         │
+  │   (float w, float h) × langCount      (box width / height per slot)  │
+  └─────────────────────────────────────────────────────────────────────┘
+
+`langCount = 4` slots, in order:
+
+  L0  → English (this is where Ukrainian translation is shipped)
+  L1  → Japanese (game's original language)
+  L2  → unknown — likely Simplified Chinese
+  L3  → unknown — likely Korean
+
+You only need to adjust the slot you're translating into. The other
+language widths stay untouched.
+
+### Auto-fit algorithm
+
+Our toolkit ships an Auto-fit modal that proposes new widths for every
+row that has a translated string longer than the EN reference. The
+formula is:
+
+    ratio  = uaLen / max(1, enLen)
+    newW   = ceil(referenceW × ratio × padding)
+    newH   = scaleHeight && uaLines > enLines
+             ? ceil(referenceH × uaLines / enLines)
+             : referenceH
+
+Two things matter:
+
+  1. **Reference = Original snapshot from Meta/heightinfo.bin.** If you
+     compute `ratio × currentW` instead, every re-apply multiplies the
+     width again (origW becomes the previously-grown value). Always
+     compute from the unmodified EN snapshot stored at extract time.
+  2. **Idempotency check.** If the currently stored width already
+     exceeds what the formula would produce, leave it alone — useful
+     when an artist has hand-tuned a row.
+
+The toolkit writes the modified table to
+`Documents/SWERY-Localization-Tool/MISSING/Text/Done/heightinfo.bin`
+and packs it back into resources.assets together with the msg files.
+
+
+--------------------------------------------------------------------------------
+6. THE WRITE-BACK PIPELINE
+--------------------------------------------------------------------------------
+
+End-to-end build process to inject UA strings into a running game:
+
+  1. EXTRACT
+       - PowerShell spawned from the toolkit runs UABEANext with a
+         scripted "dump all msg*en TextAssets + dump PathID 12881
+         (IMHeightInfo)" job.
+       - .dat files land in Text/Original/. The same files are copied
+         to Text/Done/ as the starting point for editing.
+       - heightinfo.bin is dumped to Text/Meta/ AND to Text/Done/.
+         Meta/heightinfo.bin stays UNTOUCHED — it is the Original
+         reference used by Auto-fit.
+
+  2. EDIT
+       - The UI parses msg*.dat into rows via parseMissingMsg(). Edits
+         are kept in a Map<index, newText> until you press Save.
+       - On Save, buildMissingMsg(original, edits) generates new bytes:
+         all strings re-emitted, offset-table rebuilt with new local
+         offsets, length-table rewritten with new int16 lengths.
+       - The new payload is wrapped in a fresh Unity TextAsset header
+         and written to Text/Done/<file>.dat.
+
+  3. RE-PACK
+       - PowerShell + UABEANext: load resources.assets, replace each
+         TextAsset by m_Name (msg*en) with the contents of Text/Done/.
+       - Replace the IMHeightInfo MonoBehaviour (PathID 12881) with
+         Text/Done/heightinfo.bin if it was modified.
+       - Save the .assets in-place. UABEANext rewrites all dependent
+         offsets in the bundle; do not touch the file with another tool
+         between save and game-launch.
+
+The toolkit retains a .bak of the original resources.assets on first
+pack, so reverting to vanilla is `mv resources.assets.bak resources.assets`.
+
+
+--------------------------------------------------------------------------------
+7. KNOWN PITFALLS
+--------------------------------------------------------------------------------
+
+a) **PathID drift.** UABEANext sometimes reorders MonoBehaviour PathIDs
+   when adding new assets. If you save resources.assets through another
+   tool first, the IMHeightInfo PathID may move from 12881 to something
+   else. Match by m_Name = "IMHeightInfo", not by hard-coded PathID.
+
+b) **CR/LF in strings.** The game accepts `\n` (0x0A) as a soft line
+   break inside dialogue strings, but **not** `\r\n`. Editing files
+   on Windows with a tool that auto-converts line endings produces
+   visible empty boxes at the end of every line. Save UTF-8 LF only.
+
+c) **NULL-terminator alignment.** The string blob is NOT padded after
+   each null terminator. Padding to a 4-byte boundary appears ONLY
+   between the end of stringBase and the start of stringOffsetTable2,
+   and even then only if the second section exists. Adding extra
+   padding will desynchronize stringBase2 from its expected offset.
+
+d) **Second-section editing not supported by the toolkit.** The toolkit
+   currently passes section 2 (V_EM_*, V_JM_* voice keys) through
+   unchanged. If you need to edit those strings, modify the bytes by
+   hand and adjust both stringOffsetTable2 offsets and any length-table
+   rows that reference indices ≥ stringCount.
+
+e) **UABEA "Edit Asset" vs "Edit Data".** Always use "Edit Data → Save
+   Bin" (raw bytes). "Edit Asset" uses Unity's type-tree which will not
+   reproduce the byte-identical custom MSG payload.
+
+f) **The toolkit's "Box-sizes Pack failed: cannot replace
+   resources.assets after retries"** is usually antivirus or the game
+   holding the file. Close the game (Steam can keep the .exe locked
+   for ~5 seconds after exit) and re-try. The toolkit performs up to
+   30 retries with a 500 ms delay and a Copy-Item fallback.
+
+
+--------------------------------------------------------------------------------
+8. WHY NOT TRANSLATIONFRAMEWORK2 / KAPLAS80?
+--------------------------------------------------------------------------------
+
+Kaplas80's TranslationFramework2 (https://github.com/Kaplas80/TranslationFramework2)
+also supports THE MISSING. The format described in this document was
+derived independently — we **did NOT read or reuse any TF2 source code**,
+because TF2 does not grant explicit permission for reuse.
+
+The bitstream layout matches what TF2 understands (it has to — same
+game), but our parser/builder is an independent implementation. If you
+want a CLI / batch-mode tool with no UI, look at TF2. If you want an
+all-in-one GUI editor with Auto-fit, lint, and progress tracking, the
+toolkit at the root of this repo is what you want.
+
+
+--------------------------------------------------------------------------------
+9. FILE-LAYOUT REFERENCE (project working directory)
+--------------------------------------------------------------------------------
+
+  Documents/
+    SWERY-Localization-Tool/
+      MISSING/
+        Text/
+          Original/
+            msg0101en.dat
+            msg0613en.dat
+            …
+          Done/
+            msg0101en.dat        ← edit-ready copies (initially identical
+            …                      to Original)
+            heightinfo.bin       ← modified IMHeightInfo
+          Meta/
+            heightinfo.bin       ← UNTOUCHED reference for Auto-fit
+            row-meta.json        ← per-row status / bookmark sidecar
+
+
+--------------------------------------------------------------------------------
+10. CHANGELOG OF THIS DOCUMENT
+--------------------------------------------------------------------------------
+
+  2026-05  Initial revision based on toolkit v1.0.0. Covers retail and
+           demo Steam builds. PathIDs verified against ship build hash
+           current as of toolkit release.

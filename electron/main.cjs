@@ -4682,6 +4682,613 @@ ipcMain.handle("dp2:dp1-pack", async () => {
   }
 });
 
+// ── DP1 Textures (XPC2 archive) ─────────────────────────────────
+// Кожна текстура у DP1 — окремий .xpc файл: 4-байтовий magic "XPC2",
+// header з offset/size полями, zlib-stream DDS/PNG. Формат розкритий
+// reverse-engineering-ом (див. docs у Repo / DP_XPC_Tool by Little Bit UA).
+//
+// Pipeline:
+//   1) DP1 game root → шукаємо всі *.xpc рекурсивно
+//   2) Extract: zlib.inflateSync → DDS bytes у Documents/.../DP1/Textures/Original/
+//   3) Replace: користувач кладе DDS у .../Done/<same name> → ми zlib-стискаємо
+//      і пишемо назад у .xpc з оновленим header.
+const zlib = require("node:zlib");
+
+function dp1TexturesRoot() {
+  return path.join(app.getPath("documents"), "SWERY-Localization-Tool", "DP1", "Textures");
+}
+function dp1TexturesOriginalDir() { return path.join(dp1TexturesRoot(), "Original"); }
+function dp1TexturesDoneDir()     { return path.join(dp1TexturesRoot(), "Done"); }
+function dp1TexturesMetaFile()    { return path.join(dp1TexturesRoot(), "meta.json"); }
+
+function dp1FontsRoot() {
+  return path.join(app.getPath("documents"), "SWERY-Localization-Tool", "DP1", "Fonts");
+}
+function dp1FontsOriginalDir() { return path.join(dp1FontsRoot(), "Original"); }
+function dp1FontsDoneDir()     { return path.join(dp1FontsRoot(), "Done"); }
+
+const XPC2_MAGIC = Buffer.from("XPC2", "ascii");
+
+// Парсить header XPC2 архіву. Повертає offsets/sizes, internal_name та
+// розпакований payload. КИДАЄ якщо magic не XPC2 або zlib зламано.
+function parseXpc2(raw) {
+  if (raw.length < 0x58 || !raw.slice(0, 4).equals(XPC2_MAGIC)) {
+    throw new Error("Not an XPC2 archive (magic mismatch)");
+  }
+  const total_size = raw.readUInt32LE(0x04);
+  const name_off   = raw.readUInt32LE(0x20);
+  const data_off   = raw.readUInt32LE(0x24);
+  const data_off2  = raw.readUInt32LE(0x50);
+  const comp_size  = raw.readUInt32LE(0x54);
+  // null-terminated string в name_off, обмежено data_off.
+  let nameEnd = name_off;
+  while (nameEnd < data_off && nameEnd < raw.length && raw[nameEnd] !== 0) nameEnd++;
+  const internal_name = raw.slice(name_off, nameEnd).toString("latin1");
+  if (data_off + comp_size > raw.length) {
+    throw new Error(`compressed payload exceeds file (data_off=${data_off}+comp=${comp_size} > total=${raw.length})`);
+  }
+  const comp = raw.slice(data_off, data_off + comp_size);
+  const payload = zlib.inflateSync(comp);
+  return { total_size, name_off, data_off, data_off2, comp_size, internal_name, payload };
+}
+
+// Sanitize internal_name → безпечне FS-ім'я. Без directory parts, без CTRL.
+function dp1XpcSafeName(internal, fallbackExt) {
+  let n = internal.split("\x00")[0];
+  n = n.replace(/[\x00-\x1F]/g, "");
+  n = n.replace(/\\/g, "/").split("/").pop() || "";
+  n = n.replace(/[<>:"|?*]/g, "_").replace(/\s+$/, "").replace(/\.+$/, "");
+  if (!n) n = "payload" + (fallbackExt || ".bin");
+  if (!path.extname(n) && fallbackExt) n += fallbackExt;
+  return n;
+}
+function dp1XpcGuessExt(payload) {
+  if (payload.length >= 4 && payload.slice(0, 4).equals(Buffer.from("DDS "))) return ".dds";
+  if (payload.length >= 8 && payload.slice(0, 8).equals(Buffer.from([0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A]))) return ".png";
+  if (payload.length >= 2 && payload[0] === 0xFF && payload[1] === 0xD8) return ".jpg";
+  return ".bin";
+}
+
+// Рекурсивно шукає всі *.xpc у root, повертає abs paths.
+async function dp1ListXpcFiles(root) {
+  const out = [];
+  async function walk(dir) {
+    let entries;
+    try { entries = await fs.readdir(dir, { withFileTypes: true }); } catch { return; }
+    for (const e of entries) {
+      const full = path.join(dir, e.name);
+      if (e.isDirectory()) await walk(full);
+      else if (e.isFile() && e.name.toLowerCase().endsWith(".xpc")) out.push(full);
+    }
+  }
+  await walk(root);
+  return out;
+}
+
+// Список XPC-файлів у грі — для UI. Повертає relпуть + size + чи є вже extracted.
+ipcMain.handle("dp2:dp1-textures-list", async () => {
+  try {
+    const settings = await readSettings();
+    const gameRoot = settings.dp1Root;
+    if (!gameRoot) return { ok: false, error: "dp1Root не задано — налаштуй у Settings шлях до гри" };
+    try { await fs.access(gameRoot); }
+    catch { return { ok: false, error: "Game root не існує: " + gameRoot }; }
+    const xpcFiles = await dp1ListXpcFiles(gameRoot);
+    // Читаємо meta.json (sidecar з нашими витягами) — щоб бачити які вже extracted.
+    let meta = {};
+    try { meta = JSON.parse(await fs.readFile(dp1TexturesMetaFile(), "utf8")); } catch {}
+    const items = await Promise.all(xpcFiles.map(async (full) => {
+      const rel = path.relative(gameRoot, full);
+      let size = 0; try { size = (await fs.stat(full)).size; } catch {}
+      const m = meta[rel] || null;
+      return {
+        relPath: rel,
+        fullPath: full,
+        size,
+        internalName: m?.internalName ?? null,
+        ext: m?.ext ?? null,
+        extracted: !!m?.extractedAt,
+        replaced: !!m?.replacedAt,
+      };
+    }));
+    items.sort((a, b) => a.relPath.localeCompare(b.relPath));
+    return { ok: true, items, gameRoot, originalDir: dp1TexturesOriginalDir(), doneDir: dp1TexturesDoneDir() };
+  } catch (e) {
+    return { ok: false, error: String(e.message || e) };
+  }
+});
+
+// Розпаковує всі .xpc у Original/. Емітить прогрес через "dp2:dp1-textures-progress".
+ipcMain.handle("dp2:dp1-textures-extract-all", async () => {
+  try {
+    const settings = await readSettings();
+    const gameRoot = settings.dp1Root;
+    if (!gameRoot) return { ok: false, error: "dp1Root не задано" };
+    const xpcFiles = await dp1ListXpcFiles(gameRoot);
+    const origDir = dp1TexturesOriginalDir();
+    await fs.mkdir(origDir, { recursive: true });
+    await fs.mkdir(dp1TexturesDoneDir(), { recursive: true });
+    let meta = {};
+    try { meta = JSON.parse(await fs.readFile(dp1TexturesMetaFile(), "utf8")); } catch {}
+    let done = 0, failed = 0;
+    for (const xpc of xpcFiles) {
+      const rel = path.relative(gameRoot, xpc);
+      try {
+        const raw = await fs.readFile(xpc);
+        const parsed = parseXpc2(raw);
+        const ext = dp1XpcGuessExt(parsed.payload);
+        const safe = dp1XpcSafeName(parsed.internal_name, ext);
+        // Зберігаємо у Original/ зі структурою як у грі (за relPath без розширення .xpc).
+        const relDir = path.dirname(rel);
+        const outDir = path.join(origDir, relDir);
+        await fs.mkdir(outDir, { recursive: true });
+        const outFile = path.join(outDir, safe);
+        await fs.writeFile(outFile, parsed.payload);
+        meta[rel] = {
+          internalName: parsed.internal_name,
+          ext,
+          safeName: safe,
+          extractedAt: Date.now(),
+          replacedAt: meta[rel]?.replacedAt ?? null,
+        };
+        done++;
+      } catch (e) {
+        failed++;
+        meta[rel] = { ...(meta[rel] || {}), lastError: String(e.message || e) };
+      }
+      if ((done + failed) % 50 === 0) {
+        try { mainWindow?.webContents.send("dp2:dp1-textures-progress", { done: done + failed, total: xpcFiles.length }); } catch {}
+      }
+    }
+    await fs.writeFile(dp1TexturesMetaFile(), JSON.stringify(meta, null, 2), "utf8");
+    try { mainWindow?.webContents.send("dp2:dp1-textures-progress", { done: xpcFiles.length, total: xpcFiles.length }); } catch {}
+    return { ok: true, total: xpcFiles.length, extracted: done, failed };
+  } catch (e) {
+    return { ok: false, error: String(e.message || e) };
+  }
+});
+
+// Запакувати всі замінені текстури з Done/ назад у гру. Для кожного xpc:
+//   1) читаємо оригінал з гри (для header passthrough)
+//   2) знаходимо replacement у Done/<rel>/<safeName>
+//   3) zlib.deflate новий payload, переписуємо header (data_off2 = data_off,
+//      comp_size = new len), пишемо новий .xpc у гру (з .bak якщо ще нема).
+ipcMain.handle("dp2:dp1-textures-pack-all", async () => {
+  try {
+    const settings = await readSettings();
+    const gameRoot = settings.dp1Root;
+    if (!gameRoot) return { ok: false, error: "dp1Root не задано" };
+    let meta = {};
+    try { meta = JSON.parse(await fs.readFile(dp1TexturesMetaFile(), "utf8")); } catch {
+      return { ok: false, error: "meta.json не знайдено — спершу Extract" };
+    }
+    const doneDir = dp1TexturesDoneDir();
+    let replaced = 0, skipped = 0, failed = 0;
+    const entries = Object.entries(meta);
+    for (const [rel, m] of entries) {
+      if (!m || !m.safeName) { skipped++; continue; }
+      const replPath = path.join(doneDir, path.dirname(rel), m.safeName);
+      try { await fs.access(replPath); } catch { skipped++; continue; }
+      const xpcAbs = path.join(gameRoot, rel);
+      try {
+        assertSafeWritePath(xpcAbs);
+        const raw = await fs.readFile(xpcAbs);
+        if (!raw.slice(0, 4).equals(XPC2_MAGIC)) throw new Error("Not XPC2");
+        const data_off = raw.readUInt32LE(0x24);
+        const newPayload = await fs.readFile(replPath);
+        const newComp = zlib.deflateSync(newPayload, { level: 9 });
+        // header passthrough до data_off, потім новий compressed payload.
+        const newRaw = Buffer.alloc(data_off + newComp.length);
+        raw.copy(newRaw, 0, 0, data_off);
+        // оновлюємо data_off2 = data_off (як у Python tool — single-payload mode).
+        newRaw.writeUInt32LE(data_off, 0x50);
+        newRaw.writeUInt32LE(newComp.length, 0x54);
+        newRaw.writeUInt32LE(newRaw.length, 0x04);
+        newComp.copy(newRaw, data_off);
+        // .bak — якщо ще нема.
+        const bak = xpcAbs + ".bak";
+        try { await fs.access(bak); }
+        catch { try { await fs.copyFile(xpcAbs, bak); } catch {} }
+        await withFileLock(xpcAbs, async () => {
+          await fs.writeFile(xpcAbs, newRaw);
+        });
+        meta[rel] = { ...m, replacedAt: Date.now(), lastError: null };
+        replaced++;
+      } catch (e) {
+        failed++;
+        meta[rel] = { ...m, lastError: String(e.message || e) };
+      }
+      if ((replaced + skipped + failed) % 25 === 0) {
+        try { mainWindow?.webContents.send("dp2:dp1-textures-progress", { done: replaced + skipped + failed, total: entries.length, phase: "pack" }); } catch {}
+      }
+    }
+    await fs.writeFile(dp1TexturesMetaFile(), JSON.stringify(meta, null, 2), "utf8");
+    try { mainWindow?.webContents.send("dp2:dp1-textures-progress", { done: entries.length, total: entries.length, phase: "pack" }); } catch {}
+    return { ok: true, replaced, skipped, failed };
+  } catch (e) {
+    return { ok: false, error: String(e.message || e) };
+  }
+});
+
+// Single-file: розпакувати один .xpc → повернути payload base64 для preview.
+ipcMain.handle("dp2:dp1-texture-read-payload", async (_event, relPath) => {
+  try {
+    const settings = await readSettings();
+    const gameRoot = settings.dp1Root;
+    if (!gameRoot || !relPath) return { ok: false, error: "missing dp1Root or relPath" };
+    const xpc = path.join(gameRoot, relPath);
+    const raw = await fs.readFile(xpc);
+    const parsed = parseXpc2(raw);
+    const ext = dp1XpcGuessExt(parsed.payload);
+    return { ok: true, base64: parsed.payload.toString("base64"), ext, internalName: parsed.internal_name, payloadSize: parsed.payload.length };
+  } catch (e) {
+    return { ok: false, error: String(e.message || e) };
+  }
+});
+
+// Single-file: замінити payload у конкретному .xpc.
+ipcMain.handle("dp2:dp1-texture-replace-one", async (_event, payload) => {
+  try {
+    const settings = await readSettings();
+    const gameRoot = settings.dp1Root;
+    const relPath = String(payload?.relPath || "").trim();
+    const base64 = String(payload?.base64 || "");
+    if (!gameRoot || !relPath || !base64) return { ok: false, error: "missing fields" };
+    const xpcAbs = assertSafeWritePath(path.join(gameRoot, relPath));
+    const raw = await fs.readFile(xpcAbs);
+    if (!raw.slice(0, 4).equals(XPC2_MAGIC)) throw new Error("Not XPC2");
+    const data_off = raw.readUInt32LE(0x24);
+    const newPayload = Buffer.from(base64, "base64");
+    const newComp = zlib.deflateSync(newPayload, { level: 9 });
+    const newRaw = Buffer.alloc(data_off + newComp.length);
+    raw.copy(newRaw, 0, 0, data_off);
+    newRaw.writeUInt32LE(data_off, 0x50);
+    newRaw.writeUInt32LE(newComp.length, 0x54);
+    newRaw.writeUInt32LE(newRaw.length, 0x04);
+    newComp.copy(newRaw, data_off);
+    const bak = xpcAbs + ".bak";
+    try { await fs.access(bak); }
+    catch { try { await fs.copyFile(xpcAbs, bak); } catch {} }
+    await withFileLock(xpcAbs, async () => {
+      await fs.writeFile(xpcAbs, newRaw);
+    });
+    // Update meta.replacedAt
+    try {
+      let meta = {};
+      try { meta = JSON.parse(await fs.readFile(dp1TexturesMetaFile(), "utf8")); } catch {}
+      if (meta[relPath]) {
+        meta[relPath] = { ...meta[relPath], replacedAt: Date.now() };
+        await fs.writeFile(dp1TexturesMetaFile(), JSON.stringify(meta, null, 2), "utf8");
+      }
+    } catch {}
+    return { ok: true, size: newRaw.length };
+  } catch (e) {
+    return { ok: false, error: String(e.message || e) };
+  }
+});
+
+// ── DDS BC1 (DXT1) codec ────────────────────────────────────────
+// Compact pure-JS decoder/encoder for BC1 — потрібен для DP1 fontwide.dds
+// (2048×1184, DXT1) edit-flow: розпакуємо у RGBA для canvas → користувач
+// малює гліфи поверх → пакуємо назад у DXT1 і пишемо у Done/FONTWIDE.DDS.
+// BC1 = 4×4 px block / 8 bytes = 2 RGB565 endpoints + 16×2-bit indices.
+
+function rgb565Unpack(c) {
+  const r5 = (c >> 11) & 0x1F;
+  const g6 = (c >> 5) & 0x3F;
+  const b5 = c & 0x1F;
+  return [(r5 << 3) | (r5 >> 2), (g6 << 2) | (g6 >> 4), (b5 << 3) | (b5 >> 2)];
+}
+function rgb565Pack(r, g, b) {
+  return ((r >> 3) << 11) | ((g >> 2) << 5) | (b >> 3);
+}
+function bc1Decode(buf, width, height) {
+  const out = new Uint8Array(width * height * 4);
+  const blocksX = width >> 2;
+  const blocksY = height >> 2;
+  for (let by = 0; by < blocksY; by++) {
+    for (let bx = 0; bx < blocksX; bx++) {
+      const off = (by * blocksX + bx) * 8;
+      const c0 = buf.readUInt16LE(off);
+      const c1 = buf.readUInt16LE(off + 2);
+      const codes = buf.readUInt32LE(off + 4);
+      const [r0, g0, b0] = rgb565Unpack(c0);
+      const [r1, g1, b1] = rgb565Unpack(c1);
+      let palette;
+      if (c0 > c1) {
+        palette = [
+          [r0, g0, b0, 255],
+          [r1, g1, b1, 255],
+          [((2 * r0 + r1) / 3) | 0, ((2 * g0 + g1) / 3) | 0, ((2 * b0 + b1) / 3) | 0, 255],
+          [((r0 + 2 * r1) / 3) | 0, ((g0 + 2 * g1) / 3) | 0, ((b0 + 2 * b1) / 3) | 0, 255],
+        ];
+      } else {
+        palette = [
+          [r0, g0, b0, 255],
+          [r1, g1, b1, 255],
+          [((r0 + r1) / 2) | 0, ((g0 + g1) / 2) | 0, ((b0 + b1) / 2) | 0, 255],
+          [0, 0, 0, 0],
+        ];
+      }
+      for (let py = 0; py < 4; py++) {
+        for (let px = 0; px < 4; px++) {
+          const idx = (codes >>> ((py * 4 + px) * 2)) & 0x3;
+          const pix = palette[idx];
+          const x = bx * 4 + px;
+          const y = by * 4 + py;
+          const o = (y * width + x) * 4;
+          out[o] = pix[0]; out[o + 1] = pix[1]; out[o + 2] = pix[2]; out[o + 3] = pix[3];
+        }
+      }
+    }
+  }
+  return out;
+}
+
+// Encoder: для кожного 4×4 блоку знаходимо min/max colors уздовж axis-у
+// найбільшої variance, формуємо ендпоінти, mapping pixels на найближчий
+// з 4 палітра-колорів. Простий неоптимальний алгоритм — достатньо для
+// шрифтового атласу (де артефакти не помітні на тлі білих гліфів).
+function bc1Encode(rgba, width, height) {
+  const blocksX = width >> 2;
+  const blocksY = height >> 2;
+  const out = Buffer.alloc(blocksX * blocksY * 8);
+  for (let by = 0; by < blocksY; by++) {
+    for (let bx = 0; bx < blocksX; bx++) {
+      // Збираємо 16 пікселів блоку
+      const pixels = new Array(16);
+      let hasAlpha = false;
+      for (let py = 0; py < 4; py++) {
+        for (let px = 0; px < 4; px++) {
+          const x = bx * 4 + px;
+          const y = by * 4 + py;
+          const o = (y * width + x) * 4;
+          const a = rgba[o + 3];
+          if (a < 128) hasAlpha = true;
+          pixels[py * 4 + px] = [rgba[o], rgba[o + 1], rgba[o + 2], a];
+        }
+      }
+      // Знаходимо min/max по сумі RGB (proxy для intensity).
+      let minP = pixels[0], maxP = pixels[0];
+      let minSum = minP[0] + minP[1] + minP[2];
+      let maxSum = minSum;
+      for (let i = 1; i < 16; i++) {
+        if (pixels[i][3] < 128) continue;
+        const s = pixels[i][0] + pixels[i][1] + pixels[i][2];
+        if (s < minSum) { minSum = s; minP = pixels[i]; }
+        if (s > maxSum) { maxSum = s; maxP = pixels[i]; }
+      }
+      const c0 = rgb565Pack(maxP[0], maxP[1], maxP[2]);
+      const c1 = rgb565Pack(minP[0], minP[1], minP[2]);
+      let e0 = c0, e1 = c1;
+      // Якщо блок має alpha-pixels → mode2 (e0 <= e1) + 4-й колір прозорий.
+      if (hasAlpha && e0 > e1) { const t = e0; e0 = e1; e1 = t; }
+      else if (!hasAlpha && e0 <= e1) {
+        // Уникаємо невпорядкованого режиму — додамо 1 до e0 щоб був > e1.
+        if (e0 < 0xFFFF) e0 = Math.max(e0 + 1, e1 + 1);
+      }
+      const [r0, g0, b0] = rgb565Unpack(e0);
+      const [r1, g1, b1] = rgb565Unpack(e1);
+      let palette;
+      if (e0 > e1) {
+        palette = [
+          [r0, g0, b0, 255],
+          [r1, g1, b1, 255],
+          [((2 * r0 + r1) / 3) | 0, ((2 * g0 + g1) / 3) | 0, ((2 * b0 + b1) / 3) | 0, 255],
+          [((r0 + 2 * r1) / 3) | 0, ((g0 + 2 * g1) / 3) | 0, ((b0 + 2 * b1) / 3) | 0, 255],
+        ];
+      } else {
+        palette = [
+          [r0, g0, b0, 255],
+          [r1, g1, b1, 255],
+          [((r0 + r1) / 2) | 0, ((g0 + g1) / 2) | 0, ((b0 + b1) / 2) | 0, 255],
+          [0, 0, 0, 0],
+        ];
+      }
+      // mapping: для кожного pixel — найближча колір (squared distance).
+      let codes = 0;
+      for (let i = 0; i < 16; i++) {
+        const p = pixels[i];
+        let best = 0, bestDist = Infinity;
+        // Якщо alpha < 128 і палітра має transparent — мапимо туди.
+        if (p[3] < 128 && palette[3][3] === 0) {
+          best = 3;
+        } else {
+          for (let k = 0; k < (palette[3][3] === 0 ? 3 : 4); k++) {
+            const pk = palette[k];
+            const dr = p[0] - pk[0], dg = p[1] - pk[1], db = p[2] - pk[2];
+            const d = dr * dr + dg * dg + db * db;
+            if (d < bestDist) { bestDist = d; best = k; }
+          }
+        }
+        codes |= (best & 0x3) << (i * 2);
+      }
+      const off = (by * blocksX + bx) * 8;
+      out.writeUInt16LE(e0, off);
+      out.writeUInt16LE(e1, off + 2);
+      out.writeUInt32LE(codes >>> 0, off + 4);
+    }
+  }
+  return out;
+}
+
+// ── DP1 Fonts (fontwide.xpc → FONTWIDE.DDS) ─────────────────────
+// Шрифти у DP1 — окремий XPC2-архів `fontwide.xpc`, що розпаковується у
+// одну DDS-текстуру `FONTWIDE.DDS`. Зараз робимо тільки extract:
+// знаходимо .xpc у грі, розпаковуємо у Fonts/Original/FONTWIDE.DDS і
+// готуємо порожню Fonts/Done/ для майбутніх замінників.
+ipcMain.handle("dp2:dp1-fonts-prep", async () => {
+  try {
+    const settings = await readSettings();
+    const gameRoot = settings.dp1Root;
+    if (!gameRoot) return { ok: false, error: "dp1Root не задано — налаштуй у Settings шлях до гри" };
+    // Шукаємо fontwide.xpc рекурсивно (case-insensitive).
+    const all = await dp1ListXpcFiles(gameRoot);
+    const xpc = all.find((p) => path.basename(p).toLowerCase() === "fontwide.xpc");
+    if (!xpc) return { ok: false, error: "fontwide.xpc не знайдено у теці гри" };
+
+    const origDir = dp1FontsOriginalDir();
+    const doneDir = dp1FontsDoneDir();
+    await fs.mkdir(origDir, { recursive: true });
+    await fs.mkdir(doneDir, { recursive: true });
+
+    const raw = await fs.readFile(xpc);
+    const parsed = parseXpc2(raw);
+    const ext = dp1XpcGuessExt(parsed.payload);
+    // Жорстко тримаємо ім'я "FONTWIDE.DDS" (як просив юзер) — навіть якщо
+    // internal_name відрізняється. Розширення підставляємо з реального
+    // payload (мабуть .dds, але якщо колись зміниться формат — guess).
+    const safe = "FONTWIDE" + (ext || ".dds");
+    const outFile = path.join(origDir, safe);
+    await fs.writeFile(outFile, parsed.payload);
+
+    return {
+      ok: true,
+      xpcPath: xpc,
+      ddsPath: outFile,
+      doneDir,
+      originalDir: origDir,
+      internalName: parsed.internal_name,
+      payloadSize: parsed.payload.length,
+      ext,
+    };
+  } catch (e) {
+    return { ok: false, error: String(e.message || e) };
+  }
+});
+
+// URL до офіційного шрифту DP1 (Cinema Calligraphy Regular) на Dropbox.
+// Шрифт ліцензований Rising Star Games — це той самий файл, що гра використовує
+// для рендеру субтитрів. Кладемо у DP1/Fonts/Cinema_Calligraphy-Regular.otf
+// один раз при першому відкритті Fonts editor.
+const DP1_TYPEFACE_URL = "https://www.dropbox.com/scl/fi/oqh2gcz2htwzoems183fm/Cinema_Calligraphy-Regular.otf?rlkey=81xetudep57dtzp3cmvtz12fx&st=lccbfua6&dl=1";
+const DP1_TYPEFACE_NAME = "Cinema_Calligraphy-Regular.otf";
+
+function dp1TypefacePath() {
+  return path.join(dp1FontsRoot(), DP1_TYPEFACE_NAME);
+}
+
+// Перевіряє чи Cinema_Calligraphy-Regular.otf уже лежить локально; якщо ні —
+// качає з Dropbox і кладе у DP1/Fonts/. Емітить прогрес через
+// "dp2:dp1-fonts-typeface-progress" event. Перевикористовує setupTools.
+//
+// In-flight guard: React StrictMode (dev) робить mount/unmount/mount, тож
+// renderer може викликати ensure двічі майже одночасно. Без guard другий
+// виклик ловить ENOENT на rename .part — бо перший уже rename-нув.
+let _dp1TypefaceInflight = null;
+ipcMain.handle("dp2:dp1-fonts-ensure-typeface", async () => {
+  if (_dp1TypefaceInflight) return _dp1TypefaceInflight;
+  _dp1TypefaceInflight = (async () => {
+    try {
+      const root = dp1FontsRoot();
+      await fs.mkdir(root, { recursive: true });
+      const dest = dp1TypefacePath();
+      try {
+        const st = await fs.stat(dest);
+        if (st.size > 50_000) {
+          return { ok: true, path: dest, cached: true, size: st.size };
+        }
+      } catch {}
+      try { mainWindow?.webContents.send("dp2:dp1-fonts-typeface-progress", { phase: "start", total: 0, downloaded: 0, percent: 0 }); } catch {}
+      const res = await setupTools.downloadFile(DP1_TYPEFACE_URL, dest, (p) => {
+        try {
+          mainWindow?.webContents.send("dp2:dp1-fonts-typeface-progress", {
+            phase: "download",
+            total: p.total, downloaded: p.downloaded, percent: p.percent,
+          });
+        } catch {}
+      });
+      try { mainWindow?.webContents.send("dp2:dp1-fonts-typeface-progress", { phase: "done", total: res.size ?? 0, downloaded: res.size ?? 0, percent: 100 }); } catch {}
+      return { ok: true, path: dest, cached: false, size: res.size };
+    } catch (e) {
+      try { mainWindow?.webContents.send("dp2:dp1-fonts-typeface-progress", { phase: "error", error: String(e.message || e) }); } catch {}
+      return { ok: false, error: String(e.message || e) };
+    } finally {
+      _dp1TypefaceInflight = null;
+    }
+  })();
+  return _dp1TypefaceInflight;
+});
+
+// Читає FONTWIDE.DDS (з Done/ якщо там існує, інакше Original/) і
+// розпаковує BC1 у RGBA для canvas-preview у renderer.
+ipcMain.handle("dp2:dp1-fonts-read-rgba", async () => {
+  try {
+    const doneFile = path.join(dp1FontsDoneDir(), "FONTWIDE.DDS");
+    const origFile = path.join(dp1FontsOriginalDir(), "FONTWIDE.DDS");
+    let src; let source = "done";
+    try { await fs.access(doneFile); src = doneFile; }
+    catch { try { await fs.access(origFile); src = origFile; source = "original"; }
+            catch { return { ok: false, error: "FONTWIDE.DDS не знайдено — спершу натисни Перерозпакувати на сторінці Шрифти" }; } }
+    const raw = await fs.readFile(src);
+    if (raw.length < 128 || raw.slice(0, 4).toString() !== "DDS ") {
+      return { ok: false, error: "Не схоже на DDS" };
+    }
+    const height = raw.readUInt32LE(12);
+    const width = raw.readUInt32LE(16);
+    const fourcc = raw.slice(84, 88).toString();
+    if (fourcc !== "DXT1") {
+      return { ok: false, error: `Unsupported DDS format: ${fourcc} (підтримується тільки DXT1/BC1)` };
+    }
+    const blockData = raw.slice(128); // header = 128 bytes
+    const rgba = bc1Decode(blockData, width, height);
+    return {
+      ok: true,
+      width, height,
+      rgbaBase64: Buffer.from(rgba.buffer, rgba.byteOffset, rgba.byteLength).toString("base64"),
+      source,
+      srcPath: src,
+    };
+  } catch (e) {
+    return { ok: false, error: String(e.message || e) };
+  }
+});
+
+// Зберігає змінений RGBA назад як BC1 DDS у Done/FONTWIDE.DDS.
+// Header passthrough з Original — тільки pixel data перерахована.
+ipcMain.handle("dp2:dp1-fonts-save-rgba", async (_event, payload) => {
+  try {
+    const width = Number(payload?.width || 0);
+    const height = Number(payload?.height || 0);
+    const b64 = String(payload?.rgbaBase64 || "");
+    if (!width || !height || !b64) return { ok: false, error: "bad args" };
+    if ((width & 3) !== 0 || (height & 3) !== 0) {
+      return { ok: false, error: `Width/height must be /4: got ${width}×${height}` };
+    }
+    const rgba = Buffer.from(b64, "base64");
+    if (rgba.length !== width * height * 4) {
+      return { ok: false, error: `RGBA size mismatch: got ${rgba.length}, expect ${width * height * 4}` };
+    }
+    // Беремо header з Original — щоб гра не помітила різниці в pitch/flags.
+    const origFile = path.join(dp1FontsOriginalDir(), "FONTWIDE.DDS");
+    let header;
+    try { header = (await fs.readFile(origFile)).slice(0, 128); }
+    catch { return { ok: false, error: "Original/FONTWIDE.DDS не знайдено" }; }
+    const compressed = bc1Encode(rgba, width, height);
+    const out = Buffer.concat([header, compressed]);
+    const doneDir = dp1FontsDoneDir();
+    await fs.mkdir(doneDir, { recursive: true });
+    const outFile = path.join(doneDir, "FONTWIDE.DDS");
+    assertSafeWritePath(outFile);
+    await withFileLock(outFile, async () => { await fs.writeFile(outFile, out); });
+    return { ok: true, outFile, size: out.length };
+  } catch (e) {
+    return { ok: false, error: String(e.message || e) };
+  }
+});
+
+// Зчитує довільний TTF/OTF файл і повертає bytes як base64.
+// Потрібно для FontFace API у renderer (canvas рендеритьgly гліфів).
+ipcMain.handle("dp2:read-font-file", async (_event, fontPath) => {
+  try {
+    if (!fontPath || typeof fontPath !== "string") return { ok: false, error: "bad path" };
+    const bytes = await fs.readFile(fontPath);
+    return { ok: true, base64: bytes.toString("base64"), size: bytes.length };
+  } catch (e) {
+    return { ok: false, error: String(e.message || e) };
+  }
+});
+
 // ── IPC: launch UABEA Next ───────────────────────────────────────
 ipcMain.handle("dp2:launch-uabea", async () => {
   const settings = await readSettings();
@@ -4724,7 +5331,7 @@ ipcMain.handle("dp2:open-external", async (_event, url) => {
 // Опитуємо releases/latest. Кеш у settings (lastUpdateCache + ts), TTL 6h.
 // Якщо latest > app.getVersion() — renderer показує банер. Користувач може
 // "приховати" версію → у settings.dismissedUpdateVersion записується tag.
-const UPDATE_REPO = "LittleBitUA/Deadly-Premonition-Localization-Tool";
+const UPDATE_REPO = "LittleBitUA/SWERY-Localization-Tool";
 const UPDATE_TTL_MS = 6 * 60 * 60 * 1000;
 
 function compareSemver(a, b) {

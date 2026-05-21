@@ -1,0 +1,26 @@
+---
+import L from "./L.astro";
+const repo = "https://github.com/LittleBitUA/SWERY-Localization-Tool";
+const authorUrl = "https://steamcommunity.com/id/bidlochuk/";
+---
+<footer>
+  <p>
+    <a href={repo}>GitHub</a> ·
+    <a href={`${repo}/releases`}>Releases</a> ·
+    <a href={`${repo}/blob/main/LICENSE`}>MIT license</a> ·
+    <a href={`${repo}/issues`}>Issues</a>
+  </p>
+  <p>
+    <L uk="Credits:" en="Credits:" />
+    <a href="https://github.com/MrIkso/">MrIkso</a> ·
+    <a href="https://github.com/nesrak1/UABEA">nesrak1/UABEA</a> ·
+    <a href="https://github.com/PowerShell/PowerShell">PowerShell 7</a>
+  </p>
+  <p class="footer-meta">
+    Made with ❤️ by <a href={authorUrl}>Dmytro Bidlov</a><br>
+    <L
+      uk="Вміст ігор належить їхнім видавцям і цим інструментом не розповсюджується."
+      en="Game content belongs to its respective publishers and is not redistributed by this tool."
+    />
+  </p>
+</footer>

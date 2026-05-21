@@ -12,6 +12,8 @@ import { Resizer } from "./components/Resizer";
 import { HomeV2 as HomeScreen } from "./ui-v2/HomeV2";
 import { OnboardingScreen } from "./components/OnboardingScreen";
 import { Dp1Editor } from "./games/dp1/Dp1Editor";
+import { Dp1TexturesEditor } from "./games/dp1/Dp1TexturesEditor";
+import { Dp1FontsEditor } from "./games/dp1/Dp1FontsEditor";
 import { Dp2FontsEditor } from "./games/dp2/Dp2FontsEditor";
 import { Dp2TexturesEditor } from "./games/dp2/Dp2TexturesEditor";
 import { Dp2TextPrepWizard } from "./games/dp2/Dp2TextPrepWizard";
@@ -34,7 +36,7 @@ import { DialogHost } from "./lib/dialogs";
 import { UpdateBanner } from "./components/UpdateBanner";
 import { ToastProvider } from "./components/ToastProvider";
 
-type Stage = "loading" | "onboarding" | "home" | "prep-dp2" | "editor-dp2" | "editor-dp1" | "editor-tgl" | "fonts-dp2" | "textures-dp2" | "fonts-tgl" | "editor-hbr" | "fonts-hbr" | "editor-missing" | "fonts-missing" | "textures-missing";
+type Stage = "loading" | "onboarding" | "home" | "prep-dp2" | "editor-dp2" | "editor-dp1" | "textures-dp1" | "fonts-dp1" | "editor-tgl" | "fonts-dp2" | "textures-dp2" | "fonts-tgl" | "editor-hbr" | "fonts-hbr" | "editor-missing" | "fonts-missing" | "textures-missing";
 type ActiveGame = "dp1" | "dp2" | "tgl" | "hbr" | "missing" | null;
 
 export default function App() {
@@ -258,7 +260,11 @@ export default function App() {
           return;
         }
         if (id === "dp1") {
-          setStage("editor-dp1");
+          setStage(
+            mode === "textures" ? "textures-dp1"
+            : mode === "fonts" ? "fonts-dp1"
+            : "editor-dp1"
+          );
         } else if (id === "tgl") {
           const m: "text" | "fonts" = mode === "fonts" ? "fonts" : "text";
           setTglMode(m);
@@ -323,6 +329,44 @@ export default function App() {
               window.dp2.setupStatus().then(setSetupStatus);
             }}
           />
+        </div>
+        <DialogHost /><ToastProvider /><UpdateBanner />
+      </>
+    );
+  }
+
+  if (stage === "textures-dp1") {
+    return (
+      <>
+        <div className="h-screen flex flex-col">
+          <ErrorBoundary label="Deadly Premonition — textures">
+            <Dp1TexturesEditor
+              onHome={() => {
+                setActiveGame(null);
+                setStage("home");
+                window.dp2.setupStatus().then(setSetupStatus);
+              }}
+            />
+          </ErrorBoundary>
+        </div>
+        <DialogHost /><ToastProvider /><UpdateBanner />
+      </>
+    );
+  }
+
+  if (stage === "fonts-dp1") {
+    return (
+      <>
+        <div className="h-screen flex flex-col">
+          <ErrorBoundary label="Deadly Premonition — fonts">
+            <Dp1FontsEditor
+              onHome={() => {
+                setActiveGame(null);
+                setStage("home");
+                window.dp2.setupStatus().then(setSetupStatus);
+              }}
+            />
+          </ErrorBoundary>
         </div>
         <DialogHost /><ToastProvider /><UpdateBanner />
       </>

@@ -47,7 +47,13 @@ interface FileItem {
 
 type Phase = "loading" | "needs-extract" | "ready" | "extracting" | "error";
 
-interface RowMeta { status?: "draft" | "review" | "approved"; bookmark?: boolean }
+interface RowMeta {
+  status?: "draft" | "review" | "approved";
+  bookmark?: boolean;
+  /** Manual override: рядок не змінювали (бо `:)` чи інший emoji не
+   *  потребує перекладу), але рахуємо його як перекладений у статистиці. */
+  markedTranslated?: boolean;
+}
 
 interface MissingApi {
   missingPrepStatus: () => Promise<PrepStatus>;
@@ -420,8 +426,8 @@ export function MissingEditor({ onHome }: Props) {
       else {
         const cur = next[key] ?? {};
         const merged = { ...cur, ...patch };
-        // Якщо після patch не лишилось ні статусу, ні закладки — видаляємо.
-        if (!merged.status && !merged.bookmark) delete next[key];
+        // Видаляємо запис тільки якщо ЖОДНОЇ ознаки не лишилось.
+        if (!merged.status && !merged.bookmark && !merged.markedTranslated) delete next[key];
         else next[key] = merged;
       }
       rowMetaDirtyRef.current = true;
@@ -503,11 +509,16 @@ export function MissingEditor({ onHome }: Props) {
         const done = dR.ok && dR.base64 ? parseMissingMsg(b64ToBytes(dR.base64)) : orig;
         let fTotal = 0, fTranslated = 0;
         for (let i = 0; i < orig.entries.length; i++) {
-          const o = orig.entries[i]?.text ?? "";
+          const e = orig.entries[i];
+          const o = e?.text ?? "";
           if (o === "" || /^[A-Z_0-9]+_en$/.test(o)) continue;
           fTotal++;
           const d = done.entries[i]?.text ?? "";
-          if (d !== "" && d !== o) fTranslated++;
+          // Враховуємо manual override `markedTranslated` (для рядків
+          // типу ":)" які користувач позначив ПКМ → "Позначити перекладеним").
+          const key = e && e.msgEnum >= 0 ? String(e.msgEnum) : `${f.name}::${i}`;
+          const marked = !!rowMeta[key]?.markedTranslated;
+          if ((d !== "" && d !== o) || marked) fTranslated++;
         }
         total += fTotal;
         translated += fTranslated;
@@ -518,9 +529,13 @@ export function MissingEditor({ onHome }: Props) {
     setFileStats(perFile);
   }
   useEffect(() => {
-    if (phase === "ready") refreshProjectStats();
+    if (phase !== "ready") return;
+    // Debounce 400ms — щоб кілька швидких ПКМ-toggle не запускали повний
+    // re-scan усіх msg-файлів кожен раз.
+    const id = setTimeout(() => { void refreshProjectStats(); }, 400);
+    return () => clearTimeout(id);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [phase, files.length]);
+  }, [phase, files.length, rowMeta]);
 
   async function runExtract() {
     setPhase("extracting");
@@ -681,10 +696,13 @@ export function MissingEditor({ onHome }: Props) {
       const entry = origMsg.entries[i];
       const isEmpty = !cur || cur.trim().length === 0;
       const isSame = !isEmpty && cur === orig;
-      const translated = !isEmpty && !isSame;
       const isPlaceholder = isPlaceholderText(orig);
       const metaKey = getMetaKey(entry.msgEnum, fileName, i);
       const meta = rowMeta[metaKey];
+      // Manual override "markedTranslated" перекриває is-same heuristic:
+      // для рядків типу ":)" / "..." переклад === оригіналу, але користувач
+      // натиснув ПКМ → Позначити перекладеним.
+      const translated = (!isEmpty && !isSame) || !!meta?.markedTranslated;
 
       // Плейсхолдери ховаємо за замовч. (показуємо лише при rowFilter=placeholder
       // або коли увімкнено `includePlaceholders`).
@@ -1164,7 +1182,8 @@ export function MissingEditor({ onHome }: Props) {
                   <table className="w-full text-[12px] table-fixed">
                     <thead className="sticky top-0 z-10 bg-[var(--bg-surface)] text-[10px] uppercase tracking-wider text-[var(--text-faint)] border-b border-[var(--border-soft)]">
                       <tr>
-                        <th className="text-center px-1 py-1.5 w-[28px]" title="Закладка">·</th>
+                        <th className="text-center px-1 py-1.5 w-[26px]" title="Стан перекладу">✓</th>
+                        <th className="text-center px-1 py-1.5 w-[26px]" title="Закладка">·</th>
                         <th className="text-left px-2 py-1.5 w-[100px]" title="msgBase*10000 + i у length-table">MsgEnum</th>
                         <th className="text-left px-2 py-1.5 w-[90px]" title="Зсув у m_Script (нестабільний після pack)">Offset</th>
                         <th className="text-left px-2 py-1.5 w-1/2">{t("missing.editor.originalCol")}</th>
@@ -1182,11 +1201,13 @@ export function MissingEditor({ onHome }: Props) {
                             ? "border-l-[3px] border-l-[var(--accent)]"
                             : meta?.status === "draft"
                               ? "border-l-[3px] border-l-dashed border-l-[var(--warning,#d97706)]"
-                              : r.isEmpty
-                                ? "border-l-2 border-l-[var(--danger)]"
-                                : r.isSame
-                                  ? "border-l-2 border-l-[var(--warning,#d97706)]"
-                                  : "border-l-2 border-l-[var(--success)]";
+                              : meta?.markedTranslated
+                                ? "border-l-2 border-l-[var(--success)]"
+                                : r.isEmpty
+                                  ? "border-l-2 border-l-[var(--danger)]"
+                                  : r.isSame
+                                    ? "border-l-2 border-l-[var(--warning,#d97706)]"
+                                    : "border-l-2 border-l-[var(--success)]";
                         const enumDisplay = r.entry.msgEnum >= 0 ? String(r.entry.msgEnum) : "—";
                         return (
                           <tr
@@ -1345,6 +1366,11 @@ export function MissingEditor({ onHome }: Props) {
                   {item(
                     cur?.bookmark ? "🔖 Прибрати закладку (Ctrl+B)" : "🔖 Закладка (Ctrl+B)",
                     () => { patchRowMeta(key, { bookmark: !cur?.bookmark }); close(); },
+                  )}
+                  {item(
+                    cur?.markedTranslated ? "✓ Зняти позначку «перекладено»" : "✓ Позначити перекладеним",
+                    () => { patchRowMeta(key, { markedTranslated: !cur?.markedTranslated }); close(); },
+                    !!cur?.markedTranslated,
                   )}
                   <div className="border-t border-[var(--border-soft)] my-1" />
                   {item("Скопіювати оригінал у переклад", () => {

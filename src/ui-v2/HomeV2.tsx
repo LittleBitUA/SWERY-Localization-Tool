@@ -297,11 +297,12 @@ export function HomeV2({ onPickGame, onOpenSetup, onOpenFolder, onOpenRecent }: 
                 ? t("home.v2.status.closed")
                 : t("home.v2.status.open");
 
+              const isDp1 = c.id === "dp1";
               const isDp2 = c.id === "dp2";
               const isTgl = c.id === "tgl";
               const isHbr = c.id === "hbr";
               const isMissing = c.id === "missing";
-              const hasActions = isDp2 || isTgl || isHbr || isMissing;
+              const hasActions = isDp1 || isDp2 || isTgl || isHbr || isMissing;
               return (
                 <div
                   key={c.id}
@@ -358,6 +359,32 @@ export function HomeV2({ onPickGame, onOpenSetup, onOpenFolder, onOpenRecent }: 
                       {stampLabel}
                     </div>
 
+                    {/* DP1: Текст + Шрифти + Текстури (XPC2 archive). */}
+                    {isDp1 && (
+                      <div className="v2-folder__actions">
+                        <button
+                          type="button"
+                          className="v2-folder__action"
+                          onClick={(e) => { e.stopPropagation(); onPickGame(c.id, "text"); }}
+                        >
+                          {t("home.v2.action.text")}
+                        </button>
+                        <button
+                          type="button"
+                          className="v2-folder__action"
+                          onClick={(e) => { e.stopPropagation(); onPickGame(c.id, "fonts"); }}
+                        >
+                          {t("home.v2.action.fonts")}
+                        </button>
+                        <button
+                          type="button"
+                          className="v2-folder__action"
+                          onClick={(e) => { e.stopPropagation(); onPickGame(c.id, "textures"); }}
+                        >
+                          {t("home.v2.action.textures")}
+                        </button>
+                      </div>
+                    )}
                     {/* DP2-режими: три action-pills у нижній частині картки */}
                     {isDp2 && (
                       <div className="v2-folder__actions">

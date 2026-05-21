@@ -249,6 +249,84 @@ declare global {
         error?: string;
       }>;
 
+      // DP1 Textures (XPC2 archive)
+      dp1TexturesList: () => Promise<{
+        ok: boolean;
+        error?: string;
+        gameRoot?: string;
+        originalDir?: string;
+        doneDir?: string;
+        items?: Array<{
+          relPath: string;
+          fullPath: string;
+          size: number;
+          internalName: string | null;
+          ext: string | null;
+          extracted: boolean;
+          replaced: boolean;
+        }>;
+      }>;
+      dp1TexturesExtractAll: () => Promise<{
+        ok: boolean; error?: string; total?: number; extracted?: number; failed?: number;
+      }>;
+      dp1TexturesPackAll: () => Promise<{
+        ok: boolean; error?: string; replaced?: number; skipped?: number; failed?: number;
+      }>;
+      dp1TextureReadPayload: (relPath: string) => Promise<{
+        ok: boolean; error?: string;
+        base64?: string; ext?: string; internalName?: string; payloadSize?: number;
+      }>;
+      dp1TextureReplaceOne: (payload: { relPath: string; base64: string }) => Promise<{
+        ok: boolean; error?: string; size?: number;
+      }>;
+      onDp1TexturesProgress: (cb: (p: { done: number; total: number; phase?: string }) => void) => (() => void);
+      dp1FontsPrep: () => Promise<{
+        ok: boolean;
+        error?: string;
+        xpcPath?: string;
+        ddsPath?: string;
+        doneDir?: string;
+        originalDir?: string;
+        internalName?: string;
+        payloadSize?: number;
+        ext?: string;
+      }>;
+      dp1FontsReadRgba: () => Promise<{
+        ok: boolean;
+        error?: string;
+        width?: number;
+        height?: number;
+        rgbaBase64?: string;
+        source?: "done" | "original";
+        srcPath?: string;
+      }>;
+      dp1FontsSaveRgba: (payload: { width: number; height: number; rgbaBase64: string }) => Promise<{
+        ok: boolean;
+        error?: string;
+        outFile?: string;
+        size?: number;
+      }>;
+      readFontFile: (fontPath: string) => Promise<{
+        ok: boolean;
+        error?: string;
+        base64?: string;
+        size?: number;
+      }>;
+      dp1FontsEnsureTypeface: () => Promise<{
+        ok: boolean;
+        error?: string;
+        path?: string;
+        cached?: boolean;
+        size?: number;
+      }>;
+      onDp1FontsTypefaceProgress: (cb: (p: {
+        phase: "start" | "download" | "done" | "error";
+        total?: number;
+        downloaded?: number;
+        percent?: number;
+        error?: string;
+      }) => void) => (() => void);
+
       // DP2 Textures
       texturesExport: (payload?: {
         assetsFile?: string;

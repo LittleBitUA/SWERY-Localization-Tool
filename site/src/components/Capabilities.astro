@@ -1,0 +1,85 @@
+---
+import L from "./L.astro";
+interface Cap {
+  tag: string;
+  title: { uk: string; en: string };
+  body:  { uk: string; en: string };
+  featured?: boolean;
+}
+const caps: Cap[] = [
+  {
+    tag: "Memory",
+    title: { uk: "Translation Memory", en: "Translation Memory" },
+    body: {
+      uk: "Спільний корпус по всіх іграх SWERY: знайди exact-match переклад і застосуй одним кліком. Без вгадування за substring.",
+      en: "Shared corpus across the SWERY catalog. Exact-match lookups, apply with one click. No substring guesswork.",
+    },
+    featured: true,
+  },
+  {
+    tag: "Editor",
+    title: { uk: "Monaco з підсвічуванням тегів", en: "Monaco with tag diagnostics" },
+    body: {
+      uk: "Той самий редактор, що у VS Code. Live діагностика плейсхолдерів, diff EN↔UA, стабільна модель без remount-лагу.",
+      en: "The VS Code engine inside the app. Live placeholder diagnostics, EN↔UA diff, stable model with no remount lag.",
+    },
+  },
+  {
+    tag: "Fonts",
+    title: { uk: "Редактор атласу шрифтів", en: "Font atlas editor" },
+    body: {
+      uk: "Малюй кириличні гліфи прямо на DDS поверх латинських — з snap-to-grid, Ctrl+Z і авто-оновленням glyphmap.",
+      en: "Paint Cyrillic glyphs over Latin DDS positions — snap-to-grid, Ctrl+Z, automatic glyphmap update.",
+    },
+  },
+  {
+    tag: "Layout",
+    title: { uk: "Per-string box-sizes", en: "Per-string box-sizes" },
+    body: {
+      uk: "У THE MISSING кожен рядок має W×H у IMHeightInfo. Auto-fit рахує від оригіналу — повторні apply не нарощують ширину.",
+      en: "Each line in THE MISSING has W×H in IMHeightInfo. Auto-fit computes from the original — repeated applies don't snowball.",
+    },
+  },
+  {
+    tag: "Safety",
+    title: { uk: "Захист від тихої корупції", en: "Silent corruption guards" },
+    body: {
+      uk: "Race-free saves, integrity checks перед write, int16-overflow guard. Якщо щось не так — toast, не битий патч.",
+      en: "Race-free saves, integrity checks before write, int16-overflow guard. If something is off — you get a toast, not a corrupted patch.",
+    },
+  },
+  {
+    tag: "Workflow",
+    title: { uk: "Все під рукою", en: "Everything at hand" },
+    body: {
+      uk: "Auto-save, .txt round-trip для офлайн-перекладачів, status/bookmark side-cars, UK/EN UI, auto-update.",
+      en: "Auto-save, .txt round-trip for offline translators, status/bookmark sidecars, UK/EN UI, auto-update.",
+    },
+  },
+];
+---
+<section class="section" id="capabilities">
+  <div class="section-inner">
+    <div class="section-tag"><L uk="Можливості" en="What it does" /></div>
+    <h2 class="section-title">
+      <L uk="Зроблено перекладачами" en="Made by translators" /><br>
+      <L uk="для перекладачів." en="for translators." />
+    </h2>
+    <p class="section-lede">
+      <L
+        uk="Шість речей, які додаток робить добре — решта є, але це головне."
+        en="Six things the app does well — the rest is there, but this is the core."
+      />
+    </p>
+
+    <div class="cap-board">
+      {caps.map((c) => (
+        <div class={`cap reveal ${c.featured ? "cap--featured" : ""}`}>
+          <div class="cap-tag">{c.tag}</div>
+          <h3><L uk={c.title.uk} en={c.title.en} /></h3>
+          <p><L uk={c.body.uk} en={c.body.en} /></p>
+        </div>
+      ))}
+    </div>
+  </div>
+</section>

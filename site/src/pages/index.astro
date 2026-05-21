@@ -1,0 +1,23 @@
+---
+// Тримаємо сторінку короткою: Hero → Stats → Games → що вміє → цитата → modding → CTA.
+// Workshop/Workflow/Shortcuts/TechStack компоненти лишаються у репо для майбутніх
+// окремих сторінок (/docs, /shortcuts тощо), але не на головній — дублювали
+// інформацію та робили лендінг "стіною тексту".
+import BaseLayout from "../layouts/BaseLayout.astro";
+import Nav from "../components/Nav.astro";
+import Hero from "../components/Hero.astro";
+import Stats from "../components/Stats.astro";
+import Cases from "../components/Cases.astro";
+import Capabilities from "../components/Capabilities.astro";
+import Modding from "../components/Modding.astro";
+import Footer from "../components/Footer.astro";
+---
+<BaseLayout>
+  <Nav />
+  <Hero />
+  <Stats />
+  <Cases />
+  <Capabilities />
+  <Modding />
+  <Footer />
+</BaseLayout>

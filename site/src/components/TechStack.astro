@@ -1,0 +1,32 @@
+---
+const stack = [
+  { name: "Electron 33",      role: "Chromium · portable" },
+  { name: "React 18",         role: "UI + state" },
+  { name: "Zustand",          role: "Per-game slices" },
+  { name: "Monaco",           role: "Translation editor" },
+  { name: "Vite + Tailwind",  role: "Build + theme" },
+  { name: "worker_threads",   role: "Heavy parsing" },
+  { name: "PowerShell 7",     role: "UABEA spawn" },
+  { name: "AssetsTools.NET",  role: ".assets surgery" },
+];
+---
+<section class="section">
+  <div class="section-inner">
+    <div class="section-tag">Build of materials</div>
+    <h2 class="section-title">Tech stack.</h2>
+    <p class="section-lede">
+      Один portable <code>.exe</code> для Windows. Без installer-у, без сервісу.
+      Всі дані живуть або поруч з файлами гри, або у
+      <code>Documents/SWERY-Localization-Tool</code>.
+    </p>
+
+    <div class="tech-row">
+      {stack.map((s) => (
+        <div class="tech-pill">
+          <div class="name">{s.name}</div>
+          <div class="role">{s.role}</div>
+        </div>
+      ))}
+    </div>
+  </div>
+</section>

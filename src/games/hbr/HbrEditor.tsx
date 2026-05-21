@@ -22,36 +22,33 @@ interface HbrRowProps {
   // Статус і закладка з sidecar — додатковий візуал поверх default border.
   status?: "draft" | "review" | "approved";
   bookmark?: boolean;
+  /** Manual override через ПКМ → «Позначити перекладеним». Border = зелений. */
+  markedTranslated?: boolean;
   onSelect: (realIdx: number) => void;
   onContextMenu: (e: React.MouseEvent, realIdx: number) => void;
 }
-const HbrRow = memo(function HbrRow({ it, realIdx, active, status, bookmark, onSelect, onContextMenu }: HbrRowProps) {
+const HbrRow = memo(function HbrRow({ it, realIdx, active, status, bookmark, markedTranslated, onSelect, onContextMenu }: HbrRowProps) {
   const isSystem = isHbrSystemRow(it.original);
   const isSame = it.current === it.original;
   const isEmpty = !it.current || it.current.trim().length === 0;
   // System-row (тільки теги/прочерки) рахуємо як «перекладений» автоматично.
-  const isTranslated = isSystem || (!isSame && !isEmpty);
-  // Border підсвічує лише ПРОБЛЕМНІ або ЯВНО-ПОМІЧЕНІ рядки, щоб око
-  // ловило саме їх. Звичайний translated default (більшість рядків) — без
-  // border, інакше всі рядки виглядають однаково зеленими і індикатор
-  // marketвсе нічого.
-  //   approved → 3px solid success
-  //   review   → 3px solid accent
-  //   draft    → 3px dashed warning
-  //   empty    → 2px solid danger
-  //   isSame (не торкнули) → 2px solid warning
-  //   system / translated default → без border (transparent)
+  // markedTranslated (manual ПКМ-toggle) теж — для рядків типу ":)" які
+  // не потребують реальної правки.
+  const isTranslated = isSystem || markedTranslated || (!isSame && !isEmpty);
+  // Border підсвічує лише ПРОБЛЕМНІ або ЯВНО-ПОМІЧЕНІ рядки.
   const borderClass = status === "approved"
     ? "border-l-[3px] border-l-[var(--success)]"
     : status === "review"
       ? "border-l-[3px] border-l-[var(--accent)]"
       : status === "draft"
         ? "border-l-[3px] border-l-dashed border-l-[var(--warning,#d97706)]"
-        : isEmpty
-          ? "border-l-2 border-l-[var(--danger)]"
-          : !isTranslated
-            ? "border-l-2 border-l-[var(--warning,#d97706)]"
-            : "border-l-2 border-l-transparent";
+        : markedTranslated
+          ? "border-l-2 border-l-[var(--success)]"
+          : isEmpty
+            ? "border-l-2 border-l-[var(--danger)]"
+            : !isTranslated
+              ? "border-l-2 border-l-[var(--warning,#d97706)]"
+              : "border-l-2 border-l-transparent";
   return (
     <tr
       data-hbr-row={`${it.textId}::${it.variantIdx}`}
@@ -459,6 +456,18 @@ export function HbrEditor({ onHome }: Props) {
       return pruneEntry(next, key);
     });
   }
+  function toggleRowMarkedTranslated(realIdx: number) {
+    if (!parsed || !activeFile) return;
+    const it = parsed.items[realIdx];
+    if (!it) return;
+    const key = statusKey(activeFile.file, it.textId, it.variantIdx);
+    setStatusFile((f) => {
+      const cur = f.entries[key] ?? {};
+      const nextEntry = { ...cur, markedTranslated: cur.markedTranslated ? undefined : true } as typeof cur;
+      const next: StatusFile = { ...f, entries: { ...f.entries, [key]: nextEntry } };
+      return pruneEntry(next, key);
+    });
+  }
 
   // Live прогрес.
   useEffect(() => {
@@ -777,6 +786,11 @@ export function HbrEditor({ onHome }: Props) {
       const it = parsed.items[i];
       // System-row (тільки теги/прочерк) пропускаємо — там нема чого перекладати.
       if (isHbrSystemRow(it.original)) continue;
+      // Пропускаємо рядки, помічені вручну як «перекладено» (ПКМ → toggle).
+      if (activeFile) {
+        const sk = statusKey(activeFile.file, it.textId, it.variantIdx);
+        if (statusFile.entries[sk]?.markedTranslated) continue;
+      }
       const isSame = it.current === it.original;
       const isEmpty = !it.current || it.current.trim().length === 0;
       if (isSame || isEmpty) return i;
@@ -861,6 +875,26 @@ export function HbrEditor({ onHome }: Props) {
 
   // Загальні лічильники по всьому проекту (Done vs Original).
   const [projectStats, setProjectStats] = useState<{ files: number; total: number; translated: number } | null>(null);
+  // Per-file count рядків з прапором markedTranslated (manual override через
+  // ПКМ → «Позначити перекладеним»). Додаємо це до projectStats/fileStats у
+  // відображенні — щоб поточний % одразу враховував мітку без heavy IPC.
+  const markedTranslatedByFile = useMemo(() => {
+    const m = new Map<string, number>();
+    for (const [key, entry] of Object.entries(statusFile.entries)) {
+      if (!entry.markedTranslated) continue;
+      // statusKey: "<fileName>::<textId>::<variantIdx>" — беремо все до першого "::".
+      const sep = key.indexOf("::");
+      if (sep < 0) continue;
+      const fileName = key.slice(0, sep);
+      m.set(fileName, (m.get(fileName) ?? 0) + 1);
+    }
+    return m;
+  }, [statusFile]);
+  const totalMarkedTranslated = useMemo(() => {
+    let n = 0;
+    for (const v of markedTranslatedByFile.values()) n += v;
+    return n;
+  }, [markedTranslatedByFile]);
   const [packLog, setPackLog] = useState<string[]>([]);
   const [packing, setPacking] = useState(false);
   const [packMenuOpen, setPackMenuOpen] = useState(false);
@@ -1222,10 +1256,13 @@ export function HbrEditor({ onHome }: Props) {
       // Статус-фільтр: визначаємо isTranslated як у parseHbrJson:
       // current !== original AND current не порожній. System-row (тільки
       // теги типу <space=0em>, прочерк «-» тощо) автоматично translated.
+      // markedTranslated (manual ПКМ-toggle) теж рахується як translated.
       const isSystem = isHbrSystemRow(it.original);
       const isSame = it.current === it.original;
       const isEmpty = !it.current || it.current.trim().length === 0;
-      const isTranslated = isSystem || (!isSame && !isEmpty);
+      const sk = activeFile ? statusKey(activeFile.file, it.textId, it.variantIdx) : "";
+      const marked = !!(sk && statusFile.entries[sk]?.markedTranslated);
+      const isTranslated = isSystem || marked || (!isSame && !isEmpty);
       if (rowFilter === "untranslated" && isTranslated) return false;
       if (rowFilter === "translated" && !isTranslated) return false;
       if (rowFilter === "samesAsOriginal" && !isSame) return false;
@@ -1236,23 +1273,26 @@ export function HbrEditor({ onHome }: Props) {
         it.current.toLowerCase().includes(q)
       );
     });
-  }, [parsed, search, rowFilter]);
+  }, [parsed, search, rowFilter, statusFile, activeFile, statusKey]);
 
   return (
     <div className="flex-1 flex flex-col bg-[var(--bg)] min-h-0">
       <header className="h-12 px-4 border-b border-[var(--border-soft)] bg-[var(--bg-surface)] flex items-center gap-2 shrink-0">
         <button className="dp-btn dp-btn--ghost" onClick={onHome} title={t("header.home")}>←</button>
         <span className="text-[13px] font-semibold text-[var(--text-strong)] truncate">Hotel Barcelona · Text</span>
-        {projectStats && (
+        {projectStats && (() => {
+          const tr = projectStats.translated + totalMarkedTranslated;
+          return (
           <span className="text-[11px] text-[var(--text-faint)] font-mono tabular-nums">
-            {projectStats.translated.toLocaleString("uk-UA")}/{projectStats.total.toLocaleString("uk-UA")}
+            {tr.toLocaleString("uk-UA")}/{projectStats.total.toLocaleString("uk-UA")}
             {projectStats.total > 0 && (
               <span className="ml-1 text-[var(--text-muted)]">
-                · {((projectStats.translated / projectStats.total) * 100).toFixed(1)}%
+                · {((tr / projectStats.total) * 100).toFixed(1)}%
               </span>
             )}
           </span>
-        )}
+          );
+        })()}
         <div className="flex-1" />
         {phase === "ready" && (
           <>
@@ -1718,6 +1758,12 @@ export function HbrEditor({ onHome }: Props) {
                 >
                   {t("status.toggleBookmark")}
                 </li>
+                <li
+                  className={`px-3 py-1.5 hover:bg-[var(--row-hover)] cursor-pointer ${entry?.markedTranslated ? "text-[var(--success)] font-semibold" : ""}`}
+                  onClick={() => { toggleRowMarkedTranslated(idx); setCtxMenu(null); }}
+                >
+                  {entry?.markedTranslated ? t("status.unmarkTranslated") : t("status.markTranslated")}
+                </li>
                 <li className="border-t border-[var(--border-soft)] my-0.5" />
                 <li
                   className="px-3 py-1.5 hover:bg-[var(--row-hover)] cursor-pointer"
@@ -1850,7 +1896,9 @@ export function HbrEditor({ onHome }: Props) {
                 </>
               )}
               {globalHits === null && files.map((f) => {
-                const st = fileStats[f.file];
+                const base = fileStats[f.file];
+                const extra = markedTranslatedByFile.get(f.file) ?? 0;
+                const st = base ? { total: base.total, translated: base.translated + extra } : undefined;
                 const pct = st && st.total > 0 ? Math.round((st.translated / st.total) * 100) : 0;
                 const isActive = activeFile?.donePath === f.donePath;
                 // Кольорова "ліва смужка" за рівнем прогресу: червона (0%),
@@ -1917,7 +1965,11 @@ export function HbrEditor({ onHome }: Props) {
                       onChange={(e) => setSearchDraft(e.target.value)}
                     />
                     <span className="text-[11px] text-[var(--text-faint)] tabular-nums">
-                      {parsed.translatedItems}/{parsed.totalItems} · {parsed.totalItems > 0 ? ((parsed.translatedItems / parsed.totalItems) * 100).toFixed(1) : "0.0"}%
+                      {(() => {
+                        const extra = activeFile ? (markedTranslatedByFile.get(activeFile.file) ?? 0) : 0;
+                        const tr = parsed.translatedItems + extra;
+                        return `${tr}/${parsed.totalItems} · ${parsed.totalItems > 0 ? ((tr / parsed.totalItems) * 100).toFixed(1) : "0.0"}%`;
+                      })()}
                     </span>
                   </div>
                   <div className="flex gap-1 text-[11px]">
@@ -1963,6 +2015,7 @@ export function HbrEditor({ onHome }: Props) {
                             active={activeItemIndex === realIdx}
                             status={entry?.status}
                             bookmark={entry?.bookmark}
+                            markedTranslated={entry?.markedTranslated}
                             onSelect={handleRowSelect}
                             onContextMenu={handleRowContextMenu}
                           />
@@ -1983,13 +2036,17 @@ export function HbrEditor({ onHome }: Props) {
                       label: t("hbr.footer.total"),
                       value: parsed.totalItems,
                     },
-                    {
-                      label: t("hbr.footer.translated"),
-                      value: `${parsed.translatedItems} (${parsed.totalItems > 0
-                        ? ((parsed.translatedItems / parsed.totalItems) * 100).toFixed(1)
-                        : "0.0"}%)`,
-                      tone: "success",
-                    },
+                    (() => {
+                      const extra = activeFile ? (markedTranslatedByFile.get(activeFile.file) ?? 0) : 0;
+                      const tr = parsed.translatedItems + extra;
+                      return {
+                        label: t("hbr.footer.translated"),
+                        value: `${tr} (${parsed.totalItems > 0
+                          ? ((tr / parsed.totalItems) * 100).toFixed(1)
+                          : "0.0"}%)`,
+                        tone: "success" as const,
+                      };
+                    })(),
                     ...(activeItemIndex !== null && parsed.items[activeItemIndex]
                       ? [{
                           label: t("hbr.footer.position"),

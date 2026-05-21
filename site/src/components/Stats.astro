@@ -1,0 +1,20 @@
+---
+import L from "./L.astro";
+interface Stat { num: string; uk: string; en: string; }
+const stats: Stat[] = [
+  { num: "5",     uk: "Підтримуваних ігор",          en: "Games supported" },
+  { num: "3",     uk: "Реверс-розкритих форматів",   en: "Custom binary formats reversed" },
+  { num: "20K+",  uk: "Перекладних рядків",          en: "Translatable strings indexed" },
+  { num: "87 MB", uk: "Portable, без installer-а",   en: "Portable, no installer" },
+];
+---
+<div class="stats-strip">
+  <div class="stats-grid">
+    {stats.map((s) => (
+      <div>
+        <div class="stat-num">{s.num}</div>
+        <div class="stat-label"><L uk={s.uk} en={s.en} /></div>
+      </div>
+    ))}
+  </div>
+</div>

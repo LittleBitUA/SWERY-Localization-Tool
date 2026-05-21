@@ -1,0 +1,16 @@
+{
+  "name": "swery-localization-tool-site",
+  "private": true,
+  "type": "module",
+  "version": "0.1.0",
+  "description": "Landing page for SWERY Localization Tool",
+  "scripts": {
+    "dev": "astro dev",
+    "build": "astro build",
+    "preview": "astro preview",
+    "astro": "astro"
+  },
+  "dependencies": {
+    "astro": "^4.16.0"
+  }
+}

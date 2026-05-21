@@ -7,14 +7,14 @@
 **Універсальний редактор українізації для ігор Swery / White Owls** &nbsp;·&nbsp;
 **A unified Ukrainian-localization editor for Swery / White Owls games**
 
-[![Latest Release](https://img.shields.io/github/v/release/LittleBitUA/Deadly-Premonition-Localization-Tool?style=flat-square&color=58a6ff&label=release)](https://github.com/LittleBitUA/Deadly-Premonition-Localization-Tool/releases/latest)
-[![Downloads](https://img.shields.io/github/downloads/LittleBitUA/Deadly-Premonition-Localization-Tool/total?style=flat-square&color=3fb950)](https://github.com/LittleBitUA/Deadly-Premonition-Localization-Tool/releases)
+[![Latest Release](https://img.shields.io/github/v/release/LittleBitUA/SWERY-Localization-Tool?style=flat-square&color=58a6ff&label=release)](https://github.com/LittleBitUA/SWERY-Localization-Tool/releases/latest)
+[![Downloads](https://img.shields.io/github/downloads/LittleBitUA/SWERY-Localization-Tool/total?style=flat-square&color=3fb950)](https://github.com/LittleBitUA/SWERY-Localization-Tool/releases)
 [![License](https://img.shields.io/badge/license-MIT-d29922?style=flat-square)](LICENSE)
-[![Platform](https://img.shields.io/badge/platform-Windows-0d1117?style=flat-square)](https://github.com/LittleBitUA/Deadly-Premonition-Localization-Tool/releases/latest)
+[![Platform](https://img.shields.io/badge/platform-Windows-0d1117?style=flat-square)](https://github.com/LittleBitUA/SWERY-Localization-Tool/releases/latest)
 [![Electron](https://img.shields.io/badge/Electron-33.4-9feaf9?style=flat-square&logo=electron&logoColor=black)](https://www.electronjs.org/)
 [![React](https://img.shields.io/badge/React-18-61dafb?style=flat-square&logo=react&logoColor=black)](https://react.dev/)
 
-### [⬇️ Завантажити останню версію / Download latest release ⬇️](https://github.com/LittleBitUA/Deadly-Premonition-Localization-Tool/releases/latest)
+### [⬇️ Завантажити останню версію / Download latest release ⬇️](https://github.com/LittleBitUA/SWERY-Localization-Tool/releases/latest)
 
 </div>
 
@@ -91,7 +91,7 @@
 
 ### 📦 Швидкий старт
 
-1. Завантаж portable `.exe` з [Releases](https://github.com/LittleBitUA/Deadly-Premonition-Localization-Tool/releases/latest).
+1. Завантаж portable `.exe` з [Releases](https://github.com/LittleBitUA/SWERY-Localization-Tool/releases/latest).
 2. Запусти — пройди майстер налаштування (вкаже шлях до гри і автоматично завантажить інструменти).
 3. На головному екрані обери гру:
    - **Deadly Premonition** → вкажи `eng.json` від DPMsgTool.
@@ -118,8 +118,8 @@
 ### 🧩 Збірка з джерел
 
 ```bash
-git clone https://github.com/LittleBitUA/Deadly-Premonition-Localization-Tool.git
-cd Deadly-Premonition-Localization-Tool
+git clone https://github.com/LittleBitUA/SWERY-Localization-Tool.git
+cd SWERY-Localization-Tool
 npm install
 npm run dev          # Vite + Electron у dev-режимі
 npm run build:exe    # Portable .exe → release/
@@ -198,7 +198,7 @@ npm run build:exe    # Portable .exe → release/
 
 ### 📦 Quick start
 
-1. Download the portable `.exe` from [Releases](https://github.com/LittleBitUA/Deadly-Premonition-Localization-Tool/releases/latest).
+1. Download the portable `.exe` from [Releases](https://github.com/LittleBitUA/SWERY-Localization-Tool/releases/latest).
 2. Launch — the first-run wizard will set paths and download dependencies.
 3. On the home screen pick a game:
    - **Deadly Premonition** → point to DPMsgTool's `eng.json`.
@@ -225,8 +225,8 @@ npm run build:exe    # Portable .exe → release/
 ### 🧩 Build from source
 
 ```bash
-git clone https://github.com/LittleBitUA/Deadly-Premonition-Localization-Tool.git
-cd Deadly-Premonition-Localization-Tool
+git clone https://github.com/LittleBitUA/SWERY-Localization-Tool.git
+cd SWERY-Localization-Tool
 npm install
 npm run dev          # Vite + Electron in dev mode
 npm run build:exe    # Portable .exe → release/

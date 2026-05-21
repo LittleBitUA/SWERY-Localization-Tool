@@ -10,6 +10,9 @@ export interface StatusEntry {
   status?: StatusKind;
   bookmark?: true;
   note?: string;
+  /** Manual override: рядок не змінювали (системний, plain `:)`, тощо), але
+   *  користувач натиснув ПКМ → «Позначити перекладеним», щоб % рахувався. */
+  markedTranslated?: true;
 }
 
 export interface StatusFile {
@@ -43,7 +46,7 @@ export async function writeStatusFile(path: string, file: StatusFile): Promise<v
 export function pruneEntry(file: StatusFile, key: string): StatusFile {
   const cur = file.entries[key];
   if (!cur) return file;
-  const isEmpty = !cur.status && !cur.bookmark && !cur.note;
+  const isEmpty = !cur.status && !cur.bookmark && !cur.note && !cur.markedTranslated;
   if (!isEmpty) return file;
   const { [key]: _drop, ...rest } = file.entries;
   return { ...file, entries: rest };

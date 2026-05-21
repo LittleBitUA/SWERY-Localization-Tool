@@ -1,0 +1,162 @@
+---
+import L from "./L.astro";
+interface Field { label: { uk: string; en: string }; value: string; }
+interface Case {
+  no: string;
+  region: string;
+  title: string;
+  altname: string;
+  fields: Field[];
+  progress: number;
+  note: { uk: string; en: string };
+  stamp: "active" | "closed";
+}
+
+const lbl = {
+  platform:  { uk: "Платформа", en: "Platform"  },
+  format:    { uk: "Формат",    en: "Format"    },
+  editors:   { uk: "Редактори", en: "Editors"   },
+  records:   { uk: "Записи",    en: "Records"   },
+  tools:     { uk: "Тулкіт",    en: "Tools"     },
+  engine:    { uk: "Рушій",     en: "Engine"    },
+  specific:  { uk: "Особливе",  en: "Specific"  },
+  risk:      { uk: "Ризик",     en: "Risk"      },
+};
+
+const cases: Case[] = [
+  {
+    no: "001", region: "NA",
+    title: "Deadly Premonition",
+    altname: "— The Director's Cut, 2013 —",
+    fields: [
+      { label: lbl.platform, value: "PC · Steam" },
+      { label: lbl.format,   value: ".mes / DPMsgTool" },
+      { label: lbl.editors,  value: "Text · Fonts · Textures" },
+      { label: lbl.records,  value: "~20,000" },
+    ],
+    progress: 8,
+    note: {
+      uk: "Greenvale's coffee dialogues, FONTWIDE.DDS atlas, custom XPC2 textures.",
+      en: "Greenvale's coffee dialogues, FONTWIDE.DDS atlas, custom XPC2 textures.",
+    },
+    stamp: "active",
+  },
+  {
+    no: "002", region: "NA",
+    title: "Deadly Premonition 2",
+    altname: "— A Blessing in Disguise, 2020 —",
+    fields: [
+      { label: lbl.platform, value: "PC · Steam" },
+      { label: lbl.format,   value: "sharedassets / .assets" },
+      { label: lbl.editors,  value: "Text · Fonts · Textures" },
+      { label: lbl.tools,    value: "UABEA + PowerShell 7" },
+    ],
+    progress: 9,
+    note: {
+      uk: "Le Carré, кривавий небосхил. Сім asset-шрифтів, 22 текстури, cross-game TM.",
+      en: "Le Carré, bloody sky. Seven asset fonts, 22 textures, cross-game TM.",
+    },
+    stamp: "active",
+  },
+  {
+    no: "005", region: "JP",
+    title: "THE MISSING",
+    altname: "— J.J. Macfield and the Island of Memories, 2018 —",
+    fields: [
+      { label: lbl.platform, value: "PC · Steam" },
+      { label: lbl.format,   value: "MSG.* + IMHeightInfo" },
+      { label: lbl.editors,  value: "Text · Fonts · Textures · Box-sizes" },
+      { label: lbl.risk,     value: "int16 overflow trap" },
+    ],
+    progress: 10,
+    note: {
+      uk: "Незалежний reverse — без TF2 source. Box-sizes auto-fit включено.",
+      en: "Independent reverse — no TF2 source reused. Box-sizes auto-fit included.",
+    },
+    stamp: "closed",
+  },
+  {
+    no: "003", region: "JP",
+    title: "The Good Life",
+    altname: "— Rainy Woods, 2021 —",
+    fields: [
+      { label: lbl.platform, value: "PC · Steam" },
+      { label: lbl.format,   value: "loc/English (binary)" },
+      { label: lbl.editors,  value: "Text · Fonts" },
+      { label: lbl.engine,   value: "Unity 2020.1.17f1" },
+    ],
+    progress: 7,
+    note: {
+      uk: "Custom binary container, bitmap-font з atlas-painting + glyph injection.",
+      en: "Custom binary container, bitmap-font with atlas painting + glyph injection.",
+    },
+    stamp: "active",
+  },
+  {
+    no: "004", region: "INT",
+    title: "Hotel Barcelona",
+    altname: "— Suda × Swery, 2025 —",
+    fields: [
+      { label: lbl.platform, value: "PC · Steam" },
+      { label: lbl.format,   value: "Unity Addressables bundle" },
+      { label: lbl.editors,  value: "Text · Fonts" },
+      { label: lbl.specific, value: "Patch-aware hash migration" },
+    ],
+    progress: 8,
+    note: {
+      uk: "Bundle-hash змінюється з кожним патчем — авто-міграція перекладу.",
+      en: "Bundle hash changes per patch — auto-migration of translations.",
+    },
+    stamp: "active",
+  },
+];
+---
+<section class="section" id="cases">
+  <div class="section-inner">
+    <div class="section-tag">Active casefiles · 001 — 005</div>
+    <h2 class="section-title">
+      <L uk="П'ять ігор SWERY / White Owls." en="Five SWERY / White Owls games." /><br>
+      <L uk="Один pipeline." en="One workflow." />
+    </h2>
+    <p class="section-lede">
+      <L
+        uk="Кожна гра приносить власний неповторний бінарний формат. Інструмент реверсує їх so you can translate, not fight files."
+        en="Each title ships with its own beautiful idiosyncratic binary format. The toolkit reverse-engineers them so you can translate, not fight files."
+      />
+    </p>
+
+    <div class="cases">
+      {cases.map((c) => (
+        <article class="folder reveal">
+          <span class="folder__tab">Case {c.no}</span>
+          <div class="folder__paper">
+            <div class="folder__case-line">
+              <L uk="Subject dossier" en="Subject dossier" /> · {c.region}
+            </div>
+            <div class="folder__subject">{c.title}</div>
+            <div class="folder__altname">{c.altname}</div>
+            {c.fields.map((f) => (
+              <div class="folder__field">
+                <span class="folder__field-label"><L uk={f.label.uk} en={f.label.en} /></span>
+                <span class="folder__field-value">{f.value}</span>
+              </div>
+            ))}
+            <div class="folder__progress" aria-hidden="true">
+              {Array.from({ length: 10 }).map((_, i) => (
+                <span class={i < c.progress ? "on" : ""}></span>
+              ))}
+            </div>
+            <span class="folder__note">
+              <L uk={c.note.uk} en={c.note.en} />
+            </span>
+            <span class={`folder__stamp ${c.stamp === "closed" ? "green" : ""}`}>
+              {c.stamp === "closed"
+                ? <L uk="Розібрано" en="Reversed" />
+                : <L uk="Готово" en="Ready" />}
+            </span>
+          </div>
+        </article>
+      ))}
+    </div>
+  </div>
+</section>

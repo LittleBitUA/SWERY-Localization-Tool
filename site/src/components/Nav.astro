@@ -1,0 +1,22 @@
+---
+import LangSwitch from "./LangSwitch.astro";
+import L from "./L.astro";
+const downloadHref = "https://github.com/LittleBitUA/SWERY-Localization-Tool/releases/latest";
+---
+<nav class="nav">
+  <div class="nav-inner">
+    <a href="#" class="nav-brand">
+      <span class="nav-brand-mark">S</span>
+      <span>SWERY · LOCALIZATION</span>
+    </a>
+    <div class="nav-links">
+      <a href="#cases"><L uk="Ігри" en="Games" /></a>
+      <a href="#capabilities"><L uk="Можливості" en="Features" /></a>
+      <a href="#modding"><L uk="Reverse" en="Reverse" /></a>
+    </div>
+    <a class="nav-cta" href={downloadHref}>
+      <L uk="Завантажити" en="Download" />
+    </a>
+    <LangSwitch />
+  </div>
+</nav>

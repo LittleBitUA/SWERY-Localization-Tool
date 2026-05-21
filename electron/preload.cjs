@@ -79,6 +79,26 @@ contextBridge.exposeInMainWorld("dp2", {
   dp1Pack: () => ipcRenderer.invoke("dp2:dp1-pack"),
   dp1GlyphMapRead: () => ipcRenderer.invoke("dp2:dp1-glyphmap-read"),
   dp1GlyphMapWrite: (payload) => ipcRenderer.invoke("dp2:dp1-glyphmap-write", payload),
+  dp1TexturesList: () => ipcRenderer.invoke("dp2:dp1-textures-list"),
+  dp1TexturesExtractAll: () => ipcRenderer.invoke("dp2:dp1-textures-extract-all"),
+  dp1TexturesPackAll: () => ipcRenderer.invoke("dp2:dp1-textures-pack-all"),
+  dp1TextureReadPayload: (relPath) => ipcRenderer.invoke("dp2:dp1-texture-read-payload", relPath),
+  dp1TextureReplaceOne: (payload) => ipcRenderer.invoke("dp2:dp1-texture-replace-one", payload),
+  onDp1TexturesProgress: (cb) => {
+    const h = (_e, payload) => cb(payload);
+    ipcRenderer.on("dp2:dp1-textures-progress", h);
+    return () => ipcRenderer.removeListener("dp2:dp1-textures-progress", h);
+  },
+  dp1FontsPrep: () => ipcRenderer.invoke("dp2:dp1-fonts-prep"),
+  dp1FontsReadRgba: () => ipcRenderer.invoke("dp2:dp1-fonts-read-rgba"),
+  dp1FontsSaveRgba: (payload) => ipcRenderer.invoke("dp2:dp1-fonts-save-rgba", payload),
+  readFontFile: (fontPath) => ipcRenderer.invoke("dp2:read-font-file", fontPath),
+  dp1FontsEnsureTypeface: () => ipcRenderer.invoke("dp2:dp1-fonts-ensure-typeface"),
+  onDp1FontsTypefaceProgress: (cb) => {
+    const h = (_e, payload) => cb(payload);
+    ipcRenderer.on("dp2:dp1-fonts-typeface-progress", h);
+    return () => ipcRenderer.removeListener("dp2:dp1-fonts-typeface-progress", h);
+  },
   tglLoad: (binPath) => ipcRenderer.invoke("dp2:tgl-load", binPath),
   tglSaveWorkfile: (payload) => ipcRenderer.invoke("dp2:tgl-save-workfile", payload),
   tglPack: (payload) => ipcRenderer.invoke("dp2:tgl-pack", payload),

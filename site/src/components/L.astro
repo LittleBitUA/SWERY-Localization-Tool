@@ -1,0 +1,26 @@
+---
+// Шортхенд для i18n: <L uk="..." en="..." />. Рендериться як 2 span-и,
+// CSS показує лише активний lang. Підтримує raw-HTML через set:html.
+interface Props {
+  uk: string;
+  en: string;
+  /** Якщо true — рендеримо як <div> з display:block, інакше inline span. */
+  block?: boolean;
+  /** HTML дозволено (для <code>, <br> тощо). */
+  html?: boolean;
+}
+const { uk, en, block = false, html = false } = Astro.props;
+const Tag = block ? "div" : "span";
+const blockClass = block ? " block" : "";
+---
+{html ? (
+  <>
+    <Tag data-i18n="uk" class={blockClass.trim()} set:html={uk} />
+    <Tag data-i18n="en" class={blockClass.trim()} set:html={en} />
+  </>
+) : (
+  <>
+    <Tag data-i18n="uk" class={blockClass.trim()}>{uk}</Tag>
+    <Tag data-i18n="en" class={blockClass.trim()}>{en}</Tag>
+  </>
+)}

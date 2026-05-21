@@ -28,16 +28,18 @@ export function isHbrSystemRow(original: string): boolean {
 }
 
 // Витягуємо набір службових маркерів з тексту для valid-check.
-// Формат: placeholders `{0}`, `{name}`, `${var}`; HTML/inline tags `<color=...>`,
-// `</color>`; control sequences `\n`, `\r\n`; bracket-controls `[c="..."]`,
-// `[/c]`, `[Job]`, тощо (типові для Unity-локалізацій).
+// Формат: placeholders `{0}`, `{name}`, `${var}`; HTML/inline tags
+// `<color=red>`, `</color>`; control sequences `\n`, `\r\n`.
+//
+// УВАГА: квадратні дужки `[Continue]`, `[Shockwave]`, `[Dodge]` тощо НЕ
+// валідуємо — у HBR це **template references**, які гра підставляє з
+// інших translation-entries, тобто їх МОЖНА і ТРЕБА перекладати на
+// українські відповідники (наприклад `[Продовжити]`). Раніше pre-pack lint
+// помилково червонив 21 рядок у 61 файлі з цієї причини.
 const PLACEHOLDER_RES = [
   /\{[A-Za-z0-9_]+\}/g,         // {0}, {name}
   /\$\{[^}]+\}/g,               // ${var}
   /<\/?[A-Za-z][^>]*>/g,        // <color=red>, </color>
-  /\[\/?[A-Za-z][^\] ]*\]/g,    // [c="..."], [/c], [Job] — БЕЗ пробілу
-                                //  всередині, інакше ловило б "[RATED R]"
-                                //  (це звичайний текст, а не Unity-тег).
   /\\n/g, /\\r\\n/g,            // \n, \r\n у літералах
 ];
 export function extractPlaceholders(s: string): string[] {
@@ -103,7 +105,10 @@ export function parseHbrJson(raw: string, origRaw: string | null, donePath: stri
     texts.forEach((t, vi) => {
       const cur = t._Text ?? "";
       const orig = origTexts[vi]?._Text ?? cur;
-      if (cur !== orig && cur.trim().length > 0) translated++;
+      // System-row (tag-only / placeholder dashes) — нема чого перекладати,
+      // рахуємо як translated автоматично (так само як UI border/filter).
+      const isSystem = isHbrSystemRow(orig);
+      if (isSystem || (cur !== orig && cur.trim().length > 0)) translated++;
       items.push({
         textId, variantIdx: vi, original: orig, current: cur, listIdx,
       });

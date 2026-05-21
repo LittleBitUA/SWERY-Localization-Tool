@@ -1,0 +1,283 @@
+================================================================================
+THE GOOD LIFE (Swery / White Owls) — MODDING & LOCALIZATION NOTES
+================================================================================
+
+This document describes the internal layout and conventions discovered while
+implementing Ukrainian localization tooling for The Good Life. It targets
+modders who want to write their own tools or modify the game directly without
+going through this toolkit.
+
+The Good Life is a Unity 2020.1.17f1 title built for StandaloneWindows64. It
+ships as a standard Unity build (StandaloneWindows64_Data folder), but the
+text and font data are packed in non-obvious ways that need explaining.
+
+
+--------------------------------------------------------------------------------
+1. DIRECTORY LAYOUT
+--------------------------------------------------------------------------------
+
+  The Good Life/
+    StandaloneWindows64_Data/
+      StreamingAssets/
+        loc/
+          English        ← localized text bundle (no extension, ~7-15 MB)
+          Japanese       ← same format, JP locale
+          (more locale files when present)
+        c0718fc478f6943d ← font Asset Bundle (~17 MB, no extension)
+        … many other content bundles …
+      resources.assets   ← standard Unity resources, scenes etc.
+      sharedassets*.assets
+      …
+
+
+--------------------------------------------------------------------------------
+2. TEXT FORMAT — StreamingAssets/loc/English
+--------------------------------------------------------------------------------
+
+The "loc/English" file is a custom binary container (NOT a Unity Asset Bundle).
+It holds an ordered list of records; each record has:
+
+  - a 32-bit Length-prefixed UTF-16-LE byte block (the entry payload)
+  - inside that block: a small header followed by a UTF-16 string
+
+The game treats each record as one localized line, indexed by position. To
+preserve playable output, a packer MUST keep record count, record order and
+internal block sizes consistent. Length prefixes are read by the engine
+unconditionally — if the size in the prefix mismatches the actual byte length,
+the next record is read from the wrong offset and everything downstream is
+garbage.
+
+Key facts a writer must respect:
+
+  • Encoding is UTF-16 little-endian (2 bytes per char for the BMP). Avoid
+    code points above U+FFFF unless you verify the engine supports surrogate
+    pairs — the safe set is BMP only.
+
+  • The 4-byte length prefix is the SIZE OF THE PAYLOAD IN BYTES (not in
+    chars, not including the 4 prefix bytes themselves).
+
+  • Replacing English with Cyrillic (Ukrainian/Russian) does NOT require
+    changing the file header. The engine reads bytes as UTF-16 and renders
+    whatever code points the font atlas contains. If you need glyphs the
+    font doesn't have, you must extend the bitmap atlas (see section 4).
+
+  • Always write a .bak before the first overwrite. The game does not
+    re-verify the file; a corrupted "loc/English" will simply produce blank
+    or garbled subtitles in-game.
+
+
+--------------------------------------------------------------------------------
+3. FONT BUNDLE — StreamingAssets/c0718fc478f6943d
+--------------------------------------------------------------------------------
+
+This file has no extension but it IS a Unity Asset Bundle. It contains a
+single CAB entry that, when loaded, exposes three legacy Unity Font assets
+(TypeID = 128) and three companion Texture2D atlases (TypeID = 28):
+
+  • ChiaroStd-B          (latin + cyrillic, ~8 175 glyphs)
+  • NotoSansSC-Bold      (Simplified Chinese, ~16 K+ glyphs)
+  • NotoSansTC-Bold      (Traditional Chinese, ~16 K+ glyphs)
+
+For Ukrainian/European-language work only ChiaroStd-B matters; the Noto
+fonts can be ignored.
+
+Each Font asset carries an `m_CharacterRects` field — an Array of Unity
+"CharacterInfo" records:
+
+  index    : codepoint (e.g. 65 for 'A')
+  uv       : { x, y, width, height } in normalized atlas coords
+  vert     : { x, y, width, height } in pixels, for glyph layout
+  advance  : float, horizontal cursor advance after the glyph
+  flipped  : bool, see section 4 below
+
+The companion Texture2D is referenced by `m_Texture.m_PathID`. To find the
+atlas for a given font asset, look up the Texture2D whose PathID matches.
+
+
+--------------------------------------------------------------------------------
+4. ATLAS ORIENTATION — THE FLIPPED FIELD AND uv.height SIGN
+--------------------------------------------------------------------------------
+
+This is the most counter-intuitive part of TGL's font handling, and the place
+where most home-grown tools produce upside-down or mirrored glyphs.
+
+Unity stores texture coordinates with the origin at the BOTTOM-LEFT (Y-up).
+PNG atlases (when you decode them) are TOP-LEFT (Y-down). The game pipeline
+flips between the two using a NEGATIVE uv.height value.
+
+Original ChiaroStd-B convention:
+
+  flipped = false:
+      uv.y      = top edge of glyph in Unity Y-up space
+      uv.height = NEGATIVE (e.g. -0.00634…)
+      Engine treats this as: draw the rectangle [uv.y .. uv.y + uv.height],
+      i.e. it walks DOWNWARD in Unity coords. Because PNG Y is inverted,
+      this produces a correctly oriented glyph IF the source bitmap was
+      written into the atlas already flipped vertically.
+
+  flipped = true:
+      Glyph was stored rotated 90° CCW. The engine rotates it back at draw
+      time. This is used for tall or wide glyphs to save atlas space.
+
+When you write a NEW glyph into the atlas, two things must agree:
+
+  (a) The pixel bitmap you draw must be Y-flipped relative to the source
+      canvas. If you measureText() and render onto a JS canvas, the result
+      is in PNG Y-down orientation — you MUST flip it before pasting into
+      the atlas. Otherwise the in-game subtitle shows the letter upside
+      down, even though the editor preview looks correct.
+
+      The reliable recipe:
+          - draw character to an offscreen canvas at its natural orientation
+          - create a second canvas of the same size
+          - apply ctx.translate(0, h); ctx.scale(1, -1)
+          - drawImage(source, 0, 0)
+          - blit this flipped buffer to the atlas at (foundX, foundY)
+
+  (b) The CharacterInfo entry must use the same convention as neighbouring
+      glyphs:
+          uv.y        = (atlasHeight - top_y_pixel) / atlasHeight
+          uv.width    =  bitmapW / atlasWidth          (positive)
+          uv.height   = -bitmapH / atlasHeight         (NEGATIVE)
+          flipped     =  false                         (for normal glyphs)
+
+If you skip the bitmap flip OR forget the negative uv.height, the glyph
+will appear inverted in-game. Both must match.
+
+To DELETE a glyph cleanly:
+   - remove its CharacterInfo record
+   - clearRect() the (sx, top, sw, sh) region in the atlas, where:
+       sx  = uv.x * atlasWidth
+       sw  = uv.width * atlasWidth
+       top = (1 - uv.y) * atlasHeight
+       sh  = |uv.height| * atlasHeight
+   - write the modified PNG back via the same texture-pair flow
+
+Leaving the bitmap region intact is harmless — the engine only renders what
+the CharacterInfo array points to.
+
+
+--------------------------------------------------------------------------------
+5. ATLAS WRITE-BACK PIPELINE
+--------------------------------------------------------------------------------
+
+The Texture2D referenced by m_Texture.m_PathID stores raw pixel bytes in the
+asset format Unity expects (typically DXT5 / BC3 for these fonts). To
+replace the atlas:
+
+  1. Encode your PNG into the same TextureFormat as the original. Read
+     m_TextureFormat from the existing Texture2D first — do not assume.
+
+  2. Update three fields on the Texture2D:
+        m_CompleteImageSize  = new byte count
+        image_data.Array     = new encoded bytes
+        m_StreamData         = { offset: 0, size: 0, path: "" }
+                              (force inline storage — TGL fonts do NOT use
+                              external .resS streams, but be defensive)
+
+  3. Update the Font asset's m_CharacterRects.Array. Clone the existing
+     children's template field, fill in the per-glyph values, append.
+
+  4. Write the modified AssetsFile back into the bundle:
+        bundle.BlockAndDirInfo.DirectoryInfos[0].SetNewData(assetsFile)
+        bundle.Write(writer)
+
+  5. Replace the original "c0718fc478f6943d" file atomically (write to .tmp,
+     move-rename). The game re-reads the bundle at next launch; nothing
+     else needs to be invalidated.
+
+Always keep a .bak of the original bundle before the first write. Bundle
+serialization has version-specific quirks; verifying that the game still
+boots after each iterative change saves hours of debugging later.
+
+
+--------------------------------------------------------------------------------
+6. PathID HANDLING — 64-BIT PRECISION
+--------------------------------------------------------------------------------
+
+Unity PathIDs are 64-bit signed integers. In TGL they routinely reach
+magnitudes like -4870746686491124053. JavaScript's standard Number type
+cannot represent these precisely (only 53 significant bits).
+
+If you use JSON.parse() to read an AssetsTools dump and then write the
+PathID back, you WILL silently corrupt it. The last few digits will be
+rounded and the engine will fail to find the referenced texture, leaving
+fonts unrendered.
+
+Two safe approaches:
+
+  • Process Font JSON as raw text. Extract m_PathID values with a regex
+    that captures the digit string verbatim, and splice the modified
+    sections back without ever parsing them as numbers.
+
+  • If you must use a JSON parser, prefer one that supports BigInt or
+    string-preserving numeric mode for large integers (e.g. json-bigint).
+
+
+--------------------------------------------------------------------------------
+7. CHARACTER COVERAGE FOR UKRAINIAN
+--------------------------------------------------------------------------------
+
+ChiaroStd-B ships with full ASCII + most of Cyrillic, BUT misses these
+Ukrainian-specific glyphs out of the box:
+
+  Є  є  І  і  Ї  ї  Ґ  ґ  ’
+
+These must be added to the atlas before Ukrainian text will render. The
+typical workflow:
+
+  1. Load a TTF/OTF that contains the missing letters (any system font that
+     covers Cyrillic Supplementary works).
+  2. Render each missing letter at font size 30 (matches m_FontSize for
+     ChiaroStd-B) into a tight bounding-box canvas.
+  3. Capture metrics via canvas.measureText():
+        advance       = measureText.width
+        bearingLeft   = actualBoundingBoxLeft  (use for vert.x)
+        ascent        = actualBoundingBoxAscent  (use for vert.y)
+  4. Find a free rectangle on the atlas (alpha = 0 everywhere in the
+     candidate region — the centre of letters like "О" is also alpha=0,
+     so check every pixel, not every 4th).
+  5. Y-flip the bitmap, paste at (foundX + pad, foundY + pad).
+  6. Append CharacterInfo with the convention from section 4.
+
+A practical optimization: scan the atlas bottom-up. TGL's original atlas
+fills from the top, so the largest contiguous empty area sits near the
+bottom edge.
+
+
+--------------------------------------------------------------------------------
+8. RECOMMENDED VERIFICATION
+--------------------------------------------------------------------------------
+
+After any change to the font bundle:
+
+  • Boot the game past the main menu.
+  • Trigger a known subtitle (e.g. start a new save, observe the intro
+    cinematic). Garbled text or missing glyphs surface within seconds.
+  • If subtitles render as boxes / mojibake, you almost certainly broke a
+    PathID (section 6) or an offset (sections 5 and 2).
+  • If letters render upside down, revisit section 4 — the flip is wrong.
+
+
+--------------------------------------------------------------------------------
+9. UNITY VERSION-SPECIFIC NOTES
+--------------------------------------------------------------------------------
+
+The Good Life is Unity 2020.1.17f1. Notable for modders:
+
+  • Class database for this version exposes Font (128) and Texture2D (28)
+    with the field names used above. Newer Unity versions split this into
+    TextMeshPro assets — TGL does NOT use TMP.
+
+  • Texture2D for the font atlases is stored inline (m_StreamData.size = 0).
+    Unlike many later Unity titles, you do not have to patch a .resS file.
+
+  • The bundle uses LZ4 compression on its blocks. Any read/write pipeline
+    must round-trip the compressed format; do not save as uncompressed if
+    you want the result the same size as the original (file size mismatch
+    by itself is harmless, but in-place patching becomes harder).
+
+
+================================================================================
+End of document.
+================================================================================

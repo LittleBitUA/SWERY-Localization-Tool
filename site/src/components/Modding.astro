@@ -1,0 +1,61 @@
+---
+import L from "./L.astro";
+interface FieldReport {
+  href: string;
+  tag: string;
+  title: { uk: string; en: string };
+  body:  { uk: string; en: string };
+}
+const reports: FieldReport[] = [
+  {
+    href: "https://github.com/LittleBitUA/SWERY-Localization-Tool/blob/main/docs/TGL-modding-notes.txt",
+    tag: "Modding · The Good Life",
+    title: {
+      uk: "Custom loc/English container + bitmap font",
+      en: "Custom loc/English container + bitmap font",
+    },
+    body: {
+      uk: "Layout текстового контейнера, font bundle (<code>c0718fc478f6943d</code>), <code>flipped</code> + negative-<code>uv.height</code> convention, atlas write-back, 64-bit PathID precision pitfalls, специфіка Unity 2020.1.17f1.",
+      en: "Text container layout, font bundle (<code>c0718fc478f6943d</code>), <code>flipped</code> + negative-<code>uv.height</code> convention, atlas write-back, 64-bit PathID precision pitfalls, Unity 2020.1.17f1 specifics.",
+    },
+  },
+  {
+    href: "https://github.com/LittleBitUA/SWERY-Localization-Tool/blob/main/docs/THE-MISSING-modding-notes.txt",
+    tag: "Modding · THE MISSING",
+    title: {
+      uk: "MSG payload + IMHeightInfo MonoBehaviour",
+      en: "MSG payload + IMHeightInfo MonoBehaviour",
+    },
+    body: {
+      uk: "Повний MSG layout, length-table семантика, int16 overflow trap що ламає кирилицю, структура IMHeightInfo box-sizes, 4-language slot convention, Auto-fit алгоритм з idempotency-notes, write-back pipeline через UABEANext, шість common pitfalls. Незалежна реалізація — без TF2 source code.",
+      en: "Full MSG layout, length-table semantics, the int16 overflow trap that breaks Cyrillic, IMHeightInfo box-sizes structure, 4-language slot convention, Auto-fit algorithm with idempotency notes, write-back pipeline through UABEANext, six common pitfalls. Independent implementation — no TF2 source reused.",
+    },
+  },
+];
+---
+<section class="section" id="modding">
+  <div class="section-inner">
+    <div class="section-tag">Field reports</div>
+    <h2 class="section-title">
+      <L uk="Reverse-engineering" en="Reverse-engineering" /><br>
+      <L uk="write-ups." en="write-ups." />
+    </h2>
+    <p class="section-lede">
+      <L
+        uk="Складні частини форматів задокументовано простою англійською. Навіть якщо ти не користуєшся додатком — нотатки твої."
+        en="The hard parts of these formats are documented in plain English. Even if you don't use the app, the notes are yours."
+      />
+    </p>
+
+    <div class="field-grid">
+      {reports.map((r) => (
+        <a class="field reveal" href={r.href}>
+          <h4>{r.tag}</h4>
+          <div class="field-title"><L uk={r.title.uk} en={r.title.en} /></div>
+          <p><L html uk={r.body.uk} en={r.body.en} /></p>
+          <span class="open"><L uk="Відкрити нотатку →" en="Open write-up →" /></span>
+        </a>
+      ))}
+    </div>
+  </div>
+</section>

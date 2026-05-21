@@ -1,0 +1,67 @@
+---
+interface Step { num: string; title: string; body: string; items: string[]; }
+const steps: Step[] = [
+  {
+    num: "1",
+    title: "First run",
+    body: "Майстер першого запуску завантажує UABEA Next та PowerShell 7 у <code>Documents/SWERY-Localization-Tool</code>. DPMsgTool для DP1 скачується окремо при першому open DP1-сторінки.",
+    items: [
+      "UABEA Next nightly · ~22 MB",
+      "PowerShell 7 portable · ~110 MB",
+      "DPMsgTool · ~6 MB",
+      "Cinema Calligraphy OTF · ~5 MB",
+    ],
+  },
+  {
+    num: "2",
+    title: "Per-game extract",
+    body: "На головному екрані обираєш гру і режим (Текст / Шрифти / Текстури). Програма extract-ує всі рядки в <code>Original/</code> + копію у <code>Done/</code> як starting point для перекладу.",
+    items: [
+      "DP1 → mes_all.json з DPMsgTool",
+      "DP2 → JSON-дампи sharedassets0.assets",
+      "HBR → UnityFS bundle decode",
+      "MISSING → MSG-payloads + IMHeightInfo",
+    ],
+  },
+  {
+    num: "3",
+    title: "Translate",
+    body: "Monaco-edit, TM-suggestion, glossary-check, name-consistency, live placeholder-diagnostics, autosave кожних 30с, multi-window shortcuts. Combined.txt round-trip для offline-перекладачів.",
+    items: [
+      "Per-row status (draft / review / approved)",
+      "Bookmarks",
+      "Mark-as-translated для :) / ... рядків",
+      "Cross-file find & replace з preview",
+    ],
+  },
+  {
+    num: "4",
+    title: "Pack",
+    body: "Save & Build — інструмент серіалізує переклад, накладає glyphmap (DP1) або зберігає UTF-8 (інші), запускає PowerShell-скрипт що підкладає payload у <code>.assets/.mes</code> у грі. Перший pack створює <code>.bak</code>.",
+    items: [
+      "30 retries при locked-file (антивірус, гра)",
+      "Integrity check перед save",
+      "Auto-bak оригіналу",
+      "Streamed progress у toast",
+    ],
+  },
+];
+---
+<section class="section" style="padding-top: 0;">
+  <div class="section-inner">
+    <div class="section-tag">Daily workflow</div>
+    <h2 class="section-title">From clean Steam install<br>to packed patch.</h2>
+
+    <div class="spread">
+      {steps.map((s) => (
+        <div class="panel reveal">
+          <h3>{s.num} · {s.title}</h3>
+          <p set:html={s.body}></p>
+          <ul>
+            {s.items.map((it) => <li>{it}</li>)}
+          </ul>
+        </div>
+      ))}
+    </div>
+  </div>
+</section>

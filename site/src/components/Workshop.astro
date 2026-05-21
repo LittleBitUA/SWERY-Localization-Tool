@@ -1,0 +1,182 @@
+---
+// Code workshop — tabs з фрагментами коду + поясненнями. Інтерактивність
+// (active tab) — у BaseLayout-script через клас .active.
+---
+<section class="section" id="code">
+  <div class="section-inner">
+    <div class="section-tag">Internal investigation · code</div>
+    <h2 class="section-title">How the toolkit<br>actually works.</h2>
+    <p class="section-lede">
+      Електрон-додаток у двох процесах: renderer (React) і main (Node з file IO,
+      PowerShell-spawn, worker_threads). Тут — головні артефакти кожного модуля.
+    </p>
+
+    <div class="workshop">
+      <div class="workshop-tabs" role="tablist">
+        <button class="workshop-tab active" data-tab="ws-text" role="tab">Text pipeline</button>
+        <button class="workshop-tab" data-tab="ws-fonts" role="tab">Font atlas</button>
+        <button class="workshop-tab" data-tab="ws-msg" role="tab">MSG container</button>
+        <button class="workshop-tab" data-tab="ws-arch" role="tab">Architecture</button>
+      </div>
+
+      <!-- Text pipeline -->
+      <div class="workshop-panel active" id="ws-text">
+        <div>
+          <h4>Extract → Edit → Pack</h4>
+          <p>
+            Усі ігри проходять через <code>Documents/SWERY-Localization-Tool/&lt;GAME&gt;/Text/</code>
+            з трьома папками: <code>Original</code> (read-only reference),
+            <code>Done</code> (editor work), <code>Meta</code> (status / box-sizes / glyphmap).
+          </p>
+          <p>
+            Pack-stage спершу серіалізує переклад через game-specific stringify
+            (CRLF + 2-space indent для DP1, byte-identical bundle структури
+            для HBR, MSG-blocks для MISSING), потім запускає PowerShell-скрипт,
+            що підкладає payload у <code>.assets</code> через UABEA.
+          </p>
+          <ul>
+            <li>DP1 → DPMsgTool from-json + glyphmap substitution</li>
+            <li>DP2 → import-to-assets.ps1 + UABEA</li>
+            <li>TGL → custom binary length-prefix writer</li>
+            <li>HBR → bundle re-write з PathID-preserve</li>
+            <li>MISSING → MSG offset-table rebuild + length-table sync</li>
+          </ul>
+        </div>
+        <pre><span class="com">// scripts/heavy-worker.cjs</span>
+<span class="kw">async function</span> <span class="fn">taskDp1TextSave</span>(payload) &#123;
+  <span class="kw">const</span> &#123; originalJson, doneJson, records &#125; = payload;
+  <span class="com">// FSL — first-segment length, перерахунок:</span>
+  <span class="kw">const</span> original = <span class="fn">JSON.parse</span>(<span class="kw">await</span> fs.readFile(originalJson));
+  <span class="kw">const</span> out = records.map((r, i) =&gt; (&#123;
+    Id1: r.Id1, Id2: r.Id2,
+    FirstSegmentLenght: r.Text === original[i].Text
+      ? original[i].FirstSegmentLenght
+      : <span class="fn">dp1ComputeFsl</span>(r.Text),
+    Text: r.Text,
+    EmptyRecord: !!r.EmptyRecord,
+  &#125;));
+  <span class="kw">const</span> serialized = <span class="fn">dp1StringifyRecords</span>(out);
+  <span class="kw">await</span> fs.writeFile(doneJson, serialized, <span class="str">"utf8"</span>);
+&#125;</pre>
+      </div>
+
+      <!-- Font atlas -->
+      <div class="workshop-panel" id="ws-fonts">
+        <div>
+          <h4>BC1 decoder / encoder — pure JS</h4>
+          <p>
+            DP1 FONTWIDE.DDS = 2048×1184 DXT1 atlas. Тулкіт декодує його у RGBA
+            прямо в Electron main без зовнішніх npm-залежностей, потім renderer
+            відображає у canvas через <code>putImageData</code>.
+          </p>
+          <p>
+            Add-letter flow: користувач малює прямокутник на canvas, обирає
+            літеру + розмір + offset, програма рендерить TTF через
+            <code>FontFace API</code> в offscreen canvas і блітить RGBA-buffer
+            поверх. На save — RGBA повертається у BC1 з header passthrough.
+          </p>
+          <p>
+            Все це з <span class="kbd">Ctrl+Z</span> історією і толерантним
+            до DPI <code>transform: scale()</code>.
+          </p>
+        </div>
+        <pre><span class="com">// BC1 = 4×4 px block, 8 bytes:</span>
+<span class="com">// 2 RGB565 endpoints + 16×2-bit indices</span>
+<span class="kw">function</span> <span class="fn">bc1Decode</span>(buf, w, h) &#123;
+  <span class="kw">const</span> out = <span class="kw">new</span> Uint8Array(w * h * <span class="num">4</span>);
+  <span class="kw">const</span> bx = w &gt;&gt; <span class="num">2</span>, by = h &gt;&gt; <span class="num">2</span>;
+  <span class="kw">for</span> (<span class="kw">let</span> y = <span class="num">0</span>; y &lt; by; y++) &#123;
+    <span class="kw">for</span> (<span class="kw">let</span> x = <span class="num">0</span>; x &lt; bx; x++) &#123;
+      <span class="kw">const</span> off = (y * bx + x) * <span class="num">8</span>;
+      <span class="kw">const</span> c0 = buf.readUInt16LE(off);
+      <span class="kw">const</span> c1 = buf.readUInt16LE(off + <span class="num">2</span>);
+      <span class="kw">const</span> codes = buf.readUInt32LE(off + <span class="num">4</span>);
+      <span class="com">// ...palette + 16-pixel decode</span>
+    &#125;
+  &#125;
+  <span class="kw">return</span> out;
+&#125;</pre>
+      </div>
+
+      <!-- MSG container -->
+      <div class="workshop-panel" id="ws-msg">
+        <div>
+          <h4>MSG.* — THE MISSING binary format</h4>
+          <p>
+            Unity TextAsset з custom payload. Header містить offset-table,
+            string-base, і length-table з міткою <code>(stringIndex, int16 length)</code>.
+            Перевикористання string-індексів — це placeholder-логіка
+            (<code>NO_TEXT_en</code> ділиться між сотнями enum-ів).
+          </p>
+          <p>
+            <code>msgEnum = msgBase × 10000 + i</code> — глобальний стабільний
+            ідентифікатор: index у length-table, msgBase з header. Цей ID
+            переживає re-extract і pack-rebuild, бо не залежить від offset-у.
+          </p>
+          <p>
+            Build-stage: всі рядки re-emit, offset-table перебудовується,
+            length-table перерахується. Якщо UTF-8 length перевищує
+            <code>0x7FFF</code> — кидаємо помилку <strong>до</strong> запису,
+            не <em>після</em>.
+          </p>
+        </div>
+        <pre><span class="com">// m_Script payload layout:</span>
+<span class="com">//   0x00  "MSG."  magic</span>
+<span class="com">//   0x0C  uint32 lengthTableOffset</span>
+<span class="com">//   0x10  uint32 stringOffsetTable</span>
+<span class="com">//   0x14  uint32 stringBase</span>
+<span class="com">//   0x2C  uint32 lengthCount</span>
+<span class="com">//   0x30  uint32 stringCount</span>
+<span class="com">//   0x38  uint32 msgBase  (e.g. 613)</span>
+<span class="com">//</span>
+<span class="com">//   lengthTable[]:  int32 id, int16 length, ...</span>
+<span class="com">//   stringOffsetTable[]:  int32 offset relative to stringBase</span>
+<span class="com">//   stringBase:  null-terminated UTF-8 strings</span>
+
+<span class="kw">if</span> (utf8.length &gt; <span class="num">0x7fff</span>) &#123;
+  <span class="kw">throw new</span> <span class="fn">Error</span>(
+    <span class="str">`MSG length-table overflow: row #</span>$&#123;id&#125;<span class="str">`</span>
+  );
+&#125;</pre>
+      </div>
+
+      <!-- Architecture -->
+      <div class="workshop-panel" id="ws-arch">
+        <div>
+          <h4>Two-process Electron + worker</h4>
+          <p>
+            <strong>Renderer (React 18 + Zustand)</strong> — UI, Monaco-editor,
+            canvas-based font editor, всі модалки. Per-game stores з selectorами.
+          </p>
+          <p>
+            <strong>Main (Node)</strong> — file IO з write-queue, path-traversal guard,
+            settings allow-list, PowerShell spawn для UABEA. Heavy JSON parse
+            делегується у <code>worker_threads</code> через RPC.
+          </p>
+          <p>
+            <strong>Workers</strong> — LRU-cache 300 файлів, mtime-валідація,
+            повторні cross-file операції миттєві (corpus-stats, build-TM,
+            global-search, batch-replace).
+          </p>
+          <p>
+            <strong>Glassmorphic UpdateBanner</strong> опитує GitHub releases
+            із 6h TTL і робить in-app self-update — без installer.
+          </p>
+        </div>
+        <pre><span class="com">// electron/main.cjs — per-path write queue</span>
+<span class="kw">const</span> _locks = <span class="kw">new</span> Map();
+<span class="kw">function</span> <span class="fn">withFileLock</span>(filePath, fn) &#123;
+  <span class="kw">const</span> key = path.resolve(filePath).toLowerCase();
+  <span class="kw">const</span> prev = _locks.get(key) ?? Promise.resolve();
+  <span class="kw">const</span> next = prev.catch(() =&gt; &#123;&#125;).then(() =&gt; <span class="fn">fn</span>());
+  _locks.set(key, next);
+  next.finally(() =&gt; &#123;
+    <span class="kw">if</span> (_locks.get(key) === next) _locks.delete(key);
+  &#125;);
+  <span class="kw">return</span> next;
+&#125;</pre>
+      </div>
+
+    </div>
+  </div>
+</section>

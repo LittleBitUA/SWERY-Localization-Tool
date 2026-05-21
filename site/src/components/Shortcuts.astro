@@ -1,0 +1,40 @@
+---
+interface SC { keys: string[]; label: string; }
+const shortcuts: SC[] = [
+  { keys: ["Ctrl", "Enter"], label: "Зберегти + наступний неперекладений" },
+  { keys: ["Ctrl", "J"],     label: "Наступний неперекладений" },
+  { keys: ["Alt", "↑/↓"],    label: "Між рядками таблиці" },
+  { keys: ["Ctrl", "D"],     label: "Копіювати оригінал" },
+  { keys: ["Ctrl", "S"],     label: "Зберегти" },
+  { keys: ["Ctrl", "Z"],     label: "Undo (у font-editor)" },
+  { keys: ["Ctrl", "H"],     label: "Find & Replace у файлі" },
+  { keys: ["Ctrl", "Shift", "F"], label: "Глобальний пошук" },
+  { keys: ["Ctrl", "G"],     label: "Глосарій" },
+  { keys: ["Ctrl", "Shift", "T"], label: "TM-панель" },
+  { keys: ["Ctrl", "\\"],    label: "Focus mode" },
+  { keys: ["Ctrl", "B"],     label: "Закладка" },
+  { keys: ["Alt", "1/2/3"],  label: "Draft / Review / Approved" },
+  { keys: ["ПКМ"],            label: "Позначити перекладеним" },
+];
+---
+<section class="section" id="shortcuts">
+  <div class="section-inner">
+    <div class="section-tag">Quick reference</div>
+    <h2 class="section-title">Keyboard shortcuts.</h2>
+    <p class="section-lede">
+      Усе важливе — без миші. Поточно набирати при перекладі —
+      переходити по рядках і зберігати без переривань.
+    </p>
+
+    <div class="shortcuts">
+      {shortcuts.map((sc) => (
+        <div class="sc">
+          <span class="sc-keys">
+            {sc.keys.map((k) => <span class="kbd">{k}</span>)}
+          </span>
+          <span class="sc-label">{sc.label}</span>
+        </div>
+      ))}
+    </div>
+  </div>
+</section>
