@@ -303,6 +303,42 @@ export function applyCombinedToParsed(
   return { updated, missing };
 }
 
+// Знаходить span'и `"_Texts": { … }` у raw з balance-tracking. Потрібно,
+// бо деякі HBR-файли (наприклад Story-сценарії) використовують Unity
+// SerializeReference і додатково містять `references.RefIds[*].data._Text`
+// — це команди типу `DeactivateMenuBGM` чи `Trigger`, які НЕ перекладаються,
+// але regex по голому `"_Text"` їх ловив. Через це раніше:
+//  – integrity-check падав (raw 945, items 862),
+//  – а до додавання check'у — _Text перекладу записувався у "чуже"
+//    references-поле і зміщував наступні replays на NN позицій.
+function findTextsArraySpans(raw: string): Array<{ start: number; end: number }> {
+  const spans: Array<{ start: number; end: number }> = [];
+  const opener = /"_Texts"\s*:\s*\{/g;
+  let m: RegExpExecArray | null;
+  while ((m = opener.exec(raw)) != null) {
+    let depth = 1;
+    let i = m.index + m[0].length;
+    let inStr = false;
+    let escaped = false;
+    while (i < raw.length && depth > 0) {
+      const ch = raw[i];
+      if (escaped) {
+        escaped = false;
+      } else if (inStr) {
+        if (ch === "\\") escaped = true;
+        else if (ch === '"') inStr = false;
+      } else {
+        if (ch === '"') inStr = true;
+        else if (ch === "{") depth++;
+        else if (ch === "}") depth--;
+      }
+      i++;
+    }
+    if (depth === 0) spans.push({ start: m.index, end: i });
+  }
+  return spans;
+}
+
 // Серіалізує редаговані items назад у JSON.
 //
 // КРИТИЧНО: НЕ використовуємо JSON.parse + JSON.stringify, бо JS Number
@@ -314,32 +350,40 @@ export function applyCombinedToParsed(
 //
 // Натомість — regex-replace _Text-значень у raw-стрінгу. Все інше (PathID,
 // Hash, GUID, число-цілі) залишається байт-у-байт як у вихідному дампі.
+//
+// Заміна обмежена `_Texts.Array` спанами — див. findTextsArraySpans вище.
 export function applyHbrEdits(raw: string, items: HbrTextItem[]): string {
-  // Порядок items відповідає порядку _Text у raw JSON: ми обходили
-  // _List.Array у parseHbrJson послідовно, для кожного listIdx — всі
-  // variantIdx по порядку. Така ж послідовність буде, коли проходитимем
-  // raw regex'ом — _Text з'являються у тому ж порядку.
-  //
-  // КРИТИЧНО: цей контракт ламається, якщо після парсингу гра отримала патч
-  // і кількість _Text у новому raw НЕ дорівнює items.length. Без цієї
-  // перевірки запис мовчки зміщувався у "чужі" записи (i-й item писався
-  // у (i+k)-й _Text). Тепер — explicit error до UI, користувач знає що
-  // треба перевстановити extract.
+  const spans = findTextsArraySpans(raw);
   const re = /("_Text"\s*:\s*")((?:\\.|[^"\\])*)(")/g;
-  const rawMatchCount = (raw.match(re) || []).length;
+
+  let rawMatchCount = 0;
+  for (const sp of spans) {
+    const slice = raw.slice(sp.start, sp.end);
+    rawMatchCount += (slice.match(re) || []).length;
+  }
   if (rawMatchCount !== items.length) {
     throw new Error(
-      `HBR _Text count mismatch: raw has ${rawMatchCount} _Text entries, ` +
+      `HBR _Text count mismatch: raw has ${rawMatchCount} _Text entries (in _Texts.Array spans), ` +
       `but editor has ${items.length} items. Bundle likely changed since extract — ` +
       `re-run extract before saving.`
     );
   }
+
   const newTexts = items.map((it) => it.current);
   let idx = 0;
-  return raw.replace(re, (full, prefix: string, _oldText: string, suffix: string) => {
-    if (idx >= newTexts.length) return full;
-    const escaped = JSON.stringify(newTexts[idx]).slice(1, -1); // прибираємо обрамлюючі лапки
-    idx++;
-    return prefix + escaped + suffix;
-  });
+  let out = "";
+  let cursor = 0;
+  for (const sp of spans) {
+    out += raw.slice(cursor, sp.start);
+    const slice = raw.slice(sp.start, sp.end);
+    out += slice.replace(re, (full, prefix: string, _oldText: string, suffix: string) => {
+      if (idx >= newTexts.length) return full;
+      const escaped = JSON.stringify(newTexts[idx]).slice(1, -1);
+      idx++;
+      return prefix + escaped + suffix;
+    });
+    cursor = sp.end;
+  }
+  out += raw.slice(cursor);
+  return out;
 }
