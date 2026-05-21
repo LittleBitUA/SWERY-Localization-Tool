@@ -59,6 +59,7 @@
 - 🛠️ **Patch migration**: when White Owls ship a new patch, the toolkit ports translations from the old hash to the new one automatically + an editor banner warns before saving if the bundle changed.
 - 🛡️ **Integrity check**: verifies that `_Text` count in raw matches `items.length` before write — protects against silent byte-shift corruption when bundle structure changes between extract and save.
 - ✓ **Right-click → translated**: for template references like `[Continue]` that render as ready text — completion % stays accurate.
+- 🖼️ **Textures editor**: extract 24 UI / poster / result textures from the same bundle (Texture2D by PathID inside the `CAB-…` assets-file) to PNG, replace + in-place bundle patch with `.textures.bak` on first save. Inline-mode write (image data ← new bytes, `m_StreamData` cleared) — single uncompressed Write, the same pattern as text / fonts import.
 
 **THE MISSING**
 - 📐 **Per-string box-sizes editor**: GUI for editing the `IMHeightInfo` MonoBehaviour (W × H × 4 language slots × thousands of rows). Side-by-side preview + Auto-fit with a multiplier slider (×1.00 — ×1.50), min-padding in pixels, idempotent reference-based ratio (no runaway growth on repeated apply).
@@ -173,6 +174,7 @@ Requires Node.js 18+ and Windows for the portable `.exe` artifact.
 - 🛠️ **Patch migration**: коли White Owls випустили новий патч, програма автоматично переносить переклади зі старого хешу на новий + банер у редакторі попереджує перед збереженням якщо bundle оновлено.
 - 🛡️ **Integrity check**: перевірка що кількість `_Text` у raw збігається з items.length перед записом — захист від silent byte-shift корупції коли структура змінилася між extract і save.
 - ✓ **Right-click → перекладено**: для template references типу `[Continue]` що рендеряться як готовий текст — % завершення рахується точніше.
+- 🖼️ **Редактор текстур**: extract 24 UI / poster / result текстур з того ж бандла (Texture2D за PathID всередині `CAB-…` assets-файлу) у PNG, заміна + in-place патч bundle з `.textures.bak` на першому збереженні. Inline-mode запис (image data ← нові байти, `m_StreamData` очищено) — single uncompressed Write, той самий патерн що text / fonts import.
 
 **THE MISSING**
 - 📐 **Per-string box-sizes editor**: GUI для редагування `IMHeightInfo` MonoBehaviour (W × H × 4 language slots × тисячі рядків). Side-by-side preview + Auto-fit з multiplier-слайдером (×1.00 — ×1.50), мін. запас у пікселях, idempotent reference-based ratio (не наростає при повторному apply).

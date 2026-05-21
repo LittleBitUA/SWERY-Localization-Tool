@@ -529,6 +529,59 @@ declare global {
       }>;
       onHbrFontsImportProgress: (cb: (line: string) => void) => () => void;
 
+      // HBR Textures — bundle in-place patch via UABEA / AssetsTools.NET.
+      hbrTexturesStatus: () => Promise<{
+        ok: boolean;
+        error?: string;
+        unpackDir?: string;
+        count?: number;
+        bundlePath?: string | null;
+        bundleOk?: boolean;
+      }>;
+      hbrTexturesExport: (payload?: {
+        pathIds?: string[];
+      }) => Promise<{
+        success: boolean;
+        outDir?: string;
+        summary?: {
+          ok: boolean;
+          outDir: string;
+          bundle: string;
+          total: number;
+          skipped: number;
+          missing: string[] | number[];
+          exported: Array<{
+            name: string;
+            pathId: number | string;
+            width: number;
+            height: number;
+            format: number;
+            file: string;
+            size: number;
+            assetsFile: string;
+          }>;
+        } | null;
+        error?: string;
+        log?: string;
+      }>;
+      hbrTexturesReplace: (payload: {
+        items: Array<{ pathId: string; pngPath: string }>;
+      }) => Promise<{
+        success: boolean;
+        bundle?: string;
+        size?: number;
+        bakSize?: number;
+        bakCreated?: boolean;
+        applied?: number;
+        failed?: Array<{ pathId: number | string; reason: string }>;
+        error?: string;
+        log?: string;
+      }>;
+      hbrTexturesList: () => Promise<{ dir: string | null; files: Array<{ name: string; path: string }> }>;
+      hbrTexturesReadBase64: (filePath: string) => Promise<string | null>;
+      onHbrTexturesExportProgress: (cb: (line: string) => void) => () => void;
+      onHbrTexturesReplaceProgress: (cb: (line: string) => void) => () => void;
+
       // TGL Fonts
       tglFontsList: () => Promise<{
         items: Array<{

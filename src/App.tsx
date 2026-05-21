@@ -22,6 +22,7 @@ import { MissingEditor } from "./games/missing/MissingEditor";
 import { MissingFontsEditor } from "./games/missing/MissingFontsEditor";
 import { MissingTexturesEditor } from "./games/missing/MissingTexturesEditor";
 import { HbrFontsEditor } from "./games/hbr/HbrFontsEditor";
+import { HbrTexturesEditor } from "./games/hbr/HbrTexturesEditor";
 import { ErrorBoundary } from "./components/ErrorBoundary";
 import { dp2TextRequiredEntries } from "./games/dp2/required-text-files";
 import { TglEditor } from "./games/tgl/TglEditor";
@@ -36,7 +37,7 @@ import { DialogHost } from "./lib/dialogs";
 import { UpdateBanner } from "./components/UpdateBanner";
 import { ToastProvider } from "./components/ToastProvider";
 
-type Stage = "loading" | "onboarding" | "home" | "prep-dp2" | "editor-dp2" | "editor-dp1" | "textures-dp1" | "fonts-dp1" | "editor-tgl" | "fonts-dp2" | "textures-dp2" | "fonts-tgl" | "editor-hbr" | "fonts-hbr" | "editor-missing" | "fonts-missing" | "textures-missing";
+type Stage = "loading" | "onboarding" | "home" | "prep-dp2" | "editor-dp2" | "editor-dp1" | "textures-dp1" | "fonts-dp1" | "editor-tgl" | "fonts-dp2" | "textures-dp2" | "fonts-tgl" | "editor-hbr" | "fonts-hbr" | "textures-hbr" | "editor-missing" | "fonts-missing" | "textures-missing";
 type ActiveGame = "dp1" | "dp2" | "tgl" | "hbr" | "missing" | null;
 
 export default function App() {
@@ -256,7 +257,11 @@ export default function App() {
           return;
         }
         if (id === "hbr") {
-          setStage(mode === "fonts" ? "fonts-hbr" : "editor-hbr");
+          setStage(
+            mode === "textures" ? "textures-hbr"
+            : mode === "fonts" ? "fonts-hbr"
+            : "editor-hbr"
+          );
           return;
         }
         if (id === "dp1") {
@@ -455,6 +460,25 @@ export default function App() {
         <div className="h-screen flex flex-col">
           <ErrorBoundary label="Hotel Barcelona — fonts">
             <HbrFontsEditor
+              onHome={() => {
+                setActiveGame(null);
+                setStage("home");
+                window.dp2.setupStatus().then(setSetupStatus);
+              }}
+            />
+          </ErrorBoundary>
+        </div>
+        <DialogHost /><ToastProvider /><UpdateBanner />
+      </>
+    );
+  }
+
+  if (stage === "textures-hbr") {
+    return (
+      <>
+        <div className="h-screen flex flex-col">
+          <ErrorBoundary label="Hotel Barcelona — textures">
+            <HbrTexturesEditor
               onHome={() => {
                 setActiveGame(null);
                 setStage("home");

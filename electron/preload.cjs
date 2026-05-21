@@ -252,6 +252,21 @@ contextBridge.exposeInMainWorld("dp2", {
     ipcRenderer.on("dp2:hbr-fonts-mono-progress", h);
     return () => ipcRenderer.removeListener("dp2:hbr-fonts-mono-progress", h);
   },
+  hbrTexturesStatus: () => ipcRenderer.invoke("dp2:hbr-textures-status"),
+  hbrTexturesExport: (payload) => ipcRenderer.invoke("dp2:hbr-textures-export", payload),
+  hbrTexturesReplace: (payload) => ipcRenderer.invoke("dp2:hbr-textures-replace", payload),
+  hbrTexturesList: () => ipcRenderer.invoke("dp2:hbr-textures-list"),
+  hbrTexturesReadBase64: (filePath) => ipcRenderer.invoke("dp2:hbr-textures-read-base64", filePath),
+  onHbrTexturesExportProgress: (cb) => {
+    const h = (_e, line) => cb(line);
+    ipcRenderer.on("dp2:hbr-textures-export-progress", h);
+    return () => ipcRenderer.removeListener("dp2:hbr-textures-export-progress", h);
+  },
+  onHbrTexturesReplaceProgress: (cb) => {
+    const h = (_e, line) => cb(line);
+    ipcRenderer.on("dp2:hbr-textures-replace-progress", h);
+    return () => ipcRenderer.removeListener("dp2:hbr-textures-replace-progress", h);
+  },
   hbrBuildRelease: () => ipcRenderer.invoke("dp2:hbr-build-release"),
   launchSteamGame: (appId) => ipcRenderer.invoke("dp2:launch-steam-game", appId),
   tglMonoExport: (payload) => ipcRenderer.invoke("dp2:tgl-mono-export", payload),

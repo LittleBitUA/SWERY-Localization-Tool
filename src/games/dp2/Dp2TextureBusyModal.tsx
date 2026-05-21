@@ -17,8 +17,9 @@ export type BusyKind = "exportOne" | "exportAll" | "replace";
 export interface BusyTarget {
   // Для exportOne / replace — назва текстури + PathID.
   // Для exportAll — кількість текстур.
+  // pathId може бути int64-як-string (HBR), або number (DP2).
   name?: string;
-  pathId?: number;
+  pathId?: number | string;
   total?: number;
 }
 

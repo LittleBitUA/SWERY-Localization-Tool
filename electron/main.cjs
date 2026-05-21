@@ -2887,6 +2887,197 @@ ipcMain.handle("dp2:textures-read-base64", async (_e, filePath) => {
   } catch { return null; }
 });
 
+// ── IPC: HBR Textures (bundle in-place patch via UABEA / AssetsTools.NET) ─
+// Експорт PathID → PNG; заміна одного або кількох PathID за списком. Bundle
+// перезаписується ОДНИМ uncompressed-Write (як hbr-text-import / hbr-fonts-
+// import). .textures.bak створюється ОДИН РАЗ при першому replace.
+
+function hbrTexturesRoot(settings) {
+  if (!settings.toolsDir) return null;
+  return path.join(settings.toolsDir, "HBR", "Textures");
+}
+function hbrTexturesUnpackDir(settings) {
+  const root = hbrTexturesRoot(settings);
+  return root ? path.join(root, "Unpack") : null;
+}
+
+ipcMain.handle("dp2:hbr-textures-status", async () => {
+  const settings = await readSettings();
+  const unpack = hbrTexturesUnpackDir(settings);
+  const bundlePath = settings.hbrBundlePath || null;
+  let bundleOk = false;
+  if (bundlePath) { try { await fs.access(bundlePath); bundleOk = true; } catch {} }
+  if (!unpack) return { ok: false, error: "toolsDir not set", bundlePath, bundleOk };
+  let count = 0;
+  try {
+    const items = await fs.readdir(unpack, { withFileTypes: true });
+    count = items.filter((x) => x.isFile() && /\.png$/i.test(x.name)).length;
+  } catch {}
+  return { ok: true, unpackDir: unpack, count, bundlePath, bundleOk };
+});
+
+ipcMain.handle("dp2:hbr-textures-export", async (_e, payload) => {
+  const settings = await readSettings();
+  if (!settings.hbrBundlePath) return { success: false, error: "hbrBundlePath not set — open HBR text first to pick the game folder" };
+  try { await fs.access(settings.hbrBundlePath); }
+  catch { return { success: false, error: "bundle-not-found: " + settings.hbrBundlePath }; }
+  if (!settings.uabeaPath) return { success: false, error: "UABEA path not set" };
+  const pwshLookup = await findPwsh(settings);
+  if (!pwshLookup) return { success: false, error: "PowerShell 7 not found" };
+  const unpack = hbrTexturesUnpackDir(settings);
+  if (!unpack) return { success: false, error: "toolsDir not set" };
+  await fs.mkdir(unpack, { recursive: true });
+  const uabeaDir = path.dirname(settings.uabeaPath);
+  const scriptPath = resolveResource("scripts/hbr-textures-export.ps1");
+
+  const pathIds = (payload && Array.isArray(payload.pathIds)) ? payload.pathIds.map(String) : null;
+
+  const args = [
+    "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass",
+    "-File", scriptPath,
+    "-BundlePath", settings.hbrBundlePath,
+    "-OutDir", unpack,
+    "-UabeaDir", uabeaDir,
+  ];
+  if (pathIds && pathIds.length) {
+    args.push("-PathIds", pathIds.join(","));
+  }
+
+  return await new Promise((resolve) => {
+    const child = spawn(pwshLookup, args, { windowsHide: true });
+    let allStdout = "";
+    let leftover = "";
+    const win = BrowserWindow.getAllWindows()[0];
+    const emit = (chunk) => {
+      allStdout += chunk;
+      leftover += chunk;
+      const lines = leftover.split(/\r?\n/);
+      leftover = lines.pop() || "";
+      for (const ln of lines) {
+        if (!ln.trim()) continue;
+        try { win?.webContents.send("dp2:hbr-textures-export-progress", ln); } catch {}
+      }
+    };
+    child.stdout.on("data", (d) => emit(d.toString()));
+    child.stderr.on("data", (d) => emit(d.toString()));
+    child.on("error", (err) => resolve({ success: false, error: err.message }));
+    child.on("exit", (code) => {
+      if (leftover.trim()) {
+        try { win?.webContents.send("dp2:hbr-textures-export-progress", leftover); } catch {}
+      }
+      if (code !== 0) {
+        const tail = allStdout.split("\n").slice(-20).join("\n").trim();
+        resolve({ success: false, error: tail || `Exit ${code}`, log: allStdout });
+        return;
+      }
+      let summary = null;
+      const m = allStdout.match(/RESULT_JSON:\s*(.+)$/m);
+      if (m) { try { summary = JSON.parse(m[1]); } catch {} }
+      resolve({ success: true, outDir: unpack, summary, log: allStdout });
+    });
+  });
+});
+
+ipcMain.handle("dp2:hbr-textures-replace", async (_e, payload) => {
+  const settings = await readSettings();
+  if (!settings.hbrBundlePath) return { success: false, error: "hbrBundlePath not set" };
+  try { await fs.access(settings.hbrBundlePath); }
+  catch { return { success: false, error: "bundle-not-found: " + settings.hbrBundlePath }; }
+  if (!settings.uabeaPath) return { success: false, error: "UABEA path not set" };
+
+  // Очікуємо payload: { items: [{ pathId: "<int64-string>", pngPath: "C:\\..." }, ...] }
+  const items = (payload && Array.isArray(payload.items)) ? payload.items : null;
+  if (!items || !items.length) return { success: false, error: "Не задано список замін (items)" };
+
+  // Pre-validate у Node-частині (fail fast, до запуску PowerShell).
+  for (const it of items) {
+    if (!it || !it.pathId) return { success: false, error: "items: missing pathId" };
+    if (!it.pngPath) return { success: false, error: "items: missing pngPath" };
+    try { await fs.access(it.pngPath); }
+    catch { return { success: false, error: "PNG not found: " + it.pngPath }; }
+  }
+
+  const pwshLookup = await findPwsh(settings);
+  if (!pwshLookup) return { success: false, error: "PowerShell 7 not found" };
+  const uabeaDir = path.dirname(settings.uabeaPath);
+  const scriptPath = resolveResource("scripts/hbr-textures-replace.ps1");
+
+  // JSON-payload передаємо через файл — args з \-шляхами і UTF-8 ламаються
+  // при escapinng через PowerShell -ArgumentList.
+  const root = hbrTexturesRoot(settings);
+  if (!root) return { success: false, error: "toolsDir not set" };
+  await fs.mkdir(root, { recursive: true });
+  const inputJsonPath = path.join(root, "_replace-input.json");
+  const payloadJson = items.map((it) => ({ pathId: String(it.pathId), pngPath: String(it.pngPath) }));
+  await fs.writeFile(inputJsonPath, JSON.stringify(payloadJson, null, 2), "utf8");
+
+  const args = [
+    "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass",
+    "-File", scriptPath,
+    "-BundlePath", settings.hbrBundlePath,
+    "-UabeaDir", uabeaDir,
+    "-InputJson", inputJsonPath,
+  ];
+
+  return await new Promise((resolve) => {
+    const child = spawn(pwshLookup, args, { windowsHide: true });
+    let allStdout = "";
+    let leftover = "";
+    const win = BrowserWindow.getAllWindows()[0];
+    const emit = (chunk) => {
+      allStdout += chunk;
+      leftover += chunk;
+      const lines = leftover.split(/\r?\n/);
+      leftover = lines.pop() || "";
+      for (const ln of lines) {
+        if (!ln.trim()) continue;
+        try { win?.webContents.send("dp2:hbr-textures-replace-progress", ln); } catch {}
+      }
+    };
+    child.stdout.on("data", (d) => emit(d.toString()));
+    child.stderr.on("data", (d) => emit(d.toString()));
+    child.on("error", (err) => resolve({ success: false, error: err.message }));
+    child.on("exit", (code) => {
+      if (leftover.trim()) {
+        try { win?.webContents.send("dp2:hbr-textures-replace-progress", leftover); } catch {}
+      }
+      // Підчистка input.json — він уже не потрібен.
+      fs.unlink(inputJsonPath).catch(() => {});
+      if (code !== 0) {
+        const tail = allStdout.split("\n").slice(-20).join("\n").trim();
+        resolve({ success: false, error: tail || `Exit ${code}`, log: allStdout });
+        return;
+      }
+      let result = null;
+      const m = allStdout.match(/RESULT_JSON:\s*(.+)$/m);
+      if (m) { try { result = JSON.parse(m[1]); } catch {} }
+      resolve({ success: true, log: allStdout, ...result });
+    });
+  });
+});
+
+ipcMain.handle("dp2:hbr-textures-list", async () => {
+  const settings = await readSettings();
+  const dir = hbrTexturesUnpackDir(settings);
+  if (!dir) return { dir: null, files: [] };
+  try {
+    const items = await fs.readdir(dir, { withFileTypes: true });
+    const files = items
+      .filter((e) => e.isFile() && /\.png$/i.test(e.name))
+      .map((e) => ({ name: e.name, path: path.join(dir, e.name) }));
+    return { dir, files };
+  } catch {
+    return { dir, files: [] };
+  }
+});
+
+ipcMain.handle("dp2:hbr-textures-read-base64", async (_e, filePath) => {
+  try {
+    const buf = await fs.readFile(filePath);
+    return buf.toString("base64");
+  } catch { return null; }
+});
+
 // ── IPC: TGL Fonts (atlas + character rects JSON) ───────────────────────
 // Шрифт у грі — два файла поряд у StreamingAssets/<dir>/:
 //   ChiaroStd-B-CAB-XXXX--<negPathId>.json — поля m_CharacterRects, m_Texture, …

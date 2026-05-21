@@ -1203,6 +1203,7 @@ const UK: Dict = {
   "tgl.busy.packing": "Пакую…",
 
   // DP2 Textures
+  "hbr.textures.brand": "Hotel Barcelona · Текстури",
   "textures.brand": "DP2 · Текстури",
   "textures.count": "текстур у списку",
   "textures.search.placeholder": "Пошук за назвою / PathID…",
@@ -2565,6 +2566,7 @@ const EN: Dict = {
   "tgl.busy.packing": "Packing…",
 
   // DP2 Textures
+  "hbr.textures.brand": "Hotel Barcelona · Textures",
   "textures.brand": "DP2 · Textures",
   "textures.count": "textures listed",
   "textures.search.placeholder": "Search by name / PathID…",

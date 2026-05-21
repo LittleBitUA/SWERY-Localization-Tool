@@ -430,7 +430,7 @@ export function HomeV2({ onPickGame, onOpenSetup, onOpenFolder, onOpenRecent }: 
                         </button>
                       </div>
                     )}
-                    {/* HBR: Текст + Шрифти */}
+                    {/* HBR: Текст + Шрифти + Текстури */}
                     {isHbr && (
                       <div className="v2-folder__actions">
                         <button
@@ -446,6 +446,13 @@ export function HomeV2({ onPickGame, onOpenSetup, onOpenFolder, onOpenRecent }: 
                           onClick={(e) => { e.stopPropagation(); onPickGame(c.id, "fonts"); }}
                         >
                           {t("home.v2.action.fonts")}
+                        </button>
+                        <button
+                          type="button"
+                          className="v2-folder__action"
+                          onClick={(e) => { e.stopPropagation(); onPickGame(c.id, "textures"); }}
+                        >
+                          {t("home.v2.action.textures")}
                         </button>
                       </div>
                     )}
