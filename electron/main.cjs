@@ -4215,13 +4215,30 @@ ipcMain.handle("dp2:missing-textures-pack", async () => {
       try { await fs.unlink(tmp); } catch {}
       continue;
     }
-    // Swap: атомарно через fs.rename (на Windows це MoveFileEx з
-    // REPLACE_EXISTING). РАНІШЕ було unlink → rename — і якщо PS повертав
-    // exit 0, але tmp не створив (рідкісний edge), unlink стирав живий
-    // resources.assets, а rename падав з ENOENT. Користувач лишався без
-    // .assets взагалі.
+    // Розрізняємо два режими роботи textures-replace.ps1:
+    //   * "resS-inplace" — PS пропатчив .resS НАПРЯМУ за offset; .assets
+    //     не змінювалось, tmp не створено. Просто рахуємо як applied,
+    //     swap не робимо.
+    //   * "inline" — PS записав новий .assets у tmp (OutputPath); треба
+    //     атомарно замінити живий .assets через fs.rename
+    //     (на Windows це MoveFileEx з REPLACE_EXISTING).
+    //
+    // Раніше код завжди намагався rename tmp → fullAssets. Для inplace це
+    // або стирало live .assets (старий unlink+rename), або, після фікса,
+    // помилково рахувало success як failed («tmp missing/empty»).
+    const mode = (() => {
+      const m = res.log && res.log.match(/RESULT_JSON:\s*(.+)$/m);
+      if (!m) return null;
+      try { return JSON.parse(m[1]).mode || null; } catch { return null; }
+    })();
+    if (mode === "resS-inplace") {
+      applied++;
+      changedAssets.add(t.assets + ".resS");
+      try { await fs.unlink(tmp); } catch {}
+      continue;
+    }
     try {
-      // Sanity: tmp існує і не порожній — інакше swap не запускаємо.
+      // Inline mode → swap. Sanity-check: tmp існує і непорожній.
       const tmpStat = await fs.stat(tmp).catch(() => null);
       if (!tmpStat || tmpStat.size === 0) {
         failed.push({ name: t.name, reason: `tmp missing/empty: ${tmp}` });
