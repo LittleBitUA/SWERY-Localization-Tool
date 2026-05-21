@@ -31,15 +31,18 @@ export function isHbrSystemRow(original: string): boolean {
 // Формат: placeholders `{0}`, `{name}`, `${var}`; HTML/inline tags
 // `<color=red>`, `</color>`; control sequences `\n`, `\r\n`.
 //
-// УВАГА: квадратні дужки `[Continue]`, `[Shockwave]`, `[Dodge]` тощо НЕ
-// валідуємо — у HBR це **template references**, які гра підставляє з
-// інших translation-entries, тобто їх МОЖНА і ТРЕБА перекладати на
+// УВАГА: звичайні квадратні дужки `[Continue]`, `[Shockwave]`, `[Dodge]`
+// тощо НЕ валідуємо — у HBR це **template references**, які гра підставляє
+// з інших translation-entries, тобто їх МОЖНА і ТРЕБА перекладати на
 // українські відповідники (наприклад `[Продовжити]`). Раніше pre-pack lint
 // помилково червонив 21 рядок у 61 файлі з цієї причини.
+// Виняток — `[...]` з суфіксом `.json` (посилання на bundle-файл): такі
+// мають лишатися байт-у-байт і у перекладі, бо це шлях.
 const PLACEHOLDER_RES = [
   /\{[A-Za-z0-9_]+\}/g,         // {0}, {name}
   /\$\{[^}]+\}/g,               // ${var}
   /<\/?[A-Za-z][^>]*>/g,        // <color=red>, </color>
+  /\[[^\]]+\.json\]/g,          // [bundle.json] refs
   /\\n/g, /\\r\\n/g,            // \n, \r\n у літералах
 ];
 export function extractPlaceholders(s: string): string[] {

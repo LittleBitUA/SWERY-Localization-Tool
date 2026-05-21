@@ -1595,14 +1595,18 @@ ipcMain.handle("dp2:hbr-text-lint-placeholders", async () => {
   const { originalDir, doneDir } = await hbrTextDirs();
   let entries; try { entries = await fs.readdir(originalDir); }
   catch { return { ok: false, error: "no extracted text" }; }
-  // Той самий набір, що в parser.ts. ВАЖЛИВО: квадратні дужки НЕ містять
-  // пробілу всередині — інакше "[RATED R]" (звичайний текст) трактувався б
-  // як Unity-тег і pre-pack lint ловив би на ньому false-positives.
+  // Той самий набір, що в parser.ts (PLACEHOLDER_RES). Квадратні дужки
+  // `[Continue]`, `[Dodge]`, `[Shockwave]` тощо у HBR — це template-references
+  // (гра підставляє з інших translation-entries), які МОЖНА і ТРЕБА
+  // перекладати на українські відповідники. Тому ми НЕ лічимо звичайні
+  // [Word] як placeholders — інакше lint червонить 21+ валідних рядків.
+  // Виняток — [...] з суфіксом `.json` (посилання на bundle-файл): такі
+  // мають лишатися байт-у-байт і у перекладі, бо це шлях.
   const PATS = [
     /\{[A-Za-z0-9_]+\}/g,
     /\$\{[^}]+\}/g,
     /<\/?[A-Za-z][^>]*>/g,
-    /\[\/?[A-Za-z][^\] ]*\]/g,
+    /\[[^\]]+\.json\]/g,
     /\\n/g, /\\r\\n/g,
   ];
   function extractTags(s) {
