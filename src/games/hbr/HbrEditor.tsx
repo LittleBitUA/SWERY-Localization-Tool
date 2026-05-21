@@ -1,7 +1,7 @@
 import { memo, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { useT } from "../../lib/i18n";
 import { alert as showAlert } from "../../lib/dialogs";
-import { applyCombinedToParsed, applyHbrEdits, formatHbrCombinedTxt, isHbrSystemRow, parseHbrCombinedTxt, parseHbrJson, validatePlaceholders, type HbrParsedFile, type HbrTextItem } from "./parser";
+import { applyCombinedToParsed, applyHbrEdits, formatHbrCombinedTxt, isHbrItemTranslatedByParser, isHbrSystemRow, parseHbrCombinedTxt, parseHbrJson, validatePlaceholders, type HbrParsedFile, type HbrTextItem } from "./parser";
 import { EditorFooter } from "../../components/EditorFooter";
 import { LangToggle } from "../../components/LangToggle";
 import { confirm as showConfirm } from "../../lib/dialogs";
@@ -288,7 +288,12 @@ export function HbrEditor({ onHome }: Props) {
   const setStep = (k: keyof StepStates, v: StepStatus) =>
     setSteps((s) => ({ ...s, [k]: v }));
   const [saving, setSaving] = useState(false);
-  const [fileStats, setFileStats] = useState<Record<string, { total: number; translated: number }>>({});
+  // parserKeys: множина "<textId>::<variantIdx>" — рядків, які ПАРСЕР уже
+  // зараховує як translated (system-row або cur≠orig & non-empty). Тримаємо
+  // окремо від `translated` числа, щоб у markedTranslatedByFile віднімати
+  // overlap і уникати double-count'у (issue: progress >100% або застряглий
+  // лічильник, бо ПКМ-mark і парсер ловили той самий рядок двічі).
+  const [fileStats, setFileStats] = useState<Record<string, { total: number; translated: number; parserKeys: Set<string> }>>({});
   // Фільтри для рядків — як у DP2 («не перекл / перекл / збігаються»).
   type RowFilter = "all" | "untranslated" | "translated" | "samesAsOriginal";
   const [rowFilter, setRowFilter] = useState<RowFilter>("all");
@@ -878,18 +883,27 @@ export function HbrEditor({ onHome }: Props) {
   // Per-file count рядків з прапором markedTranslated (manual override через
   // ПКМ → «Позначити перекладеним»). Додаємо це до projectStats/fileStats у
   // відображенні — щоб поточний % одразу враховував мітку без heavy IPC.
+  //
+  // КРИТИЧНО: рахуємо лише ті позначки, КЛЮЧ ЯКИХ ще НЕ зарахований парсером
+  // (fileStats[…].parserKeys). Раніше додавали всі marked → double-count:
+  // ПКМ-mark + реальний переклад того ж рядка давали 33/32 (103%) або
+  // навпаки лічильник застрягав на 99% при фактичних 100%.
   const markedTranslatedByFile = useMemo(() => {
     const m = new Map<string, number>();
     for (const [key, entry] of Object.entries(statusFile.entries)) {
       if (!entry.markedTranslated) continue;
-      // statusKey: "<fileName>::<textId>::<variantIdx>" — беремо все до першого "::".
+      // statusKey: "<fileName>::<textId>::<variantIdx>" — fileName до 1-го "::",
+      // решта — itemKey, який порівнюємо з parserKeys (формат той самий).
       const sep = key.indexOf("::");
       if (sep < 0) continue;
       const fileName = key.slice(0, sep);
+      const itemKey = key.slice(sep + 2);
+      const parserKeys = fileStats[fileName]?.parserKeys;
+      if (parserKeys && parserKeys.has(itemKey)) continue; // overlap → skip
       m.set(fileName, (m.get(fileName) ?? 0) + 1);
     }
     return m;
-  }, [statusFile]);
+  }, [statusFile, fileStats]);
   const totalMarkedTranslated = useMemo(() => {
     let n = 0;
     for (const v of markedTranslatedByFile.values()) n += v;
@@ -907,7 +921,7 @@ export function HbrEditor({ onHome }: Props) {
     if (!files.length) { setProjectStats(null); setFileStats({}); return; }
     const w = window.dp2 as unknown as { hbrTextRead: (p: string) => Promise<{ ok: boolean; raw?: string }> };
     let total = 0, translated = 0;
-    const perFile: Record<string, { total: number; translated: number }> = {};
+    const perFile: Record<string, { total: number; translated: number; parserKeys: Set<string> }> = {};
     for (const f of files) {
       try {
         const doneRes = await w.hbrTextRead(f.donePath);
@@ -916,7 +930,13 @@ export function HbrEditor({ onHome }: Props) {
         const p = parseHbrJson(doneRes.raw, origRes.ok ? origRes.raw! : null, f.donePath, f.origPath);
         total += p.totalItems;
         translated += p.translatedItems;
-        perFile[f.file] = { total: p.totalItems, translated: p.translatedItems };
+        const parserKeys = new Set<string>();
+        for (const it of p.items) {
+          if (isHbrItemTranslatedByParser(it.original, it.current)) {
+            parserKeys.add(`${it.textId}::${it.variantIdx}`);
+          }
+        }
+        perFile[f.file] = { total: p.totalItems, translated: p.translatedItems, parserKeys };
       } catch {}
     }
     setProjectStats({ files: files.length, total, translated });
@@ -1248,6 +1268,21 @@ export function HbrEditor({ onHome }: Props) {
     e.stopPropagation();
     setCtxMenu({ kind: "row", x: e.clientX, y: e.clientY, itemIndex: realIdx });
   }, []);
+
+  // Real-time лічильник translated для АКТИВНОГО файлу. parsed.translatedItems
+  // фіксується в parseHbrJson і не оновлюється при `setParsed({…items})` під
+  // час редагування — тому брали його разом з extra було і застаріло, і ще й
+  // ризик double-count. Тут рахуємо за тією ж формулою, що й фільтр рядків.
+  const activeTranslatedCount = useMemo(() => {
+    if (!parsed) return 0;
+    let n = 0;
+    for (const it of parsed.items) {
+      if (isHbrItemTranslatedByParser(it.original, it.current)) { n++; continue; }
+      const sk = activeFile ? statusKey(activeFile.file, it.textId, it.variantIdx) : "";
+      if (sk && statusFile.entries[sk]?.markedTranslated) n++;
+    }
+    return n;
+  }, [parsed, activeFile, statusFile, statusKey]);
 
   const filteredItems = useMemo(() => {
     if (!parsed) return [];
@@ -1966,8 +2001,7 @@ export function HbrEditor({ onHome }: Props) {
                     />
                     <span className="text-[11px] text-[var(--text-faint)] tabular-nums">
                       {(() => {
-                        const extra = activeFile ? (markedTranslatedByFile.get(activeFile.file) ?? 0) : 0;
-                        const tr = parsed.translatedItems + extra;
+                        const tr = activeTranslatedCount;
                         return `${tr}/${parsed.totalItems} · ${parsed.totalItems > 0 ? ((tr / parsed.totalItems) * 100).toFixed(1) : "0.0"}%`;
                       })()}
                     </span>
@@ -2037,8 +2071,7 @@ export function HbrEditor({ onHome }: Props) {
                       value: parsed.totalItems,
                     },
                     (() => {
-                      const extra = activeFile ? (markedTranslatedByFile.get(activeFile.file) ?? 0) : 0;
-                      const tr = parsed.translatedItems + extra;
+                      const tr = activeTranslatedCount;
                       return {
                         label: t("hbr.footer.translated"),
                         value: `${tr} (${parsed.totalItems > 0

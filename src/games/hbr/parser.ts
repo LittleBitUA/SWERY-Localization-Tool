@@ -27,6 +27,15 @@ export function isHbrSystemRow(original: string): boolean {
   return false;
 }
 
+// Єдине джерело правди: коли рядок вважається «перекладеним» суто за
+// вмістом (без ручної ПКМ-мітки `markedTranslated`). Використовується і у
+// parseHbrJson (для translatedItems), і в редакторі — щоб зібрати множину
+// «вже зарахованих парсером» ключів і не double-count'ити marked-overlap.
+export function isHbrItemTranslatedByParser(original: string, current: string): boolean {
+  if (isHbrSystemRow(original)) return true;
+  return current !== original && current.trim().length > 0;
+}
+
 // Витягуємо набір службових маркерів з тексту для valid-check.
 // Формат: placeholders `{0}`, `{name}`, `${var}`; HTML/inline tags
 // `<color=red>`, `</color>`; control sequences `\n`, `\r\n`.
@@ -110,8 +119,7 @@ export function parseHbrJson(raw: string, origRaw: string | null, donePath: stri
       const orig = origTexts[vi]?._Text ?? cur;
       // System-row (tag-only / placeholder dashes) — нема чого перекладати,
       // рахуємо як translated автоматично (так само як UI border/filter).
-      const isSystem = isHbrSystemRow(orig);
-      if (isSystem || (cur !== orig && cur.trim().length > 0)) translated++;
+      if (isHbrItemTranslatedByParser(orig, cur)) translated++;
       items.push({
         textId, variantIdx: vi, original: orig, current: cur, listIdx,
       });
