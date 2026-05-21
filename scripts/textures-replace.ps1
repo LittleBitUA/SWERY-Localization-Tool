@@ -61,29 +61,51 @@ if (Test-Path $nativeDir) {
     Write-Diag "Native dir not found: $nativeDir"
 }
 
-# Inline C#: TextureEncoderWrapper.ConvertImage(pngPath, fmt, out w, out h, quality)
+# Inline C#: TextureEncoderWrapper.ConvertImage(pngPath, mipCount, fmt, out w, out h, quality)
 # уміє кодувати DXT5/BC7/тощо через native libs (AssetRipper.TextureDecoder).
+#
+# Mipmap chain — критично: `m_CompleteImageSize` у Texture2D включає БАЗОВИЙ
+# рівень + повний mip-каскад (32×32, 16×16, … 1×1). Якщо encode'имо лише
+# base level (mipCount=1), розмір буде менший — для in-place .resS patch це
+# валідатор abort'не (наприклад 4096 vs 5488 для 64×64 DXT5 з 7 рівнями).
+# Тому передаємо саме origMipCount і конкатенуємо всі mips в один blob.
 $csCode = @'
 using System;
+using System.IO;
 using AssetsTools.NET.Texture;
 
 public static class TexImport {
     public static int LastWidth;
     public static int LastHeight;
+    public static int LastMipCount;
     public static string LastError = "";
     public static bool NativeOk;
 
-    public static byte[] EncodePngTo(string pngPath, int fmt) {
+    public static byte[] EncodePngTo(string pngPath, int fmt, int mipCount) {
         try {
             NativeOk = TextureEncoderWrapper.NativeLibrariesSupported();
+            if (mipCount <= 0) mipCount = 1;
             int w = 0, h = 0;
-            // UABEA Next: ConvertImage(path, mipCount, TextureFormat, out w, out h, quality) -> byte[][]
-            byte[][] mips = TextureEncoderWrapper.ConvertImage(pngPath, 1, (TextureFormat)fmt, out w, out h, 100);
+            byte[][] mips = TextureEncoderWrapper.ConvertImage(pngPath, mipCount, (TextureFormat)fmt, out w, out h, 100);
             LastWidth = w;
             LastHeight = h;
-            if (mips != null && mips.Length > 0 && mips[0] != null && mips[0].Length > 0) return mips[0];
-            LastError = "ConvertImage → null/empty (NativeOk=" + NativeOk + ")";
-            return null;
+            if (mips == null || mips.Length == 0) {
+                LastError = "ConvertImage → null/empty (NativeOk=" + NativeOk + ")";
+                return null;
+            }
+            LastMipCount = mips.Length;
+            // Конкатенуємо всі mip-рівні у один масив — у такому форматі
+            // Texture2D зберігає пікселі (image data або у .resS блоці).
+            int total = 0;
+            for (int i = 0; i < mips.Length; i++) { if (mips[i] == null) { LastError = "mip level " + i + " is null"; return null; } total += mips[i].Length; }
+            if (total == 0) { LastError = "all mip levels empty"; return null; }
+            byte[] result = new byte[total];
+            int offset = 0;
+            for (int i = 0; i < mips.Length; i++) {
+                Buffer.BlockCopy(mips[i], 0, result, offset, mips[i].Length);
+                offset += mips[i].Length;
+            }
+            return result;
         } catch (Exception ex) {
             LastError = ex.GetType().Name + ": " + ex.Message;
             return null;
@@ -124,21 +146,31 @@ $origW = [int]$base["m_Width"].AsInt
 $origH = [int]$base["m_Height"].AsInt
 $origFmt = [int]$base["m_TextureFormat"].AsInt
 $origCompleteSize = [int]$base["m_CompleteImageSize"].AsInt
-Write-Diag "Target: $texName (PathID $PathId), $origW x $origH, fmt=$origFmt, completeSize=$origCompleteSize"
+# m_MipCount: для текстур БЕЗ mipmap буде 1; для з mipmap (типово 2D-UI з
+# m_MipCount=0 у dialog/portraits) — full chain (наприклад 7 для 64×64).
+# AssetsTools.NET називає поле в різних версіях Unity або `m_MipCount`, або
+# `m_MipMap` (bool). Беремо m_MipCount, якщо є; fallback — 1.
+$origMipCount = 1
+try { $origMipCount = [int]$base["m_MipCount"].AsInt } catch {}
+if ($origMipCount -le 0) { $origMipCount = 1 }
+Write-Diag "Target: $texName (PathID $PathId), $origW x $origH, fmt=$origFmt, mips=$origMipCount, completeSize=$origCompleteSize"
 
 # PNG → encoded у m_TextureFormat через TextureEncoderWrapper.ConvertImage.
-$encoded = [TexImport]::EncodePngTo($NewPngFile, $origFmt)
+# Передаємо origMipCount — encoder згенерує повний chain, щоб байт-у-байт
+# збігтись з m_CompleteImageSize (інакше .resS in-place patch неможливий).
+$encoded = [TexImport]::EncodePngTo($NewPngFile, $origFmt, $origMipCount)
 if ($null -eq $encoded) { throw "Encode failed: $([TexImport]::LastError)" }
 Write-Diag ("Native encoder support: {0}" -f [TexImport]::NativeOk)
 $newW = [TexImport]::LastWidth
 $newH = [TexImport]::LastHeight
-Write-Diag "PNG: $newW x $newH, encoded bytes=$($encoded.Length)"
+$newMipCount = [TexImport]::LastMipCount
+Write-Diag "PNG: $newW x $newH, encoded bytes=$($encoded.Length), mips=$newMipCount"
 
 if ($newW -ne $origW -or $newH -ne $origH) {
     throw "PNG dimensions ($newW x $newH) != Texture2D ($origW x $origH). Resize the PNG to match before replacing."
 }
 if ($encoded.Length -ne $origCompleteSize) {
-    throw "Encoded size ($($encoded.Length)) != original m_CompleteImageSize ($origCompleteSize). Aborting — would break offset table."
+    throw "Encoded size ($($encoded.Length)) != original m_CompleteImageSize ($origCompleteSize) [mips orig=$origMipCount new=$newMipCount]. Aborting — would break offset table."
 }
 
 # Streaming info?

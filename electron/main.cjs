@@ -4215,14 +4215,25 @@ ipcMain.handle("dp2:missing-textures-pack", async () => {
       try { await fs.unlink(tmp); } catch {}
       continue;
     }
-    // Swap.
+    // Swap: атомарно через fs.rename (на Windows це MoveFileEx з
+    // REPLACE_EXISTING). РАНІШЕ було unlink → rename — і якщо PS повертав
+    // exit 0, але tmp не створив (рідкісний edge), unlink стирав живий
+    // resources.assets, а rename падав з ENOENT. Користувач лишався без
+    // .assets взагалі.
     try {
-      try { await fs.unlink(fullAssets); } catch {}
+      // Sanity: tmp існує і не порожній — інакше swap не запускаємо.
+      const tmpStat = await fs.stat(tmp).catch(() => null);
+      if (!tmpStat || tmpStat.size === 0) {
+        failed.push({ name: t.name, reason: `tmp missing/empty: ${tmp}` });
+        try { await fs.unlink(tmp); } catch {}
+        continue;
+      }
       await fs.rename(tmp, fullAssets);
       applied++;
       changedAssets.add(t.assets);
     } catch (e) {
       failed.push({ name: t.name, reason: `swap fail: ${e.message}` });
+      try { await fs.unlink(tmp); } catch {}
     }
   }
   return { ok: true, summary: { applied, failed, changedAssets: [...changedAssets] }, log: allLog };

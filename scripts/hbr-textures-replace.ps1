@@ -135,15 +135,30 @@ public static class HbrTexPatcher {
     public static string LastErr = "";
     public static int LastEncW;
     public static int LastEncH;
+    public static int LastMipCount;
 
-    public static byte[] EncodePngTo(string pngPath, int fmt) {
+    // mipCount: рівно стільки рівнів, скільки має оригінальна текстура.
+    // Для UI-текстур у HBR-бандлі зазвичай 1, але якщо m_MipCount > 1 —
+    // треба згенерувати повний chain, інакше Unity показуватиме «сніг» при
+    // на нижчих рівнях деталізації.
+    public static byte[] EncodePngTo(string pngPath, int fmt, int mipCount) {
         try {
+            if (mipCount <= 0) mipCount = 1;
             int w = 0, h = 0;
-            byte[][] mips = TextureEncoderWrapper.ConvertImage(pngPath, 1, (TextureFormat)fmt, out w, out h, 100);
+            byte[][] mips = TextureEncoderWrapper.ConvertImage(pngPath, mipCount, (TextureFormat)fmt, out w, out h, 100);
             LastEncW = w; LastEncH = h;
-            if (mips != null && mips.Length > 0 && mips[0] != null && mips[0].Length > 0) return mips[0];
-            LastErr = "ConvertImage → null/empty";
-            return null;
+            if (mips == null || mips.Length == 0) { LastErr = "ConvertImage → null/empty"; return null; }
+            LastMipCount = mips.Length;
+            int total = 0;
+            for (int i = 0; i < mips.Length; i++) { if (mips[i] == null) { LastErr = "mip " + i + " null"; return null; } total += mips[i].Length; }
+            if (total == 0) { LastErr = "all mips empty"; return null; }
+            byte[] result = new byte[total];
+            int offset = 0;
+            for (int i = 0; i < mips.Length; i++) {
+                Buffer.BlockCopy(mips[i], 0, result, offset, mips[i].Length);
+                offset += mips[i].Length;
+            }
+            return result;
         } catch (Exception ex) {
             LastErr = ex.GetType().Name + ": " + ex.Message;
             return null;
@@ -198,8 +213,11 @@ foreach ($item in $replaceItems) {
         $origW = [int]$base["m_Width"].AsInt
         $origH = [int]$base["m_Height"].AsInt
         $origFmt = [int]$base["m_TextureFormat"].AsInt
+        $origMipCount = 1
+        try { $origMipCount = [int]$base["m_MipCount"].AsInt } catch {}
+        if ($origMipCount -le 0) { $origMipCount = 1 }
 
-        $encoded = [HbrTexPatcher]::EncodePngTo($pngPath, $origFmt)
+        $encoded = [HbrTexPatcher]::EncodePngTo($pngPath, $origFmt, $origMipCount)
         if ($null -eq $encoded) {
             [void]$failed.Add([pscustomobject]@{ pathId = $targetPathId; reason = "Encode: " + [HbrTexPatcher]::LastErr })
             Write-Host ("[FAIL] PathID {0}: {1}" -f $targetPathId, [HbrTexPatcher]::LastErr)
