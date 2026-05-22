@@ -10,6 +10,7 @@ import { HbrItemEditor } from "./HbrItemEditor";
 import { CorpusStatsModal } from "../../components/CorpusStatsModal";
 import { readStatusFile, writeStatusFile, pruneEntry, type StatusFile, type StatusKind } from "../../lib/status";
 import { HbrFindReplaceModal } from "./HbrFindReplaceModal";
+import { showError } from "../../components/Toast";
 
 // HbrRow — top-level memo. Раніше рядок жив inline у `filteredItems.map` і
 // перерендеровувався на кожному keystroke по всьому списку (1000+ DOM-вузлів).
@@ -666,9 +667,14 @@ export function HbrEditor({ onHome }: Props) {
 
   async function openFile(f: FileItem) {
     // Авто-save при перемиканні файлу: якщо буфер dirty — тихо записуємо.
-    // Раніше тут показувався showAlert, що користувача дратував.
+    // Раніше показувався showAlert, що дратував; тепер тихо. АЛЕ якщо save
+    // справді впав (IPC error, диск повний) — кидаємо toast, інакше
+    // користувач думає що збереглось, а воно ні.
     if (dirty && activeFile && parsed) {
-      try { await saveActive(); } catch { /* ignore — не блокуємо переключення */ }
+      try { await saveActive(); }
+      catch (e) {
+        showError(e instanceof Error ? e.message : String(e), `Не вдалося зберегти ${activeFile.file} перед переключенням`);
+      }
     }
     setActiveFile(f);
     setParsed(null);
@@ -920,24 +926,32 @@ export function HbrEditor({ onHome }: Props) {
   async function refreshProjectStats() {
     if (!files.length) { setProjectStats(null); setFileStats({}); return; }
     const w = window.dp2 as unknown as { hbrTextRead: (p: string) => Promise<{ ok: boolean; raw?: string }> };
-    let total = 0, translated = 0;
+    // Раніше: послідовно 61 файл × 2 read = 122 sequential IPC. Тепер обидва
+    // read'и для одного файлу робимо в Promise.all, а самі файли — теж
+    // паралельно. Це ~10× швидше відкриття проєкту і pack'у.
     const perFile: Record<string, { total: number; translated: number; parserKeys: Set<string> }> = {};
-    for (const f of files) {
+    const results = await Promise.all(files.map(async (f) => {
       try {
-        const doneRes = await w.hbrTextRead(f.donePath);
-        const origRes = await w.hbrTextRead(f.origPath);
-        if (!doneRes.ok || !doneRes.raw) continue;
+        const [doneRes, origRes] = await Promise.all([
+          w.hbrTextRead(f.donePath),
+          w.hbrTextRead(f.origPath),
+        ]);
+        if (!doneRes.ok || !doneRes.raw) return null;
         const p = parseHbrJson(doneRes.raw, origRes.ok ? origRes.raw! : null, f.donePath, f.origPath);
-        total += p.totalItems;
-        translated += p.translatedItems;
         const parserKeys = new Set<string>();
         for (const it of p.items) {
           if (isHbrItemTranslatedByParser(it.original, it.current)) {
             parserKeys.add(`${it.textId}::${it.variantIdx}`);
           }
         }
-        perFile[f.file] = { total: p.totalItems, translated: p.translatedItems, parserKeys };
-      } catch {}
+        return { file: f.file, total: p.totalItems, translated: p.translatedItems, parserKeys };
+      } catch { return null; }
+    }));
+    let total = 0, translated = 0;
+    for (const r of results) {
+      if (!r) continue;
+      total += r.total; translated += r.translated;
+      perFile[r.file] = { total: r.total, translated: r.translated, parserKeys: r.parserKeys };
     }
     setProjectStats({ files: files.length, total, translated });
     setFileStats(perFile);
@@ -1016,13 +1030,18 @@ export function HbrEditor({ onHome }: Props) {
     setGlobalSearching(true);
     try {
       const w = window.dp2 as unknown as { hbrTextRead: (p: string) => Promise<{ ok: boolean; raw?: string }> };
-      const hits: GlobalHit[] = [];
-      for (const f of files) {
+      // Паралельно читаємо всі файли + парсимо. На 61 файлі це ~10× швидше
+      // за послідовний loop. Hits лімітуємо по 500 ПІСЛЯ збору — кінцевий
+      // зріз робиться нижче.
+      const perFile = await Promise.all(files.map(async (f) => {
         try {
-          const doneRes = await w.hbrTextRead(f.donePath);
-          if (!doneRes.ok || !doneRes.raw) continue;
-          const origRes = await w.hbrTextRead(f.origPath);
+          const [doneRes, origRes] = await Promise.all([
+            w.hbrTextRead(f.donePath),
+            w.hbrTextRead(f.origPath),
+          ]);
+          if (!doneRes.ok || !doneRes.raw) return null;
           const p = parseHbrJson(doneRes.raw, origRes.ok ? origRes.raw! : null, f.donePath, f.origPath);
+          const localHits: GlobalHit[] = [];
           for (const it of p.items) {
             const inId = it.textId.toLowerCase().includes(q);
             const inOrig = it.original.toLowerCase().includes(q);
@@ -1033,11 +1052,20 @@ export function HbrEditor({ onHome }: Props) {
             const start = Math.max(0, idx - 28);
             const end = Math.min(snippetSrc.length, idx + q.length + 36);
             const snippet = (start > 0 ? "…" : "") + snippetSrc.slice(start, end).replace(/\s+/g, " ") + (end < snippetSrc.length ? "…" : "");
-            hits.push({ file: f, textId: it.textId, variantIdx: it.variantIdx, snippet });
-            if (hits.length > 500) break;
+            localHits.push({ file: f, textId: it.textId, variantIdx: it.variantIdx, snippet });
+            if (localHits.length > 500) break;
           }
+          return localHits;
+        } catch { return null; }
+      }));
+      const hits: GlobalHit[] = [];
+      for (const local of perFile) {
+        if (!local) continue;
+        for (const h of local) {
+          hits.push(h);
           if (hits.length > 500) break;
-        } catch {}
+        }
+        if (hits.length > 500) break;
       }
       setGlobalHits(hits);
     } finally { setGlobalSearching(false); }

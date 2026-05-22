@@ -736,14 +736,22 @@ function AtlasView({ base64, width, height, glyphs, zoom, activeCp, onPickGlyph,
 
   useEffect(() => {
     if (!base64) return;
+    let cancelled = false;
     const img = new Image();
     img.onload = () => {
+      if (cancelled) return;
       imgRef.current = img;
       setImgLoaded(true);
       useTglFontsStore.getState().setAtlasSize(img.naturalWidth, img.naturalHeight);
     };
+    img.onerror = () => {
+      if (cancelled) return;
+      // Раніше: silent failure — GamePreview не рендерився, без feedback.
+      console.warn("TGL atlas image decode failed (corrupt base64?)");
+      setImgLoaded(false);
+    };
     img.src = `data:image/png;base64,${base64}`;
-    return () => { imgRef.current = null; setImgLoaded(false); };
+    return () => { cancelled = true; imgRef.current = null; setImgLoaded(false); };
   }, [base64]);
 
   // Image layer — малюється РІДКО (тільки на зміну zoom/imgLoaded).

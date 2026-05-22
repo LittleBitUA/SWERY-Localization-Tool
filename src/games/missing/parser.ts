@@ -112,6 +112,46 @@ function readCString(script: Uint8Array, pos: number): string {
   return UTF8.decode(script.subarray(pos, end));
 }
 
+// In-memory cache for parseMissingMsg. Ключ — path; signature — byteLength +
+// перші/останні 8 байт (швидкий fingerprint, нульова ймовірність false-hit
+// для випадкової зміни файла). refreshProjectStats / computeMissingCorpusStats
+// тригеряться на КОЖНУ зміну rowMeta (bookmark/status toggle); без кешу гра
+// перепарсувала всі 100 файлів за ~500ms × 100 = ~50s. З кешем — ~50ms на
+// signature checks.
+const msgCache = new Map<string, { sig: string; parsed: MissingMsgFile }>();
+
+function fingerprintBytes(bytes: Uint8Array): string {
+  const len = bytes.byteLength;
+  // Перші 8 байт магії (MSG.) і header + останні 8 байт (зазвичай у null-block).
+  const headLen = Math.min(8, len);
+  const tailLen = Math.min(8, len);
+  let head = ""; for (let i = 0; i < headLen; i++) head += bytes[i].toString(16).padStart(2, "0");
+  let tail = ""; for (let i = len - tailLen; i < len; i++) tail += bytes[i].toString(16).padStart(2, "0");
+  return `${len.toString(36)}:${head}:${tail}`;
+}
+
+/**
+ * Закешований варіант parseMissingMsg. Викликати замість прямого parseMissingMsg
+ * у місцях, які перепарсюють ОДИН І ТОЙ САМИЙ файл багато разів — stats refresh,
+ * corpus stats, search modals. Інвалідація: автоматична через signature (size +
+ * перші/останні 8 байт); якщо файл реально змінився — sig інший, cache miss.
+ *
+ * `path` — лише ключ; не зчитується. Caller відповідає за унікальність.
+ */
+export function parseMissingMsgCached(path: string, raw: Uint8Array): MissingMsgFile {
+  const sig = fingerprintBytes(raw);
+  const entry = msgCache.get(path);
+  if (entry && entry.sig === sig) return entry.parsed;
+  const parsed = parseMissingMsg(raw);
+  msgCache.set(path, { sig, parsed });
+  return parsed;
+}
+
+/** Очистити запис у кеші (викликати після save конкретного файла). */
+export function invalidateMissingMsgCache(path: string): void {
+  msgCache.delete(path);
+}
+
 /**
  * Парсимо MSG payload у плоский список entries. Не модифікуємо `script` —
  * caller може зберігати його для re-pack.

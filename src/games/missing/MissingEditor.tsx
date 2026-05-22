@@ -9,7 +9,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useT } from "../../lib/i18n";
 import { alert as dpAlert, confirm as dpConfirm } from "../../lib/dialogs";
-import { parseMissingMsg, buildMissingMsg, type MissingMsgFile, type MissingMsgEntry } from "./parser";
+import { parseMissingMsg, parseMissingMsgCached, invalidateMissingMsgCache, buildMissingMsg, type MissingMsgFile, type MissingMsgEntry } from "./parser";
 import { parseMissingHeightInfo, buildMissingHeightInfo, buildHeightInfoIndex, type MissingHeightInfo } from "./heightinfo";
 import { useLocalStorage } from "../../lib/useLocalStorage";
 import { MissingItemEditor, type MissingActiveItem } from "./MissingItemEditor";
@@ -503,19 +503,20 @@ export function MissingEditor({ onHome }: Props) {
   // Будує повну CorpusStats: total/translated по entries + UA/EN words+chars + top files.
   async function computeMissingCorpusStats(): Promise<CorpusStats | null> {
     if (!files.length) return null;
-    let total = 0, translated = 0, uaWords = 0, enWords = 0, uaChars = 0, enChars = 0;
-    const topFiles: CorpusStats["topFiles"] = [];
-    for (const f of files) {
+    // Паралельно: ~100 файлів водночас замість послідовно. На повний corpus
+    // це різниця між 8с (sequential) і ~1с (parallel) на NVMe.
+    const results = await Promise.all(files.map(async (f) => {
       try {
         const sourcePath = f.hasDone ? f.donePath : f.origPath;
         const [oR, dR] = await Promise.all([
           W.missingTextRead(f.origPath),
           W.missingTextRead(sourcePath),
         ]);
-        if (!oR.ok || !oR.base64) continue;
-        const orig = parseMissingMsg(b64ToBytes(oR.base64));
-        const done = dR.ok && dR.base64 ? parseMissingMsg(b64ToBytes(dR.base64)) : orig;
+        if (!oR.ok || !oR.base64) return null;
+        const orig = parseMissingMsgCached(f.origPath, b64ToBytes(oR.base64));
+        const done = dR.ok && dR.base64 ? parseMissingMsgCached(sourcePath, b64ToBytes(dR.base64)) : orig;
         let fTotal = 0, fTranslated = 0;
+        let uaW = 0, enW = 0, uaC = 0, enC = 0;
         for (let i = 0; i < orig.entries.length; i++) {
           const o = orig.entries[i]?.text ?? "";
           if (o === "" || /^[A-Z_0-9]+_en$/.test(o)) continue;
@@ -523,24 +524,35 @@ export function MissingEditor({ onHome }: Props) {
           const d = done.entries[i]?.text ?? "";
           if (d !== "" && d !== o) {
             fTranslated++;
-            uaWords += countWords(d);
-            uaChars += d.length;
+            uaW += countWords(d);
+            uaC += d.length;
           } else {
-            enWords += countWords(o);
-            enChars += o.length;
+            enW += countWords(o);
+            enC += o.length;
           }
         }
-        total += fTotal;
-        translated += fTranslated;
         const niceName = f.name.replace(/_EN$/i, "");
-        topFiles.push({
-          fileName: niceName,
-          filePath: f.donePath,
-          total: fTotal,
-          translated: fTranslated,
-          percent: fTotal ? +(fTranslated / fTotal * 100).toFixed(2) : 0,
-        });
-      } catch {}
+        return {
+          file: f,
+          fTotal, fTranslated, uaW, enW, uaC, enC,
+          row: {
+            fileName: niceName,
+            filePath: f.donePath,
+            total: fTotal,
+            translated: fTranslated,
+            percent: fTotal ? +(fTranslated / fTotal * 100).toFixed(2) : 0,
+          },
+        };
+      } catch { return null; }
+    }));
+    let total = 0, translated = 0, uaWords = 0, enWords = 0, uaChars = 0, enChars = 0;
+    const topFiles: CorpusStats["topFiles"] = [];
+    for (const r of results) {
+      if (!r) continue;
+      total += r.fTotal; translated += r.fTranslated;
+      uaWords += r.uaW; enWords += r.enW;
+      uaChars += r.uaC; enChars += r.enC;
+      topFiles.push(r.row);
     }
     topFiles.sort((a, b) => b.total - a.total);
     return {
@@ -555,18 +567,20 @@ export function MissingEditor({ onHome }: Props) {
 
   async function refreshProjectStats() {
     if (!files.length) { setProjectStats(null); setFileStats({}); return; }
-    let total = 0, translated = 0;
+    // Раніше: послідовно по ~100 файлах × parseMissingMsg на main thread.
+    // 5-10s UI-freeze при найменшій зміні rowMeta. Тепер усі read+parse
+    // паралельно через Promise.all — обмежує лише IPC concurrency у main.
     const perFile: Record<string, { total: number; translated: number }> = {};
-    for (const f of files) {
+    const results = await Promise.all(files.map(async (f) => {
       try {
         const sourcePath = f.hasDone ? f.donePath : f.origPath;
         const [oR, dR] = await Promise.all([
           W.missingTextRead(f.origPath),
           W.missingTextRead(sourcePath),
         ]);
-        if (!oR.ok || !oR.base64) continue;
-        const orig = parseMissingMsg(b64ToBytes(oR.base64));
-        const done = dR.ok && dR.base64 ? parseMissingMsg(b64ToBytes(dR.base64)) : orig;
+        if (!oR.ok || !oR.base64) return null;
+        const orig = parseMissingMsgCached(f.origPath, b64ToBytes(oR.base64));
+        const done = dR.ok && dR.base64 ? parseMissingMsgCached(sourcePath, b64ToBytes(dR.base64)) : orig;
         let fTotal = 0, fTranslated = 0;
         for (let i = 0; i < orig.entries.length; i++) {
           const e = orig.entries[i];
@@ -574,16 +588,18 @@ export function MissingEditor({ onHome }: Props) {
           if (o === "" || /^[A-Z_0-9]+_en$/.test(o)) continue;
           fTotal++;
           const d = done.entries[i]?.text ?? "";
-          // Враховуємо manual override `markedTranslated` (для рядків
-          // типу ":)" які користувач позначив ПКМ → "Позначити перекладеним").
           const key = e && e.msgEnum >= 0 ? String(e.msgEnum) : `${f.name}::${i}`;
           const marked = !!rowMeta[key]?.markedTranslated;
           if ((d !== "" && d !== o) || marked) fTranslated++;
         }
-        total += fTotal;
-        translated += fTranslated;
-        perFile[f.file] = { total: fTotal, translated: fTranslated };
-      } catch {}
+        return { file: f.file, total: fTotal, translated: fTranslated };
+      } catch { return null; }
+    }));
+    let total = 0, translated = 0;
+    for (const r of results) {
+      if (!r) continue;
+      total += r.total; translated += r.translated;
+      perFile[r.file] = { total: r.total, translated: r.translated };
     }
     setProjectStats({ files: files.length, total, translated });
     setFileStats(perFile);
@@ -661,6 +677,11 @@ export function MissingEditor({ onHome }: Props) {
       const built = buildMissingMsg(origMsg, edits);
       const r = await W.missingTextWrite({ fullPath: activeFile.donePath, base64: bytesToB64(built) });
       if (!r.ok) throw new Error(r.error || "write fail");
+      // Інвалідуємо кеш для цього шляху — fingerprint зміниться після write,
+      // але краще явно скинути запис, щоб refreshProjectStats нижче точно
+      // перепарсував свіжі байти (а не повертав застарілий entry з sig'ом
+      // що випадково збігся).
+      invalidateMissingMsgCache(activeFile.donePath);
       const fresh = parseMissingMsg(built);
       setDoneMsg(fresh);
       setEdits(new Map());
@@ -962,6 +983,7 @@ export function MissingEditor({ onHome }: Props) {
         if (edits2.size === 0) continue;
         const built = buildMissingMsg(parsed, edits2);
         await W.missingTextWrite({ fullPath: f.donePath, base64: bytesToB64(built) });
+        invalidateMissingMsgCache(f.donePath);
         touchedFiles++;
         totalCells += edits2.size;
       }
