@@ -3827,6 +3827,135 @@ ipcMain.handle("dp2:missing-boxsize-read-original", async () => {
   }
 });
 
+// ── IPC: MISSING DLL (Assembly-CSharp.dll) editor + targeted dialog fix ──
+//
+// Знаходить Managed/ поряд із resources.assets (settings.missingAssetsPath),
+// викликає Mono.Cecil-PowerShell скрипти для:
+//   - extract: всі ldstr → JSON (для UI-таблиці перекладу)
+//   - apply:   JSON {id, original, replacement}[] → DLL з .bak
+//   - dialog-fix: одна-кнопка patch FixedBallon.SetText + TextExSettings..ctor
+//   - dialog-fix-revert: rollback з .bak (повертає DLL до оригіналу)
+function missingDllPath() {
+  return async () => {
+    const settings = await readSettings();
+    if (!settings.missingAssetsPath) return null;
+    const managedDir = path.join(path.dirname(settings.missingAssetsPath), "Managed");
+    return path.join(managedDir, "Assembly-CSharp.dll");
+  };
+}
+async function _missingDllPath() {
+  const settings = await readSettings();
+  if (!settings.missingAssetsPath) return null;
+  const managedDir = path.join(path.dirname(settings.missingAssetsPath), "Managed");
+  return path.join(managedDir, "Assembly-CSharp.dll");
+}
+
+ipcMain.handle("dp2:missing-dll-strings-extract", async () => {
+  try {
+    const dllPath = await _missingDllPath();
+    if (!dllPath) return { ok: false, error: "missingAssetsPath not set" };
+    try { await fs.access(dllPath); } catch { return { ok: false, error: "Assembly-CSharp.dll not found at " + dllPath }; }
+    const settings = await readSettings();
+    if (!settings.uabeaPath) return { ok: false, error: "UABEA path not set" };
+    const pwshLookup = await findPwsh(settings);
+    if (!pwshLookup) return { ok: false, error: "PowerShell 7 not found" };
+    const uabeaDir = path.dirname(settings.uabeaPath);
+    const { metaDir } = await missingTextDirs();
+    const outFile = path.join(metaDir, "..", "DLL", "assembly-csharp-strings.json");
+    await fs.mkdir(path.dirname(outFile), { recursive: true });
+    const scriptPath = resolveResource("scripts/missing-dll-strings-extract.ps1");
+    const result = await new Promise((resolve) => {
+      const child = spawn(pwshLookup, [
+        "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass",
+        "-File", scriptPath,
+        "-DllPath", dllPath, "-UabeaDir", uabeaDir, "-OutFile", outFile, "-MinLength", "1",
+      ], { windowsHide: true });
+      let stdout = "", stderr = "";
+      child.stdout.on("data", (d) => { stdout += d.toString(); });
+      child.stderr.on("data", (d) => { stderr += d.toString(); });
+      child.on("exit", (code) => resolve({ code, stdout, stderr }));
+    });
+    if (result.code !== 0) return { ok: false, error: (result.stderr || result.stdout || "").trim(), log: result.stdout };
+    const raw = await fs.readFile(outFile, "utf8");
+    const payload = JSON.parse(raw);
+    return { ok: true, items: payload.items, total: payload.total, outFile };
+  } catch (e) {
+    return { ok: false, error: String(e.message || e) };
+  }
+});
+
+ipcMain.handle("dp2:missing-dll-strings-apply", async (_e, payload) => {
+  try {
+    const dllPath = await _missingDllPath();
+    if (!dllPath) return { ok: false, error: "missingAssetsPath not set" };
+    const edits = (payload && Array.isArray(payload.edits)) ? payload.edits : null;
+    if (!edits || edits.length === 0) return { ok: false, error: "edits[] empty" };
+    const settings = await readSettings();
+    if (!settings.uabeaPath) return { ok: false, error: "UABEA path not set" };
+    const pwshLookup = await findPwsh(settings);
+    if (!pwshLookup) return { ok: false, error: "PowerShell 7 not found" };
+    const uabeaDir = path.dirname(settings.uabeaPath);
+    const { metaDir } = await missingTextDirs();
+    const inputJson = path.join(metaDir, "..", "DLL", "_apply-input.json");
+    await fs.mkdir(path.dirname(inputJson), { recursive: true });
+    await fs.writeFile(inputJson, JSON.stringify({ edits }, null, 0), "utf8");
+    const scriptPath = resolveResource("scripts/missing-dll-strings-apply.ps1");
+    const result = await new Promise((resolve) => {
+      const child = spawn(pwshLookup, [
+        "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass",
+        "-File", scriptPath,
+        "-DllPath", dllPath, "-UabeaDir", uabeaDir, "-InputJson", inputJson,
+      ], { windowsHide: true });
+      let stdout = "", stderr = "";
+      child.stdout.on("data", (d) => { stdout += d.toString(); });
+      child.stderr.on("data", (d) => { stderr += d.toString(); });
+      child.on("exit", (code) => resolve({ code, stdout, stderr }));
+    });
+    try { await fs.unlink(inputJson); } catch {}
+    if (result.code !== 0) return { ok: false, error: (result.stderr || result.stdout || "").trim(), log: result.stdout };
+    const m = result.stdout.match(/RESULT_JSON:\s*(.+)$/m);
+    let summary = null;
+    if (m) { try { summary = JSON.parse(m[1]); } catch {} }
+    return { ok: true, summary, log: result.stdout };
+  } catch (e) {
+    return { ok: false, error: String(e.message || e) };
+  }
+});
+
+async function _runMissingDialogFixScript(extraArgs) {
+  const dllPath = await _missingDllPath();
+  if (!dllPath) return { ok: false, error: "missingAssetsPath not set" };
+  try { await fs.access(dllPath); } catch { return { ok: false, error: "Assembly-CSharp.dll not found at " + dllPath }; }
+  const settings = await readSettings();
+  if (!settings.uabeaPath) return { ok: false, error: "UABEA path not set" };
+  const pwshLookup = await findPwsh(settings);
+  if (!pwshLookup) return { ok: false, error: "PowerShell 7 not found" };
+  const uabeaDir = path.dirname(settings.uabeaPath);
+  const scriptPath = resolveResource("scripts/missing-dll-dialog-fix.ps1");
+  const args = [
+    "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass",
+    "-File", scriptPath,
+    "-DllPath", dllPath, "-UabeaDir", uabeaDir,
+    ...(extraArgs || []),
+  ];
+  const result = await new Promise((resolve) => {
+    const child = spawn(pwshLookup, args, { windowsHide: true });
+    let stdout = "", stderr = "";
+    child.stdout.on("data", (d) => { stdout += d.toString(); });
+    child.stderr.on("data", (d) => { stderr += d.toString(); });
+    child.on("exit", (code) => resolve({ code, stdout, stderr }));
+  });
+  if (result.code !== 0) return { ok: false, error: (result.stderr || result.stdout || "").trim(), log: result.stdout };
+  const m = result.stdout.match(/RESULT_JSON:\s*(.+)$/m);
+  let summary = null;
+  if (m) { try { summary = JSON.parse(m[1]); } catch {} }
+  return { ok: true, summary, log: result.stdout };
+}
+
+ipcMain.handle("dp2:missing-dll-dialog-fix", async () => _runMissingDialogFixScript([]));
+ipcMain.handle("dp2:missing-dll-dialog-fix-revert", async () => _runMissingDialogFixScript(["-Revert"]));
+ipcMain.handle("dp2:missing-dll-dialog-fix-status", async () => _runMissingDialogFixScript(["-Status"]));
+
 // Зберігає модифіковані bytes у Done/heightinfo.bin.
 ipcMain.handle("dp2:missing-boxsize-save", async (_event, payload) => {
   try {

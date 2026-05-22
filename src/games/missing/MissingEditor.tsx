@@ -17,6 +17,7 @@ import { CorpusStatsModal } from "../../components/CorpusStatsModal";
 import { MissingLintModal } from "./MissingLintModal";
 import { MissingGlobalSearchModal } from "./MissingGlobalSearchModal";
 import { MissingAutoFitModal } from "./MissingAutoFitModal";
+import { MissingDllEditor } from "./MissingDllEditor";
 import { EditorFooter } from "../../components/EditorFooter";
 import { LangToggle } from "../../components/LangToggle";
 import { showError, showOk, showToast } from "../../components/Toast";
@@ -68,6 +69,9 @@ interface MissingApi {
   missingBoxsizeRead: () => Promise<{ ok: boolean; error?: string; base64?: string; source?: string }>;
   missingBoxsizeSave: (payload: { base64: string }) => Promise<{ ok: boolean; error?: string; file?: string }>;
   missingBoxsizePack: () => Promise<{ ok: boolean; error?: string; skipped?: boolean }>;
+  missingDllDialogFix: () => Promise<{ ok: boolean; error?: string; summary?: { applied: number } }>;
+  missingDllDialogFixRevert: () => Promise<{ ok: boolean; error?: string }>;
+  missingDllDialogFixStatus: () => Promise<{ ok: boolean; summary?: { patched: boolean; ballon: boolean; ballonController: boolean; wordWrap: boolean; bakExists: boolean } }>;
   launchUabea: () => Promise<{ success: boolean; error?: string }>;
   onMissingPrepProgress: (cb: (line: string) => void) => () => void;
   onMissingPackProgress: (cb: (line: string) => void) => () => void;
@@ -149,6 +153,14 @@ export function MissingEditor({ onHome }: Props) {
   // підмінює EN, тож box-розміри теж пишемо у L0.
   const [targetLang, setTargetLang] = useLocalStorage<number>("missing.ui.targetLang", 0);
   const [autoFitOpen, setAutoFitOpen] = useState(false);
+  const [dllOpen, setDllOpen] = useState(false);
+  // DLL dialog-fix status: чи Ballon/BallonController вже патчені на
+  // SizeControlType=UseTextInfo. Перевіряємо при кожному відкритті
+  // редактора + після того як модалка DLL закривається (бо там можна
+  // натиснути «Виправити»/«Відкотити»).
+  const [dialogFixPatched, setDialogFixPatched] = useState<boolean | null>(null);
+  const [dialogFixBusy, setDialogFixBusy] = useState(false);
+  const [dialogFixDismissed, setDialogFixDismissed] = useLocalStorage<boolean>("missing.ui.dialogFixDismissed", false);
   // Per-file stats (для прогрес-бара у file-list).
   const [fileStats, setFileStats] = useState<Record<string, { total: number; translated: number }>>({});
   // Стрим логу від PS pack-скрипта (для прогрес-модалки).
@@ -286,6 +298,54 @@ export function MissingEditor({ onHome }: Props) {
     })();
     return () => { cancelled = true; };
   }, [phase]);
+
+  // Перевірити стан DLL dialog-fix: чи Ballon.CheckProperties уже патчений
+  // на SizeControlType=UseTextInfo. Кешуємо у dialogFixPatched: null=loading,
+  // true=ok, false=ще не fixed. Перевіряємо при phase=ready (тобто коли
+  // користувач реально працює з текстом) і після кожного apply/revert.
+  async function refreshDialogFixStatus() {
+    try {
+      const r = await W.missingDllDialogFixStatus();
+      if (r.ok && r.summary) setDialogFixPatched(r.summary.patched);
+    } catch { /* ignore */ }
+  }
+  useEffect(() => {
+    if (phase !== "ready") return;
+    refreshDialogFixStatus();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [phase]);
+
+  async function applyDialogFix() {
+    if (dialogFixBusy) return;
+    const ok = await dpConfirm(
+      "Виправити обрізання діалогів?",
+      "IL-патчі в Assembly-CSharp.dll:\n• Ballon.CheckProperties → SizeControlType примусово UseTextInfo (2): чат-пухир автоматично адаптує ширину під UA-текст (інакше обрізає по character-count).\n• BallonController.CheckProperties → так само.\n• TextExGenerator.get_WordWrapType → завжди 1 (Default): wrap йде по пробілах між словами (без цього wrap посеред слова: «потре|бувала», «психологічн|ий»).\n\nСтвориться .dll.bak (один раз). Після patch перезапусти TheMISSING.exe.",
+      { okLabel: "Виправити", cancelLabel: "Скасувати", tone: "warning" }
+    );
+    if (!ok) return;
+    setDialogFixBusy(true);
+    const r = await W.missingDllDialogFix();
+    setDialogFixBusy(false);
+    if (!r.ok) { showError(r.error || "?", "Dialog fix failed"); return; }
+    showOk(`Застосовано ${r.summary?.applied ?? 0} IL-патчів. Перезапусти TheMISSING.exe.`, "Dialog fix");
+    await refreshDialogFixStatus();
+  }
+
+  async function revertDialogFix() {
+    if (dialogFixBusy) return;
+    const ok = await dpConfirm(
+      "Повернути DLL до оригіналу?",
+      "Файл Assembly-CSharp.dll відновиться з .dll.bak. Усі правки (Quick Fix + Strings edits) буде втрачено.",
+      { okLabel: "Відкотити", cancelLabel: "Скасувати", tone: "danger" }
+    );
+    if (!ok) return;
+    setDialogFixBusy(true);
+    const r = await W.missingDllDialogFixRevert();
+    setDialogFixBusy(false);
+    if (!r.ok) { showError(r.error || "?", "Revert failed"); return; }
+    showOk("DLL повернено з .bak. Перезапусти гру.", "Revert");
+    await refreshDialogFixStatus();
+  }
 
   // Debounced save heightinfo назад на диск (Done/heightinfo.bin).
   useEffect(() => {
@@ -1046,6 +1106,29 @@ export function MissingEditor({ onHome }: Props) {
             <button className="dp-btn dp-btn--success" disabled={packing} onClick={packAll}>
               {packing ? "…" : t("missing.editor.pack")}
             </button>
+            <button
+              className="dp-btn dp-btn--ghost"
+              onClick={applyDialogFix}
+              disabled={dialogFixBusy || dialogFixPatched === true}
+              title={
+                dialogFixPatched === true
+                  ? "Patch уже застосовано. Натисни DLL → ↺ Відкотити щоб повернути."
+                  : "Виправити обрізання chat-pухирів (Ballon.SizeControlType=UseTextInfo). Single click."
+              }
+            >
+              {dialogFixBusy
+                ? "🪄 …"
+                : dialogFixPatched === true
+                  ? "✓ Діалоги"
+                  : "🪄 Виправити діалоги"}
+            </button>
+            <button
+              className="dp-btn dp-btn--ghost"
+              onClick={() => setDllOpen(true)}
+              title="Редактор string-літералів у Assembly-CSharp.dll"
+            >
+              DLL
+            </button>
           </>
         )}
         <LangToggle compact />
@@ -1087,6 +1170,24 @@ export function MissingEditor({ onHome }: Props) {
           <div className="flex-1 bg-[var(--bg)] border border-[var(--border-soft)] rounded p-3 text-[11px] font-mono overflow-auto whitespace-pre-wrap">
             {progressLines.join("\n")}
           </div>
+        </div>
+      )}
+
+      {phase === "ready" && dialogFixPatched === false && !dialogFixDismissed && (
+        <div className="px-4 py-2.5 bg-[var(--warning,#d97706)]/10 border-b border-[var(--warning,#d97706)]/30 flex items-center gap-3">
+          <span className="text-[16px]" aria-hidden>🪄</span>
+          <div className="flex-1 min-w-0 text-[12px] text-[var(--text)]">
+            <span className="font-semibold">UA-текст обрізається у чат-пухирях?</span>{" "}
+            <span className="text-[var(--text-muted)]">
+              Single-click патч у Assembly-CSharp.dll: chat-bubble буде автоматично розширюватися під переклад. Створиться .dll.bak. Перезапусти гру.
+            </span>
+          </div>
+          <button className="dp-btn dp-btn--success" disabled={dialogFixBusy} onClick={applyDialogFix}>
+            {dialogFixBusy ? "…" : "Виправити"}
+          </button>
+          <button className="dp-btn dp-btn--ghost" onClick={() => setDialogFixDismissed(true)} title="Сховати банер (можна повернутися через header-кнопку)">
+            ✕
+          </button>
         </div>
       )}
 
@@ -1334,6 +1435,8 @@ export function MissingEditor({ onHome }: Props) {
           showOk(`Підлаштовано ${updates.length} рядків · слот L${targetLang} · зберігаю у Done/heightinfo.bin…`, "Auto-fit");
         }}
       />
+
+      <MissingDllEditor open={dllOpen} onClose={() => setDllOpen(false)} />
 
       {/* Контекстне меню рядка */}
       {ctxMenu && (

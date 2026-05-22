@@ -361,9 +361,185 @@ toolkit at the root of this repo is what you want.
 
 
 --------------------------------------------------------------------------------
-10. CHANGELOG OF THIS DOCUMENT
+10. ASSEMBLY-CSHARP.DLL (CHAT BUBBLES, OPTIONS MENU)
+--------------------------------------------------------------------------------
+
+A handful of in-game strings live inside `Managed/Assembly-CSharp.dll` as
+hard-coded `ldstr` literals — they are NOT in resources.assets. The toolkit
+exposes them through the "DLL" panel in the MISSING text editor.
+
+10.1. WHAT'S THERE
+------------------
+
+After scanning all 6500+ ldstr in the assembly, only 17 turned out to be
+user-facing text (the rest are type names, debug strings, asset paths,
+enum identifiers, format specifiers without letters):
+
+  TheMISSING.GameMainData.OptionData      .cctor       (graphics quality presets)
+    0x0008  "Fantastic"   / "Фантастична"
+    0x0010  "Beautiful"   / "Прекрасна"
+    0x0018  "Good"        / "Гарна"
+    0x0020  "Simple"      / "Проста"
+    0x0028  "Fastest"     / "Швидка"
+    0x0030  "Fastest+"    / "Найшвидша"
+    0x00A8  "Ukrainian"   / "Українська"     (language label)
+
+  TheMISSING.Menu.Option.OptionBasis      (in-game options menu)
+    AdaptVibration     ON/OFF labels
+    AdaptAntiAliasing  ON/OFF labels
+    AdaptFullScreen    ON/OFF labels
+
+  TheMISSING.Menu.Title.OptionBasis       (main-menu options)
+    AdaptVibration     ON/OFF labels
+    AdaptFullScreen    ON/OFF labels
+
+The toolkit ships with a built-in whitelist (`src/games/missing/dll-text-
+whitelist.ts`) of these 17 positions so other translators can immediately
+see them on a clean English DLL — the original strings are "ON" / "OFF" /
+"Fantastic" etc.
+
+10.2. EDITOR WORKFLOW
+---------------------
+
+In MissingEditor header → button "DLL" opens the Assembly-CSharp editor:
+
+  - "Витягнути всі рядки" (Extract) — Mono.Cecil walks every method,
+    collects ldstr operands with `(id, type, method, offset, original)`.
+    Output in `<userData>/MISSING/DLL/assembly-csharp-strings.json`.
+
+  - Filter checkbox "Лише UI-кандидати (17)" — restricts the table to
+    the whitelist positions above. Default ON.
+
+  - Edit the "Переклад (UA)" column. The `↧` button next to the input
+    pastes the suggested UA-hint from the whitelist.
+
+  - "Записати у DLL (N)" — second Mono.Cecil pass: for each edit, locate
+    the ldstr by sequential id, sanity-check that `current.Operand ==
+    expected.original`, then `instruction.Operand = replacement`. If a
+    string already changed (e.g. DLL was patched separately), the item
+    is skipped with reason "original mismatch — DLL likely changed
+    since extract". The new DLL is written via `AssemblyDefinition.Write()`
+    in ReadWrite mode; `Assembly-CSharp.dll.bak` is created ONCE on first
+    save.
+
+10.3. STATIC IL PATCHES (the "Виправити діалоги" button)
+---------------------------------------------------------
+
+A separate, deterministic patch flow that applies three IL-level rewrites
+to fix UA text truncation/wrap in chat bubbles. Backed by the same
+`.dll.bak` as ldstr edits.
+
+PATCH 1 + 2: Ballon.CheckProperties / BallonController.CheckProperties
+------------------------------------------------------------
+
+The chat bubble (`TheMISSING.UI.Ballon` for in-game messenger; the
+overhead dialogue uses `TheMISSING.UI.FixedBallon`, which is a separate
+class) decides its width via:
+
+    private SizeControlType SizeControlType;   // serialized in prefab
+    private void CheckProperties() {
+        switch (this.SizeControlType) {
+            case UseWidthAndHeightPixcels (0):   // bubble width = `this.Width` (default 128px)
+            case UseCharAndLineCounts (1):       // width = fontSize × m_CharacterCount (default 50)
+            case UseTextInfo (2):                // width = TextExGenerator.PreferredWidth + 2
+        }
+    }
+
+THE MISSING prefabs ship with `SizeControlType = 0` (or 1), so bubble
+width is a hard cap — UA text that grows past it gets character-truncated
+by the bubble's RectMask. The fix forces case 2 (UseTextInfo), which
+reads the actual rendered width back from the text component, so the
+bubble grows to fit the translation.
+
+IL change:
+    BEFORE:                          AFTER:
+    IL_0000: ldarg.0                 IL_0000: nop
+    IL_0001: ldfld SizeControlType   IL_0001: ldc.i4.2
+    IL_0006: stloc.0                 IL_0006: stloc.0     (unchanged)
+
+i.e. the local `V_0 = this.SizeControlType` is replaced with `V_0 = 2`.
+The serialized field is left alone, so save-load roundtrip is safe; only
+the runtime switch dispatch is affected. Applied to both Ballon (in-game
+messenger) and BallonController (some HUD/menu bubbles).
+
+PATCH 3: TextExGenerator.get_WordWrapType → always Default (1)
+------------------------------------------------------------
+
+THE MISSING uses a custom text layout class (`TheMISSING.UI.TextExGenerator`
++ `TextExSettings`) modelled on Japanese typography: separators (whitespace)
+are treated as PUNCTUATION, and CheckWordWrap returns:
+
+    if (WordWrapType & 1) {        // bit0 = WordWrap.Default
+        if (IsSeparator(prev) || IsSeparator(cur))
+            goto prohibitsCheck;   // returns true only if JapaneseProhibits is set
+        return true;               // wrap allowed between ANY non-separator pair
+    }
+
+For the chat bubble's TextExGenerator instance, `wordWrap` is serialized
+as `0 (None)`, so CheckWordWrap is always false → GetAutoLineBreakIndex
+falls back to `index - 1`, i.e. single-char wrap. UA words break in the
+middle: "потре|бувала", "психологічн|ий".
+
+The fix rewrites the `get_WordWrapType` getter to always return `1
+(Default)`:
+
+    BEFORE:                                  AFTER:
+    IL_0000: ldarg.0                         IL_0000: ldc.i4.1
+    IL_0001: ldfld TextExGenerator::wordWrap IL_0001: ret
+    IL_0006: ret                             (2 instructions)
+
+With bit0 = 1, CheckWordWrap returns FALSE on whitespace boundaries (JP
+prohibits not active, V_1 = false), TRUE between non-separator chars.
+ParseWordWrap walks back from the overflow position until it sees the
+first FALSE (= whitespace) and returns the index just before it. Result:
+wrap on space boundaries between whole words.
+
+Failed approaches that taught lessons:
+
+  - "Always Large bubble" (patch typeSize stfld in FixedBallon.SetText):
+    no visible effect. Large bubble has the same rect width as Medium /
+    Small in the chat-style prefab — only sprite height differs.
+
+  - "Switch UI.Text VerticalOverflow from Truncate to Overflow" across
+    all 754 UI.Text instances in shared/level assets: no effect on chat
+    bubbles, because chat doesn't use Unity's standard UI.Text wrap
+    logic — it goes through the custom TextExGenerator.AutoLineBreak.
+
+  - "Full rewrite of TextExSettings.CheckWordWrap via Mono.Cecil
+    Instructions.Clear()": Unity refused to load the modified method
+    (blank bubbles, all dialogue gone). Mono.Cecil rewrites need a
+    correctly populated stack and exact local-variable mappings —
+    simple-getter rewrites work, multi-branch with try/catch do not.
+
+10.4. REVERT
+-----------
+
+`↺ Відкотити` in the DLL modal copies `Assembly-CSharp.dll.bak` over
+`Assembly-CSharp.dll`. Use this if a patch breaks something — both ldstr
+edits and the dialog fix are undone simultaneously.
+
+The status bar in the modal shows per-patch state via tooltip
+(`Ballon: ✓ · BallonController: ✓ · WordWrapType: ✓`), so partial
+applies are visible.
+
+10.5. WORKING DIRECTORY
+----------------------
+
+  Documents/
+    SWERY-Localization-Tool/
+      MISSING/
+        DLL/
+          assembly-csharp-strings.json     ← extract output (~700 KB)
+
+
+--------------------------------------------------------------------------------
+11. CHANGELOG OF THIS DOCUMENT
 --------------------------------------------------------------------------------
 
   2026-05  Initial revision based on toolkit v1.0.0. Covers retail and
            demo Steam builds. PathIDs verified against ship build hash
            current as of toolkit release.
+  2026-05  Added §10: Assembly-CSharp.dll editor — 17-string whitelist,
+           ldstr round-trip via Mono.Cecil, three deterministic IL patches
+           (Ballon SizeControl, BallonController SizeControl, WordWrapType
+           getter) packaged as a single "Виправити діалоги" button.

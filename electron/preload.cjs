@@ -159,6 +159,11 @@ contextBridge.exposeInMainWorld("dp2", {
   missingBoxsizeReadOriginal: () => ipcRenderer.invoke("dp2:missing-boxsize-read-original"),
   missingBoxsizeSave: (payload) => ipcRenderer.invoke("dp2:missing-boxsize-save", payload),
   missingBoxsizePack: () => ipcRenderer.invoke("dp2:missing-boxsize-pack"),
+  missingDllStringsExtract: () => ipcRenderer.invoke("dp2:missing-dll-strings-extract"),
+  missingDllStringsApply: (payload) => ipcRenderer.invoke("dp2:missing-dll-strings-apply", payload),
+  missingDllDialogFix: () => ipcRenderer.invoke("dp2:missing-dll-dialog-fix"),
+  missingDllDialogFixRevert: () => ipcRenderer.invoke("dp2:missing-dll-dialog-fix-revert"),
+  missingDllDialogFixStatus: () => ipcRenderer.invoke("dp2:missing-dll-dialog-fix-status"),
   onMissingPrepProgress: (cb) => {
     const h = (_e, payload) => cb(payload);
     ipcRenderer.on("dp2:missing-prep-progress", h);
