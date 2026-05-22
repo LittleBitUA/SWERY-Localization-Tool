@@ -14,14 +14,50 @@ interface CacheRow {
   hIdx: number;          // індекс у heightInfo.entries
   enText: string;
   uaText: string;
-  enLen: number;         // символів EN
-  uaLen: number;         // символів UA
+  enLen: number;         // символів EN (для UI)
+  uaLen: number;         // символів UA (для UI)
   enLines: number;
   uaLines: number;
+  // Per-line максимуми. Це те, що насправді визначає width після word-wrap у
+  // TMP: ширина боксу мусить вмістити НАЙДОВШИЙ рядок, а не суму. Раніше
+  // лічили загальну довжину — тоді ratio для двопухирної репліки виходив
+  // штучно високий ("Хочу покататися на тук-ту" — 25 char, але longest line
+  // після wrap-у може бути 15-17), а для однопухирної фрази типу "Таїланд" —
+  // навпаки штучно низький (бо total ratio розмазувався по короткому en).
+  enMaxLine: number;     // weighted-довжина найдовшого рядка EN
+  uaMaxLine: number;     // weighted-довжина найдовшого рядка UA (з cyrillic boost)
   origW: number;         // ПОТОЧНИЙ W у Done (може бути вже модифіковане)
   origH: number;
   refW: number;          // ОРИГІНАЛЬНИЙ W з Meta — baseline для розрахунку newW
   refH: number;
+}
+
+// Кириличний коефіцієнт ширини у FOT-NewCinemaAStd-D / Cinema Calligraphy.
+// Заміряно через canvas.measureText на тих самих рядках EN vs UA — кирилиця
+// ~10% ширша за латиницю при однаковому font-size. Числа cyrillic-only
+// рядків падають у діапазон 1.08-1.13, тому беремо 1.10 як середнє. Це
+// дешевша евристика, ніж справжній measureText (який потребує завантаженого
+// FontFace, недоступного у Auto-fit modal).
+const CYRILLIC_WEIGHT = 1.10;
+
+function weightedLen(s: string): number {
+  let w = 0;
+  for (const ch of s) {
+    const cp = ch.codePointAt(0) ?? 0;
+    // U+0400..U+04FF — Cyrillic block; U+0500..U+052F — Supplement.
+    if (cp >= 0x0400 && cp <= 0x052F) w += CYRILLIC_WEIGHT;
+    else w += 1;
+  }
+  return w;
+}
+
+function maxLineLen(s: string, weighted = false): number {
+  let maxL = 0;
+  for (const line of s.split("\n")) {
+    const l = weighted ? weightedLen(line) : line.length;
+    if (l > maxL) maxL = l;
+  }
+  return maxL;
 }
 
 interface PreviewRow extends CacheRow {
@@ -58,12 +94,32 @@ const PLACEHOLDER_RE = /^[A-Z_0-9]+_en$|^V_[A-Z]{2}_\d{3}$/;
 export function MissingAutoFitModal({ open, onClose, files, heightInfo, referenceHeightInfo, heightInfoIdx, targetLang, onApply }: Props) {
   const [loading, setLoading] = useState(false);
   const [cache, setCache] = useState<CacheRow[]>([]);
-  const [padding, setPadding] = useState(1.08);
-  const [minPadding, setMinPadding] = useState(0);  // абсолютний мінімум у px (опційно)
+  // Defaults підняті: 1.08 давало 8% запасу, для UA з кирилицею (~10% ширша
+  // за латиницю у Cinema Calligraphy) це постійно недостатньо — "Таїланд" /
+  // "Хочу покататися" обрізаються. 1.15 = базовий gap + cyrillic boost.
+  const [padding, setPadding] = useState(1.15);
+  // Мін. абсолютний запас — для коротких box-ів, де multiplier ×1.15 від
+  // 60px дає лише +9px, що менше за один кириличний гліф у FOT-D 24pt.
+  const [minPadding, setMinPadding] = useState(8);
   const [onlyGrow, setOnlyGrow] = useState(true);
   const [scaleHeight, setScaleHeight] = useState(true);
   const [sortMode, setSortMode] = useState<"diff" | "ratio" | "enum">("diff");
   const [showAll, setShowAll] = useState(false);
+
+  // Reference lookup за enumN, а НЕ за hIdx. Раніше код припускав, що
+  // referenceHeightInfo.entries[hIdx] = той самий запис, що heightInfo
+  // .entries[hIdx]. Це може бути false, якщо Meta та Done розійшлися
+  // у порядку записів (різні extract-runs, новий патч гри). Тоді у refSz
+  // потрапляв чужий запис → ratio розраховувався відносно неправильного
+  // baseline → newW виходив дикий.
+  const referenceIdxByEnum = useMemo(() => {
+    const m = new Map<number, number>();
+    if (!referenceHeightInfo) return m;
+    for (let i = 0; i < referenceHeightInfo.entries.length; i++) {
+      m.set(referenceHeightInfo.entries[i].msgEnum, i);
+    }
+    return m;
+  }, [referenceHeightInfo]);
 
   // Перезавантажуємо cache коли модалка відкривається або змінився targetLang/heightInfo.
   useEffect(() => {
@@ -94,15 +150,21 @@ export function MissingAutoFitModal({ open, onClose, files, heightInfo, referenc
             if (hIdx === undefined) continue;
             const sz = heightInfo.entries[hIdx].sizes[targetLang];
             if (!sz) continue;
-            // Reference: оригінальний W/H з Meta. Якщо reference нема —
-            // fallback на поточний sz (тоді алгоритм поведеться як раніше).
-            const refSz = referenceHeightInfo?.entries[hIdx]?.sizes[targetLang] ?? sz;
+            // Reference: знайти entry в Meta за enumN. Якщо Meta нема або
+            // запис відсутній — це signal, що reference поламано: НЕ
+            // fallback на sz (це дало б multiplicative growth), а пропускаємо
+            // рядок з диагностичним маркером.
+            const refIdx = referenceIdxByEnum.get(enumN);
+            const refSz = refIdx !== undefined ? referenceHeightInfo!.entries[refIdx]?.sizes[targetLang] : null;
+            if (!refSz) continue;
             rows.push({
               enumN, hIdx,
               enText: o.text, uaText: d.text,
               enLen: o.text.length, uaLen: d.text.length,
               enLines: (o.text.match(/\n/g) || []).length + 1,
               uaLines: (d.text.match(/\n/g) || []).length + 1,
+              enMaxLine: Math.max(1, maxLineLen(o.text, false)),
+              uaMaxLine: Math.max(1, maxLineLen(d.text, true)),
               origW: sz.w, origH: sz.h,
               refW: refSz.w, refH: refSz.h,
             });
@@ -113,19 +175,26 @@ export function MissingAutoFitModal({ open, onClose, files, heightInfo, referenc
       if (!cancelled) { setCache(rows); setLoading(false); }
     })();
     return () => { cancelled = true; };
-  }, [open, files, heightInfo, referenceHeightInfo, heightInfoIdx, targetLang]);
+  }, [open, files, heightInfo, referenceHeightInfo, heightInfoIdx, referenceIdxByEnum, targetLang]);
 
   // Превʼю — рахуємо синхронно, дешево (~3K рядків × прості формули).
   // КРИТИЧНО: baseline = refW (Original з Meta), а НЕ origW (поточний).
   // Без цього кожен apply мультиплікативно нарощує W, бо origW стає = newW.
+  //
+  // Ratio тепер per-line-based з кириличним boost:
+  //   ratio = uaMaxLine / enMaxLine
+  // де uaMaxLine = weightedLen (кирилиця × 1.10). Раніше використовувалось
+  // загальне len(uaText) / len(enText) — для двопухирних реплік це давало
+  // занижений ratio (поділ на довге EN), для коротких "Таїланд" — теж
+  // занижений (бо EN-довжина не показує реальну ширину box-у).
   const preview: PreviewRow[] = useMemo(() => {
     return cache.map((c) => {
-      const ratio = c.uaLen / Math.max(1, c.enLen);
+      const ratio = c.uaMaxLine / Math.max(1, c.enMaxLine);
       let newW = c.refW;
       let newH = c.refH;
       if (ratio > 1 || !onlyGrow) {
         newW = Math.ceil(c.refW * ratio * padding);
-        if (minPadding > 0) newW = Math.max(newW, c.refW + minPadding);
+        if (minPadding > 0) newW = Math.max(newW, Math.ceil(c.refW + minPadding));
       }
       if (scaleHeight && c.uaLines > c.enLines) {
         newH = Math.ceil(c.refH * (c.uaLines / c.enLines));

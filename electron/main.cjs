@@ -3764,11 +3764,21 @@ ipcMain.handle("dp2:missing-boxsize-extract", async () => {
     const { metaDir } = await missingTextDirs();
     await fs.mkdir(metaDir, { recursive: true });
     const outFile = missingHeightInfoOrigFile(metaDir);
+    // КРИТИЧНО: пріоритетно беремо з `.bak`, якщо існує. Live `.assets` може
+    // бути вже модифікований попередніми text-pack'ами, а heightinfo там
+    // після Auto-fit + Pack — вже applied (не reference). Backup тримає
+    // pre-pack стан і там heightinfo завжди залишається оригіналом, бо
+    // text-pack не зачіпає IMHeightInfo MonoBehaviour. Якщо `.bak` нема —
+    // fallback на live `.assets` (свіжо встановлена гра, перший extract).
+    let extractFrom = assetsPath;
+    const bakCandidate = assetsPath + ".bak";
+    try { await fs.access(bakCandidate); extractFrom = bakCandidate; }
+    catch {}
     const result = await new Promise((resolve) => {
       const child = spawn(settings.pwshPath || "pwsh", [
         "-NoProfile", "-ExecutionPolicy", "Bypass",
         "-File", path.join(scriptsDir, "missing-boxsize-extract.ps1"),
-        "-AssetsPath", assetsPath,
+        "-AssetsPath", extractFrom,
         "-OutFile", outFile,
         "-UabeaDir", settings.uabeaInstallDir || path.join(settings.toolsDir || path.join(app.getPath("documents"), "SWERY-Localization-Tool"), "uabea"),
       ], { windowsHide: true });
