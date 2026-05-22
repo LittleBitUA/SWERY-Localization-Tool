@@ -965,21 +965,12 @@ export function MissingEditor({ onHome }: Props) {
           if (!firstDiff) firstDiff = { offset: e.offset, orig: e.text, imported };
           edits2.set(i, imported);
         }
-        if (firstDiff && edits2.size > 0) {
-          const dump = (s: string) => [...s].map((c) => {
-            const code = c.charCodeAt(0);
-            return code < 32 || code === 0x7f ? `\\x${code.toString(16).padStart(2, "0")}` : c;
-          }).join("");
-          // Зберігаємо для показу у alert ПІСЛЯ закінчення усієї обробки.
-          (globalThis as unknown as { __missingFakeDiff?: unknown }).__missingFakeDiff = {
-            file: f.name,
-            offset: "0x" + firstDiff.offset.toString(16),
-            orig: dump(firstDiff.orig.slice(-200)),
-            imported: dump(firstDiff.imported.slice(-200)),
-            origLen: firstDiff.orig.length,
-            impdLen: firstDiff.imported.length,
-          };
-        }
+        // Раніше тут збирали debug-`firstDiff` і показували модалку
+        // «Імпорт: знайдено різницю (debug)». Для legit UA-перекладу
+        // різниця довжин (UTF-8 байт) між orig і imported — нормальне явище,
+        // не помилка. Перевірку прибрали; reference на firstDiff лишається
+        // лише для майбутньої діагностики, але alert не викликається.
+        void firstDiff;
         if (edits2.size === 0) continue;
         const built = buildMissingMsg(parsed, edits2);
         await W.missingTextWrite({ fullPath: f.donePath, base64: bytesToB64(built) });
@@ -990,15 +981,7 @@ export function MissingEditor({ onHome }: Props) {
       await refreshFiles();
       await refreshProjectStats();
       if (activeFile) await openFile(activeFile);
-      const diag = (globalThis as unknown as { __missingFakeDiff?: { file: string; offset: string; orig: string; imported: string; origLen: number; impdLen: number } }).__missingFakeDiff;
-      (globalThis as unknown as { __missingFakeDiff?: unknown }).__missingFakeDiff = undefined;
-      if (diag) {
-        await dpAlert(
-          "Імпорт: знайдено різницю (debug)",
-          `Файл: ${diag.file}\nOffset: ${diag.offset}\nДовжина orig=${diag.origLen} imp=${diag.impdLen}\n\nORIG (хвіст):\n${diag.orig}\n\nIMPORTED (хвіст):\n${diag.imported}`,
-          { tone: "warning" }
-        );
-      } else {
+      {
         await dpAlert(
           t("missing.import.doneTitle"),
           t("missing.import.doneBody", { files: String(touchedFiles), cells: String(totalCells) }),
