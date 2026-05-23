@@ -22,12 +22,14 @@ interface Props {
   activeKey: string | null;
   fileStats: Record<string, Stats>;
   onPick: (f: SidebarFile) => void;
+  /** ПКМ по файлу — наприклад для bulk «позначити перекладеним». */
+  onFileContextMenu?: (e: React.MouseEvent, f: SidebarFile) => void;
 }
 
 type SortKey = "name" | "percent" | "size";
 type TabKey = "all" | "incomplete" | "complete";
 
-export function MissingFileSidebar({ files, activeKey, fileStats, onPick }: Props) {
+export function MissingFileSidebar({ files, activeKey, fileStats, onPick, onFileContextMenu }: Props) {
   const t = useT();
   const [query, setQuery] = useLocalStorage<string>("missing.sidebar.q", "");
   const [tab, setTab] = useLocalStorage<TabKey>("missing.sidebar.tab", "all");
@@ -129,6 +131,7 @@ export function MissingFileSidebar({ files, activeKey, fileStats, onPick }: Prop
             <button
               key={f.file}
               onClick={() => onPick(f)}
+              onContextMenu={(e) => { if (onFileContextMenu) { e.preventDefault(); e.stopPropagation(); onFileContextMenu(e, f); } }}
               className={`w-full text-left px-3 py-2 border-b border-[var(--border-soft)] border-l-2 ${borderColor} hover:bg-[var(--row-hover)] ${isActive ? "bg-[var(--row-active)]" : ""}`}
             >
               <p className="text-[11.5px] font-mono text-[var(--text)] truncate" title={f.name}>{f.name}</p>

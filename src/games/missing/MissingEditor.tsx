@@ -143,6 +143,9 @@ export function MissingEditor({ onHome }: Props) {
   const rowMetaDirtyRef = useRef(false);
   // Right-click контекстне меню.
   const [ctxMenu, setCtxMenu] = useState<{ x: number; y: number; idx: number; msgEnum: number } | null>(null);
+  // Окреме file-context-menu (у sidebar ПКМ по файлу). Має іншу форму бо
+  // bulk-операції (mark/unmark усього файлу) потребують посилання на FileItem.
+  const [fileCtx, setFileCtx] = useState<{ x: number; y: number; file: FileItem } | null>(null);
   // Lint + global search модалки.
   const [lintOpen, setLintOpen] = useState(false);
   const [searchAllOpen, setSearchAllOpen] = useState(false);
@@ -520,6 +523,47 @@ export function MissingEditor({ onHome }: Props) {
     heightInfoDirtyRef.current = true;
   }
 
+  // Bulk-операція: позначити/зняти прапорець markedTranslated для УСІХ
+  // не-system/не-placeholder рядків файла. Викликається з file-context-menu
+  // у sidebar (ПКМ по файлу). Читає file once, генерує meta-ключі по msgEnum,
+  // одним setRowMeta пишемо весь патч. refreshProjectStats підтягує % одразу.
+  async function bulkMarkFileTranslated(file: FileItem, mark: boolean) {
+    try {
+      const r = await W.missingTextRead(file.origPath);
+      if (!r.ok || !r.base64) { showError("Не вдалося прочитати файл", "Bulk-mark"); return; }
+      const parsed = parseMissingMsg(b64ToBytes(r.base64));
+      const keys: string[] = [];
+      for (let i = 0; i < parsed.entries.length; i++) {
+        const e = parsed.entries[i];
+        const o = e?.text ?? "";
+        if (!o) continue;
+        if (isPlaceholderText(o)) continue;
+        keys.push(e.msgEnum >= 0 ? String(e.msgEnum) : `${file.name}::${i}`);
+      }
+      if (keys.length === 0) { showOk("Немає рядків для позначення", "Bulk-mark"); return; }
+      setRowMeta((m) => {
+        const next = { ...m };
+        for (const k of keys) {
+          const cur = next[k] ?? {};
+          const merged = { ...cur, markedTranslated: mark ? true : undefined };
+          if (!merged.status && !merged.bookmark && !merged.markedTranslated) delete next[k];
+          else next[k] = merged;
+        }
+        rowMetaDirtyRef.current = true;
+        return next;
+      });
+      showOk(
+        mark
+          ? `Позначено ${keys.length} рядків як перекладені`
+          : `Знято позначку з ${keys.length} рядків`,
+        file.name,
+      );
+      // refreshProjectStats буде trigger'нутий через useEffect [rowMeta].
+    } catch (e) {
+      showError(e, "Bulk-mark failed");
+    }
+  }
+
   // ── Row meta helpers ─────────────────────────────────────────
   function getMetaKey(msgEnum: number, fileName: string, idx: number): string {
     // MsgEnum стабільний globально, але якщо рядок не у length-table
@@ -727,7 +771,11 @@ export function MissingEditor({ onHome }: Props) {
     if (edits.size === 0) return;
     setSaving(true);
     try {
-      const built = buildMissingMsg(origMsg, edits);
+      // КРИТИЧНО: будуємо з doneMsg (уже-перекладені рядки), а не з origMsg.
+      // Раніше тут було buildMissingMsg(origMsg, edits) — це стирало всі
+      // попередні переклади у Done, лишаючи тільки ті рядки, що зараз у edits.
+      // Регресія знайдена після того як msg0101en/msg0306en втратили переклади.
+      const built = buildMissingMsg(doneMsg, edits);
       const r = await W.missingTextWrite({ fullPath: activeFile.donePath, base64: bytesToB64(built) });
       if (!r.ok) throw new Error(r.error || "write fail");
       // Інвалідуємо кеш для цього шляху — fingerprint зміниться після write,
@@ -1334,16 +1382,13 @@ export function MissingEditor({ onHome }: Props) {
                 className="flex items-center gap-1 text-[10.5px] text-[var(--text-muted)] px-2 py-1 rounded border border-[var(--border-soft)] bg-[var(--bg)]"
                 title={t("missing.header.targetLangHint")}
               >
-                <span>UA →</span>
+                <span>TR →</span>
                 <select
                   className="bg-transparent text-[var(--text)] outline-none cursor-pointer"
                   value={targetLang}
                   onChange={(e) => setTargetLang(parseInt(e.target.value, 10))}
                 >
                   <option value={0}>L0 (EN)</option>
-                  <option value={1}>L1 (JP)</option>
-                  <option value={2}>L2 (CN?)</option>
-                  <option value={3}>L3 (KR?)</option>
                 </select>
               </div>
             )}
@@ -1425,6 +1470,10 @@ export function MissingEditor({ onHome }: Props) {
             onPick={(sf) => {
               const full = files.find((x) => x.file === sf.file);
               if (full) void openFile(full);
+            }}
+            onFileContextMenu={(ev, sf) => {
+              const full = files.find((x) => x.file === sf.file);
+              if (full) setFileCtx({ x: ev.clientX, y: ev.clientY, file: full });
             }}
           />
 
@@ -1648,6 +1697,49 @@ export function MissingEditor({ onHome }: Props) {
       />
 
       <MissingDllEditor open={dllOpen} onClose={() => setDllOpen(false)} />
+
+      {/* File-context-menu (ПКМ по файлу у sidebar): bulk-операції. */}
+      {fileCtx && (() => {
+        const file = fileCtx.file;
+        // Перевіряємо, чи у файлі вже ВСІ рядки позначені (для перемикання).
+        // Швидкий heuristic: дивимось fileStats.translated проти .total.
+        const st = fileStats[file.file];
+        const isFullyMarked = st && st.total > 0 && st.translated >= st.total;
+        const close = () => setFileCtx(null);
+        return (
+          <>
+            <div className="fixed inset-0 z-[60]" onClick={close} onContextMenu={(e) => { e.preventDefault(); close(); }} />
+            <div
+              className="fixed z-[61] dp-card py-1.5 text-[12px] min-w-[240px] shadow-xl"
+              style={{ left: Math.min(fileCtx.x, window.innerWidth - 260), top: Math.min(fileCtx.y, window.innerHeight - 180) }}
+              onClick={(e) => e.stopPropagation()}
+            >
+              <div className="px-3 py-1 text-[10.5px] text-[var(--text-faint)] font-mono truncate" title={file.name}>{file.name}</div>
+              <div className="border-t border-[var(--border-soft)] my-1" />
+              <button
+                className="w-full text-left px-3 py-1.5 hover:bg-[var(--row-hover)] flex items-center gap-2 text-[var(--text)]"
+                onClick={() => { void bulkMarkFileTranslated(file, true); close(); }}
+              >
+                ✓ Позначити увесь файл перекладеним
+              </button>
+              <button
+                className="w-full text-left px-3 py-1.5 hover:bg-[var(--row-hover)] flex items-center gap-2 text-[var(--text)]"
+                disabled={!isFullyMarked}
+                onClick={() => { void bulkMarkFileTranslated(file, false); close(); }}
+              >
+                ✗ Зняти позначку з усього файлу
+              </button>
+              <div className="border-t border-[var(--border-soft)] my-1" />
+              <button
+                className="w-full text-left px-3 py-1.5 hover:bg-[var(--row-hover)] flex items-center gap-2 text-[var(--text)]"
+                onClick={() => { void openFile(file); close(); }}
+              >
+                📂 Відкрити
+              </button>
+            </div>
+          </>
+        );
+      })()}
 
       {/* Command palette (Ctrl+K) — fuzzy-search дій, файлів, фільтрів. */}
       <CommandPalette
