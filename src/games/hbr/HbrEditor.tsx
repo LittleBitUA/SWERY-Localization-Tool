@@ -8,9 +8,20 @@ import { confirm as showConfirm } from "../../lib/dialogs";
 import hbrHero from "../../ui-v2/assets/hbr-hero.jpg";
 import { HbrItemEditor } from "./HbrItemEditor";
 import { CorpusStatsModal } from "../../components/CorpusStatsModal";
+import type { CorpusStats } from "../../lib/ipc";
 import { readStatusFile, writeStatusFile, pruneEntry, type StatusFile, type StatusKind } from "../../lib/status";
 import { HbrFindReplaceModal } from "./HbrFindReplaceModal";
-import { showError } from "../../components/Toast";
+import { showError, showOk } from "../../components/Toast";
+import { useLocalStorage } from "../../lib/useLocalStorage";
+import { HighlightedText } from "../../components/HighlightedText";
+import { HeaderProgress } from "../../components/HeaderProgress";
+import { HeaderMenu, type MenuItem } from "../../components/HeaderMenu";
+import { CommandPalette, type CommandItem } from "../../components/CommandPalette";
+import { HbrShortcutsModal } from "./HbrShortcutsModal";
+import { HbrFileSidebar } from "./HbrFileSidebar";
+import { HbrMigrateDiffModal, type MigrateDiffEntry } from "./HbrMigrateDiffModal";
+import { buildTranslationMemory, type TranslationMemory } from "./HbrTranslationMemory";
+import { GlossaryModal } from "../../components/GlossaryModal";
 
 // HbrRow — top-level memo. Раніше рядок жив inline у `filteredItems.map` і
 // перерендеровувався на кожному keystroke по всьому списку (1000+ DOM-вузлів).
@@ -71,9 +82,11 @@ const HbrRow = memo(function HbrRow({ it, realIdx, active, status, bookmark, mar
         {it.textId}
       </td>
       <td className="px-2 py-1 font-mono text-[11px] text-[var(--text-faint)] tabular-nums">{it.variantIdx}</td>
-      <td className="px-2 py-1 text-[var(--text-muted)] whitespace-pre-wrap break-words">{it.original}</td>
+      <td className="px-2 py-1 text-[var(--text-muted)] whitespace-pre-wrap break-words">
+        <HighlightedText text={it.original} />
+      </td>
       <td className="px-2 py-1 whitespace-pre-wrap break-words text-[var(--text-muted)]">
-        {it.current || <span className="text-[var(--text-faint)] italic">—</span>}
+        <HighlightedText text={it.current} />
       </td>
     </tr>
   );
@@ -337,6 +350,17 @@ export function HbrEditor({ onHome }: Props) {
     overall: { translated: number; total: number };
   }>(null);
   const [findReplaceOpen, setFindReplaceOpen] = useState(false);
+  // UX-state: командна палітра + cheatsheet + collapse Monaco + diff модалка.
+  const [cmdOpen, setCmdOpen] = useState(false);
+  const [shortcutsOpen, setShortcutsOpen] = useState(false);
+  const [monacoCollapsed, setMonacoCollapsed] = useLocalStorage<boolean>("hbr.ui.monacoCollapsed", false);
+  const [diffOpen, setDiffOpen] = useState(false);
+  const [diffEntries, setDiffEntries] = useState<MigrateDiffEntry[]>([]);
+  // TM кешуємо у state — будується після кожної зміни parsed/files (debounced).
+  const [tm, setTm] = useState<TranslationMemory>(new Map());
+  // Glossary (термінологічний словник) — інтегруємо ту саму модалку, що й
+  // у DP2. Шлях до файлу — Done/.glossary.json через doneDir статусу.
+  const [glossaryOpen, setGlossaryOpen] = useState(false);
   useEffect(() => {
     if (!ctxMenu) return;
     const close = () => setCtxMenu(null);
@@ -831,6 +855,32 @@ export function HbrEditor({ onHome }: Props) {
     function onKey(e: KeyboardEvent) {
       const ctrl = e.ctrlKey || e.metaKey;
       const k = e.key;
+      const target = e.target as HTMLElement | null;
+      const inMonaco = !!target?.closest(".monaco-editor");
+      const inInput = !!target?.closest("input, textarea");
+      // Ctrl+K — командна палітра (універсальна для всіх редакторів проєкту).
+      if (ctrl && !e.shiftKey && !e.altKey && k.toLowerCase() === "k") {
+        e.preventDefault();
+        setCmdOpen(true);
+        return;
+      }
+      // ? — cheatsheet (поза інпутом).
+      if (!ctrl && !e.shiftKey && !e.altKey && k === "?" && !inMonaco && !inInput) {
+        e.preventDefault();
+        setShortcutsOpen(true);
+        return;
+      }
+      // Цифри 0-3 у фокусі таблиці — швидке встановлення status.
+      if (!ctrl && !e.shiftKey && !e.altKey && !inMonaco && !inInput && activeItemIndex !== null && activeFile && parsed) {
+        const map: Record<string, "draft" | "review" | "approved" | undefined> = {
+          "1": "draft", "2": "review", "3": "approved", "0": undefined,
+        };
+        if (k in map) {
+          e.preventDefault();
+          setRowStatus(activeItemIndex, map[k]);
+          return;
+        }
+      }
       if (ctrl && !e.shiftKey && !e.altKey && k.toLowerCase() === "s") {
         e.preventDefault();
         saveActive();
@@ -959,6 +1009,61 @@ export function HbrEditor({ onHome }: Props) {
   useEffect(() => { if (phase === "ready") refreshProjectStats();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [phase, files.length]);
+
+  // Translation Memory — будуємо при phase=ready, після того як refreshProjectStats
+  // зібрав parsed-файли. Debounced 600мс — щоб post-save reload одного файлу не
+  // тригерив повний rescan.
+  const tmBuildRef = useRef<number | null>(null);
+  async function rebuildTm() {
+    if (!files.length) { setTm(new Map()); return; }
+    const w = window.dp2 as unknown as { hbrTextRead: (p: string) => Promise<{ ok: boolean; raw?: string }> };
+    const parsedFiles = await Promise.all(files.map(async (f) => {
+      try {
+        const [d, o] = await Promise.all([w.hbrTextRead(f.donePath), w.hbrTextRead(f.origPath)]);
+        if (!d.ok || !d.raw) return null;
+        const p = parseHbrJson(d.raw, o.ok ? o.raw! : null, f.donePath, f.origPath);
+        return { name: f.file, parsed: p };
+      } catch { return null; }
+    }));
+    const validFiles = parsedFiles.filter((x): x is { name: string; parsed: HbrParsedFile } => x != null);
+    const next = buildTranslationMemory({
+      files: validFiles,
+      isTranslated: (orig, cur) => isHbrItemTranslatedByParser(orig, cur),
+    });
+    setTm(next);
+  }
+  useEffect(() => {
+    if (phase !== "ready") return;
+    if (tmBuildRef.current != null) window.clearTimeout(tmBuildRef.current);
+    tmBuildRef.current = window.setTimeout(() => { void rebuildTm(); }, 600);
+    return () => { if (tmBuildRef.current != null) window.clearTimeout(tmBuildRef.current); };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [phase, files.length, parsed]);
+
+  // Apply TM до активного файлу: для кожного НЕперекладеного рядка, чий
+  // original є у TM, виставити current = tm[original].translation. Це фіча
+  // на запит юзера ("додай TM, щоб я не перекладав 'Yes' двадцять разів").
+  function applyTmToActiveFile() {
+    if (!parsed) return;
+    if (tm.size === 0) { showError("TM порожній — у проєкті ще немає перекладів", "Translation Memory"); return; }
+    const items = parsed.items.slice();
+    let applied = 0;
+    for (let i = 0; i < items.length; i++) {
+      const it = items[i];
+      if (isHbrSystemRow(it.original)) continue;
+      const isEmpty = !it.current || it.current.trim() === "";
+      const isSame = it.current === it.original;
+      if (!isEmpty && !isSame) continue;
+      const hit = tm.get(it.original);
+      if (!hit || !hit.consistent) continue;
+      items[i] = { ...it, current: hit.translation };
+      applied++;
+    }
+    if (applied === 0) { showOk("Нічого підходящого з TM", "Translation Memory"); return; }
+    setParsed({ ...parsed, items });
+    setDirty(true);
+    showOk(`Auto-fill: ${applied} рядків з Translation Memory`, "Translation Memory");
+  }
 
   // Перевірка patch-міграції: коли редактор стає ready, питаємо main чи bundle
   // на диску ще відповідає тому, з якого ми робили extract. Якщо ні — піднімаємо
@@ -1338,6 +1443,101 @@ export function HbrEditor({ onHome }: Props) {
     });
   }, [parsed, search, rowFilter, statusFile, activeFile, statusKey]);
 
+  // ── Command palette items (Ctrl+K) ─────────────────────────────────────
+  const commandItems = useMemo<CommandItem[]>(() => {
+    const out: CommandItem[] = [];
+    // Дії
+    out.push({
+      id: "save", category: "Дії", icon: "💾", label: "Зберегти файл",
+      shortcut: "Ctrl+S", disabled: !parsed || !dirty || saving,
+      run: () => { void saveActive(); },
+    });
+    out.push({
+      id: "pack", category: "Дії", icon: "📦", label: "Pack у bundle",
+      disabled: saving || !files.length,
+      run: () => setPackMenuOpen(true),
+    });
+    out.push({
+      id: "export", category: "Дії", icon: "↓", label: t("hbr.combined.exportBtn"),
+      disabled: saving || !files.length,
+      run: () => { void exportCombined(); },
+    });
+    out.push({
+      id: "import", category: "Дії", icon: "↑", label: t("hbr.combined.importBtn"),
+      disabled: saving || !files.length,
+      run: () => { void importCombined(); },
+    });
+    // Інструменти
+    out.push({
+      id: "stats", category: "Інструменти", icon: "📊", label: t("hbr.stats.btn"),
+      disabled: saving, run: () => setStatsOpen(true),
+    });
+    out.push({
+      id: "reextract", category: "Інструменти", icon: "🔄", label: t("hbr.reextract.btn"),
+      disabled: saving, run: () => { void reExtractFromGame(); },
+    });
+    out.push({
+      id: "findReplace", category: "Інструменти", icon: "🔍", label: "Знайти / Замінити у файлі",
+      shortcut: "Ctrl+H", disabled: !parsed || !parsed.items.length,
+      run: () => setFindReplaceOpen(true),
+    });
+    out.push({
+      id: "tm-apply", category: "Інструменти", icon: "✨", label: "Translation Memory: auto-fill",
+      hint: `${tm.size} оригіналів`, disabled: !parsed || tm.size === 0,
+      run: () => applyTmToActiveFile(),
+    });
+    out.push({
+      id: "tm-rebuild", category: "Інструменти", icon: "🔁", label: "Translation Memory: перерахувати",
+      run: () => { void rebuildTm(); },
+    });
+    out.push({
+      id: "glossary", category: "Інструменти", icon: "📚", label: "Glossary…",
+      disabled: !status?.doneDir, run: () => setGlossaryOpen(true),
+    });
+    out.push({
+      id: "diff-view", category: "Інструменти", icon: "🧬", label: "Перегляд змін bundle",
+      disabled: diffEntries.length === 0,
+      hint: diffEntries.length > 0 ? `${diffEntries.length} змін` : "немає",
+      run: () => setDiffOpen(true),
+    });
+    out.push({
+      id: "monaco-toggle", category: "Перегляд",
+      icon: monacoCollapsed ? "▶" : "◀",
+      label: monacoCollapsed ? "Показати редактор справа" : "Сховати редактор справа",
+      run: () => setMonacoCollapsed(!monacoCollapsed),
+    });
+    out.push({
+      id: "shortcuts", category: "Перегляд", icon: "⌨", label: "Гарячі клавіші",
+      shortcut: "?", run: () => setShortcutsOpen(true),
+    });
+    // Фільтри активного файлу
+    const filters: Array<[RowFilter, string]> = [
+      ["all", "Усі рядки"],
+      ["untranslated", "Лиш неперекладені"],
+      ["translated", "Лиш перекладені"],
+      ["samesAsOriginal", "Однакові з оригіналом"],
+    ];
+    for (const [k, lab] of filters) {
+      out.push({
+        id: `filter-${k}`, category: "Фільтр рядків",
+        icon: rowFilter === k ? "●" : "○",
+        label: lab, run: () => setRowFilter(k),
+      });
+    }
+    // Файли — швидкий перехід.
+    for (const f of files) {
+      const st = fileStats[f.file];
+      const pct = st && st.total > 0 ? Math.round((st.translated / st.total) * 100) : 0;
+      out.push({
+        id: `file-${f.donePath}`, category: "Перехід до файлу", icon: "📄",
+        label: f.file, hint: st ? `${st.translated}/${st.total} · ${pct}%` : undefined,
+        run: () => { void openFile(f); },
+      });
+    }
+    return out;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [parsed, dirty, saving, files, fileStats, rowFilter, monacoCollapsed, tm.size, diffEntries.length]);
+
   return (
     <div className="flex-1 flex flex-col bg-[var(--bg)] min-h-0">
       <header className="h-12 px-4 border-b border-[var(--border-soft)] bg-[var(--bg-surface)] flex items-center gap-2 shrink-0">
@@ -1346,39 +1546,48 @@ export function HbrEditor({ onHome }: Props) {
         {projectStats && (() => {
           const tr = projectStats.translated + totalMarkedTranslated;
           return (
-          <span className="text-[11px] text-[var(--text-faint)] font-mono tabular-nums">
-            {tr.toLocaleString("uk-UA")}/{projectStats.total.toLocaleString("uk-UA")}
-            {projectStats.total > 0 && (
-              <span className="ml-1 text-[var(--text-muted)]">
-                · {((tr / projectStats.total) * 100).toFixed(1)}%
-              </span>
-            )}
-          </span>
+            <HeaderProgress
+              translated={tr}
+              total={projectStats.total}
+              title={`Загальний прогрес проєкту · ${projectStats.files} файлів`}
+            />
           );
         })()}
         <div className="flex-1" />
         {phase === "ready" && (
           <>
-            <button className="dp-btn dp-btn--ghost" disabled={saving} onClick={() => setStatsOpen(true)} title={t("hbr.stats.btnHint")}>
-              {t("hbr.stats.btn")}
-            </button>
-            <button className="dp-btn dp-btn--ghost" disabled={saving} onClick={reExtractFromGame} title={t("hbr.reextract.hint")}>
-              {t("hbr.reextract.btn")}
-            </button>
-            <button className="dp-btn dp-btn--ghost" disabled={saving || !files.length} onClick={exportCombined} title={t("hbr.combined.exportBtnHint")}>
-              <svg className="w-3.5 h-3.5 mr-1.5 inline" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                <path strokeLinecap="round" strokeLinejoin="round" d="M9 5h-3a2 2 0 00-2 2v12a2 2 0 002 2h12a2 2 0 002-2v-3" />
-                <path strokeLinecap="round" strokeLinejoin="round" d="M16 3l5 5m0 0v-5m0 5h-5M9 14l11-11" />
+            <button
+              className="dp-btn dp-btn--ghost"
+              onClick={() => setCmdOpen(true)}
+              title="Командна палітра (Ctrl+K)"
+            >
+              <svg className="w-3.5 h-3.5 inline" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                <path strokeLinecap="round" strokeLinejoin="round" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
               </svg>
-              {t("hbr.combined.exportBtn")}
+              <span className="ml-1 text-[10px] font-mono px-1 py-0.5 border border-[var(--border-soft)] rounded">⌘K</span>
             </button>
-            <button className="dp-btn dp-btn--ghost" disabled={saving || !files.length} onClick={importCombined} title={t("hbr.combined.importBtnHint")}>
-              <svg className="w-3.5 h-3.5 mr-1.5 inline" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                <path strokeLinecap="round" strokeLinejoin="round" d="M15 5h3a2 2 0 012 2v12a2 2 0 01-2 2H6a2 2 0 01-2-2V7a2 2 0 012-2h3" />
-                <path strokeLinecap="round" strokeLinejoin="round" d="M12 3v12m0 0l-4-4m4 4l4-4" />
-              </svg>
-              {t("hbr.combined.importBtn")}
-            </button>
+            <HeaderMenu
+              trigger={<span className="flex items-center gap-1"><span aria-hidden>🛠</span> Інструменти</span>}
+              items={[
+                { icon: "📊", label: t("hbr.stats.btn"), title: t("hbr.stats.btnHint"), disabled: saving, onClick: () => setStatsOpen(true) },
+                { icon: "🔄", label: t("hbr.reextract.btn"), title: t("hbr.reextract.hint"), disabled: saving, onClick: () => reExtractFromGame() },
+                { icon: "🔍", label: "Знайти / Замінити", shortcut: "Ctrl+H", disabled: !parsed || !parsed.items.length, onClick: () => setFindReplaceOpen(true) },
+                {},
+                { icon: "✨", label: `Translation Memory: auto-fill`, title: `${tm.size} оригіналів у пам'яті`, disabled: !parsed || tm.size === 0, onClick: () => applyTmToActiveFile() },
+                { icon: "📚", label: "Glossary…", title: "Терміновий словник UK ↔ EN для консистентності перекладу", disabled: !status?.doneDir, onClick: () => setGlossaryOpen(true) },
+                { icon: "🧬", label: "Перегляд змін bundle…", title: "Diff між старим/новим bundle після patch-migrate", disabled: diffEntries.length === 0, onClick: () => setDiffOpen(true) },
+              ]}
+            />
+            <HeaderMenu
+              trigger={<span className="flex items-center gap-1"><span aria-hidden>📁</span> Файл</span>}
+              items={[
+                { icon: "↓", label: t("hbr.combined.exportBtn"), title: t("hbr.combined.exportBtnHint"), disabled: saving || !files.length, onClick: () => exportCombined() },
+                { icon: "↑", label: t("hbr.combined.importBtn"), title: t("hbr.combined.importBtnHint"), disabled: saving || !files.length, onClick: () => importCombined() },
+                {},
+                { icon: "⌨", label: "Гарячі клавіші", shortcut: "?", onClick: () => setShortcutsOpen(true) },
+                { icon: monacoCollapsed ? "▶" : "◀", label: monacoCollapsed ? "Показати pane редактора" : "Сховати pane редактора", onClick: () => setMonacoCollapsed(!monacoCollapsed) },
+              ]}
+            />
             <button
               className="dp-btn dp-btn--success"
               disabled={saving || !files.length}
@@ -1892,123 +2101,32 @@ export function HbrEditor({ onHome }: Props) {
 
       {phase === "ready" && (
         <div className="flex-1 flex min-h-0">
-          {/* Left: file list */}
-          <aside className="w-[300px] shrink-0 border-r border-[var(--border-soft)] flex flex-col">
-            <div className="px-3 py-2 border-b border-[var(--border-soft)] text-[10px] uppercase tracking-wider text-[var(--text-faint)] font-semibold">
-              {t("hbr.editor.fileTree")} · {files.length}
-            </div>
-            <div className="px-3 py-2 border-b border-[var(--border-soft)] flex flex-col gap-1.5">
-              <div className="flex gap-1">
-                <input
-                  className="dp-input flex-1 text-[11.5px]"
-                  placeholder={t("hbr.globalSearch.placeholder")}
-                  value={globalQuery}
-                  onChange={(e) => setGlobalQuery(e.target.value)}
-                  onKeyDown={(e) => { if (e.key === "Enter") runGlobalSearch(); }}
-                />
-                <button
-                  className="dp-btn"
-                  onClick={runGlobalSearch}
-                  disabled={globalSearching || !globalQuery.trim()}
-                  title={t("hbr.globalSearch.searchHint")}
-                >
-                  {globalSearching ? "…" : "🔍"}
-                </button>
-                {globalHits !== null && (
-                  <button
-                    className="dp-btn dp-btn--ghost"
-                    onClick={() => { setGlobalHits(null); setGlobalQuery(""); }}
-                    title={t("hbr.globalSearch.clear")}
-                  >
-                    ✕
-                  </button>
-                )}
-              </div>
-              {globalHits !== null && (
-                <p className="text-[10.5px] text-[var(--text-faint)] tabular-nums">
-                  {t("hbr.globalSearch.foundN", { n: globalHits.length })}
-                </p>
-              )}
-            </div>
-            <div className="flex-1 overflow-y-auto">
-              {globalHits !== null && (
-                <>
-                  {globalHits.length === 0 ? (
-                    <p className="px-3 py-3 text-[11.5px] text-[var(--text-muted)] text-center">
-                      {t("hbr.globalSearch.empty")}
-                    </p>
-                  ) : (
-                    globalHits.map((h, i) => (
-                      <button
-                        key={i}
-                        onClick={() => jumpToHit(h)}
-                        className="w-full text-left px-3 py-2 border-b border-[var(--border-soft)] hover:bg-[var(--row-hover)]"
-                      >
-                        <p className="text-[10px] font-mono text-[var(--text-faint)] truncate" title={h.file.file}>
-                          {h.file.file}
-                        </p>
-                        <p className="text-[10.5px] font-mono text-[var(--text-muted)] truncate">
-                          {h.textId} <span className="text-[var(--text-faint)]">[v{h.variantIdx}]</span>
-                        </p>
-                        <p className="text-[11.5px] text-[var(--text)] mt-0.5 line-clamp-2 break-words">
-                          {h.snippet}
-                        </p>
-                      </button>
-                    ))
-                  )}
-                </>
-              )}
-              {globalHits === null && files.map((f) => {
-                const base = fileStats[f.file];
-                const extra = markedTranslatedByFile.get(f.file) ?? 0;
-                const st = base ? { total: base.total, translated: base.translated + extra } : undefined;
-                const pct = st && st.total > 0 ? Math.round((st.translated / st.total) * 100) : 0;
-                const isActive = activeFile?.donePath === f.donePath;
-                // Кольорова "ліва смужка" за рівнем прогресу: червона (0%),
-                // жовта (1-99%), зелена (100%). Дозволяє швидко сканувати
-                // список файлів, не читаючи цифр.
-                const borderColor = !st || pct === 0
-                  ? "border-l-[var(--danger)]"
-                  : pct >= 100
-                    ? "border-l-[var(--success)]"
-                    : "border-l-[var(--warning,#d97706)]";
-                const barColor = pct === 0
-                  ? "bg-[var(--danger)]"
-                  : pct >= 100
-                    ? "bg-[var(--success)]"
-                    : "bg-[var(--warning,#d97706)]";
-                return (
-                  <button
-                    key={f.donePath}
-                    onClick={() => openFile(f)}
-                    onContextMenu={(e) => {
-                      e.preventDefault();
-                      e.stopPropagation();
-                      setCtxMenu({ kind: "file", x: e.clientX, y: e.clientY, file: f });
-                    }}
-                    className={`w-full text-left px-3 py-2 border-b border-[var(--border-soft)] border-l-2 ${borderColor} hover:bg-[var(--row-hover)] ${
-                      isActive ? "bg-[var(--row-active)]" : ""
-                    }`}
-                  >
-                    <p className="text-[11.5px] font-mono text-[var(--text)] truncate" title={f.file}>{f.file}</p>
-                    {st && (
-                      <div className="flex items-center gap-2 mt-1">
-                        <div className="flex-1 h-1 bg-[var(--bg-elevated)] rounded overflow-hidden">
-                          <div
-                            className={`h-full transition-all ${barColor}`}
-                            style={{ width: `${pct}%` }}
-                          />
-                        </div>
-                        <span className="text-[10px] font-mono tabular-nums text-[var(--text-faint)] shrink-0">
-                          {st.translated}/{st.total} · {pct}%
-                        </span>
-                      </div>
-                    )}
-                  </button>
-                );
-              })}
-            </div>
-          </aside>
+          {/* Left: file list — sidebar 2.0 з пошуком/sort/tabs + resizable. */}
+          <HbrFileSidebar
+            files={files.map((f) => ({ file: f.file, donePath: f.donePath, origPath: f.origPath, size: f.size }))}
+            activeKey={activeFile?.donePath ?? null}
+            fileStats={(() => {
+              const m: Record<string, { total: number; translated: number }> = {};
+              for (const [k, v] of Object.entries(fileStats)) m[k] = { total: v.total, translated: v.translated };
+              return m;
+            })()}
+            extraTranslated={markedTranslatedByFile}
+            globalQuery={globalQuery}
+            onGlobalQueryChange={setGlobalQuery}
+            onGlobalSearch={runGlobalSearch}
+            globalSearching={globalSearching}
+            globalHits={globalHits}
+            onClearGlobal={() => { setGlobalHits(null); setGlobalQuery(""); }}
+            onJumpToHit={(h) => jumpToHit(h as unknown as GlobalHit)}
+            onPick={(sf) => {
+              const full = files.find((x) => x.donePath === sf.donePath);
+              if (full) void openFile(full);
+            }}
+            onFileContextMenu={(e, sf) => {
+              const full = files.find((x) => x.donePath === sf.donePath);
+              if (full) setCtxMenu({ kind: "file", x: e.clientX, y: e.clientY, file: full });
+            }}
+          />
 
           {/* Right: editor */}
           <section className="flex-1 flex flex-col min-w-0">
@@ -2122,7 +2240,42 @@ export function HbrEditor({ onHome }: Props) {
           </section>
 
           {/* Right: Monaco editor для активного рядка */}
-          <CorpusStatsModal open={statsOpen} onClose={() => setStatsOpen(false)} mode="hbr" />
+          <CorpusStatsModal
+            open={statsOpen}
+            onClose={() => setStatsOpen(false)}
+            mode="hbr"
+            computeCustomStats={async () => {
+              // HBR parser-based stats з IPC + бонус manual markedTranslated
+              // (інакше Огляд готовності не збігається з % у хедері — header
+              // додає manual marks, IPC ні).
+              const r = await window.dp2.hbrCorpusStats();
+              if (!r.ok) return null;
+              const base: CorpusStats = {
+                files: r.files ?? 0,
+                totalEntries: r.totalEntries ?? 0,
+                translatedEntries: (r.translatedEntries ?? 0) + totalMarkedTranslated,
+                percent: 0,
+                uaWords: r.uaWords ?? 0,
+                enWords: r.enWords ?? 0,
+                uaChars: r.uaChars ?? 0,
+                enChars: r.enChars ?? 0,
+                topFiles: (r.topFiles ?? []).map((tf) => {
+                  const extra = markedTranslatedByFile.get(tf.fileName) ?? 0;
+                  const total = tf.total ?? 0;
+                  const translated = (tf.translated ?? 0) + extra;
+                  return {
+                    ...tf,
+                    translated,
+                    percent: total > 0 ? +((translated / total) * 100).toFixed(2) : 0,
+                  };
+                }),
+              };
+              base.percent = base.totalEntries > 0
+                ? +((base.translatedEntries / base.totalEntries) * 100).toFixed(2)
+                : 0;
+              return base;
+            }}
+          />
           <HbrFindReplaceModal
             open={findReplaceOpen}
             items={parsed?.items ?? null}
@@ -2137,15 +2290,27 @@ export function HbrEditor({ onHome }: Props) {
             }}
             onClose={() => setFindReplaceOpen(false)}
           />
-          <HbrItemEditor
-            item={activeItemIndex !== null && parsed ? parsed.items[activeItemIndex] : null}
-            prev={activeItemIndex !== null && parsed && activeItemIndex > 0 ? parsed.items[activeItemIndex - 1] : null}
-            next={activeItemIndex !== null && parsed && activeItemIndex < parsed.items.length - 1 ? parsed.items[activeItemIndex + 1] : null}
-            onChange={(v) => activeItemIndex !== null && patchItem(activeItemIndex, v)}
-            onJumpPrev={() => activeItemIndex !== null && activeItemIndex > 0 && setActiveItemIndex(activeItemIndex - 1)}
-            onJumpNext={() => activeItemIndex !== null && parsed && activeItemIndex < parsed.items.length - 1 && setActiveItemIndex(activeItemIndex + 1)}
-            onClose={() => setActiveItemIndex(null)}
-          />
+          {!monacoCollapsed && (
+            <HbrItemEditor
+              item={activeItemIndex !== null && parsed ? parsed.items[activeItemIndex] : null}
+              prev={activeItemIndex !== null && parsed && activeItemIndex > 0 ? parsed.items[activeItemIndex - 1] : null}
+              next={activeItemIndex !== null && parsed && activeItemIndex < parsed.items.length - 1 ? parsed.items[activeItemIndex + 1] : null}
+              onChange={(v) => activeItemIndex !== null && patchItem(activeItemIndex, v)}
+              onJumpPrev={() => activeItemIndex !== null && activeItemIndex > 0 && setActiveItemIndex(activeItemIndex - 1)}
+              onJumpNext={() => activeItemIndex !== null && parsed && activeItemIndex < parsed.items.length - 1 && setActiveItemIndex(activeItemIndex + 1)}
+              onClose={() => setActiveItemIndex(null)}
+            />
+          )}
+          {monacoCollapsed && (
+            <button
+              className="w-7 shrink-0 border-l border-[var(--border-soft)] text-[var(--text-faint)] hover:bg-[var(--row-hover)] hover:text-[var(--text)] flex flex-col items-center justify-center gap-1"
+              onClick={() => setMonacoCollapsed(false)}
+              title="Розгорнути pane редактора"
+            >
+              <span aria-hidden>◀</span>
+              <span className="text-[9px] [writing-mode:vertical-rl] tracking-wider uppercase">Editor</span>
+            </button>
+          )}
         </div>
       )}
 
@@ -2417,6 +2582,22 @@ export function HbrEditor({ onHome }: Props) {
           </div>
         );
       })()}
+
+      {/* Universal Ctrl+K palette + ? cheatsheet + migrate diff modal. */}
+      <CommandPalette open={cmdOpen} onClose={() => setCmdOpen(false)} items={commandItems} />
+      <HbrShortcutsModal open={shortcutsOpen} onClose={() => setShortcutsOpen(false)} />
+      <HbrMigrateDiffModal
+        open={diffOpen}
+        onClose={() => setDiffOpen(false)}
+        entries={diffEntries}
+        oldBundle={migrateInfo?.oldBundle}
+        newBundle={migrateInfo?.newBundle}
+      />
+      <GlossaryModal
+        open={glossaryOpen}
+        folder={status?.doneDir ?? null}
+        onClose={() => setGlossaryOpen(false)}
+      />
     </div>
   );
 }

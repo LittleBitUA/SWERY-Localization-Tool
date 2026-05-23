@@ -164,6 +164,9 @@ contextBridge.exposeInMainWorld("dp2", {
   missingDllDialogFix: () => ipcRenderer.invoke("dp2:missing-dll-dialog-fix"),
   missingDllDialogFixRevert: () => ipcRenderer.invoke("dp2:missing-dll-dialog-fix-revert"),
   missingDllDialogFixStatus: () => ipcRenderer.invoke("dp2:missing-dll-dialog-fix-status"),
+  missingUiTextExport: (payload) => ipcRenderer.invoke("dp2:missing-ui-text-export", payload),
+  missingUiTextImport: (payload) => ipcRenderer.invoke("dp2:missing-ui-text-import", payload),
+  missingUiTextImportInline: (payload) => ipcRenderer.invoke("dp2:missing-ui-text-import-inline", payload),
   onMissingPrepProgress: (cb) => {
     const h = (_e, payload) => cb(payload);
     ipcRenderer.on("dp2:missing-prep-progress", h);
