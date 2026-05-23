@@ -3956,6 +3956,104 @@ ipcMain.handle("dp2:missing-dll-dialog-fix", async () => _runMissingDialogFixScr
 ipcMain.handle("dp2:missing-dll-dialog-fix-revert", async () => _runMissingDialogFixScript(["-Revert"]));
 ipcMain.handle("dp2:missing-dll-dialog-fix-status", async () => _runMissingDialogFixScript(["-Status"]));
 
+// ── MISSING Interface UI-text export/import (sharedassets UI.Text round-trip) ──
+ipcMain.handle("dp2:missing-ui-text-export", async (_e, payload) => {
+  try {
+    const settings = await readSettings();
+    if (!settings.missingAssetsPath) return { ok: false, error: "missingAssetsPath not set" };
+    const dataDir = path.dirname(settings.missingAssetsPath);
+    if (!settings.uabeaPath) return { ok: false, error: "UABEA path not set" };
+    const pwshLookup = await findPwsh(settings);
+    if (!pwshLookup) return { ok: false, error: "PowerShell 7 not found" };
+    const uabeaDir = path.dirname(settings.uabeaPath);
+    const outFile = (payload && payload.outFile) || (await (async () => {
+      const { baseDir } = await missingTextDirs();
+      await fs.mkdir(baseDir, { recursive: true });
+      return path.join(baseDir, "interface.txt");
+    })());
+    const scriptPath = resolveResource("scripts/missing-ui-text-export.ps1");
+    const args = [
+      "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass",
+      "-File", scriptPath,
+      "-DataDir", dataDir, "-UabeaDir", uabeaDir, "-OutFile", outFile,
+    ];
+    if (payload && payload.includeNonAscii) args.push("-IncludeNonAscii");
+    const result = await new Promise((resolve) => {
+      const child = spawn(pwshLookup, args, { windowsHide: true });
+      let stdout = "", stderr = "";
+      child.stdout.on("data", (d) => { stdout += d.toString(); });
+      child.stderr.on("data", (d) => { stderr += d.toString(); });
+      child.on("exit", (code) => resolve({ code, stdout, stderr }));
+    });
+    if (result.code !== 0) return { ok: false, error: (result.stderr || result.stdout || "").trim(), log: result.stdout };
+    const m = result.stdout.match(/RESULT_JSON:\s*(.+)$/m);
+    let summary = null;
+    if (m) { try { summary = JSON.parse(m[1]); } catch {} }
+    return { ok: true, summary, outFile, log: result.stdout };
+  } catch (e) {
+    return { ok: false, error: String(e.message || e) };
+  }
+});
+
+async function _runMissingUiTextImport(inFile) {
+  const settings = await readSettings();
+  if (!settings.missingAssetsPath) return { ok: false, error: "missingAssetsPath not set" };
+  const dataDir = path.dirname(settings.missingAssetsPath);
+  if (!settings.uabeaPath) return { ok: false, error: "UABEA path not set" };
+  const pwshLookup = await findPwsh(settings);
+  if (!pwshLookup) return { ok: false, error: "PowerShell 7 not found" };
+  const uabeaDir = path.dirname(settings.uabeaPath);
+  try { await fs.access(inFile); }
+  catch { return { ok: false, error: `Файл не знайдено: ${inFile}.` }; }
+  const scriptPath = resolveResource("scripts/missing-ui-text-import.ps1");
+  const args = [
+    "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass",
+    "-File", scriptPath,
+    "-DataDir", dataDir, "-UabeaDir", uabeaDir, "-InFile", inFile,
+  ];
+  const result = await new Promise((resolve) => {
+    const child = spawn(pwshLookup, args, { windowsHide: true });
+    let stdout = "", stderr = "";
+    child.stdout.on("data", (d) => { stdout += d.toString(); });
+    child.stderr.on("data", (d) => { stderr += d.toString(); });
+    child.on("exit", (code) => resolve({ code, stdout, stderr }));
+  });
+  if (result.code !== 0) return { ok: false, error: (result.stderr || result.stdout || "").trim(), log: result.stdout };
+  const m = result.stdout.match(/RESULT_JSON:\s*(.+)$/m);
+  let summary = null;
+  if (m) { try { summary = JSON.parse(m[1]); } catch {} }
+  return { ok: true, summary, inFile, log: result.stdout };
+}
+
+ipcMain.handle("dp2:missing-ui-text-import", async (_e, payload) => {
+  const inFile = (payload && payload.inFile) || (await (async () => {
+    const { baseDir } = await missingTextDirs();
+    return path.join(baseDir, "interface.txt");
+  })());
+  return _runMissingUiTextImport(inFile);
+});
+
+// Inline-варіант: renderer передає content прямо як string. Main пише його
+// у тимчасовий файл і викликає import — використовується з MissingEditor.
+// importCombined для секції [__Interface__], яка вже у combined.txt.
+ipcMain.handle("dp2:missing-ui-text-import-inline", async (_e, payload) => {
+  try {
+    const content = (payload && payload.content) || "";
+    if (!content) return { ok: false, error: "empty content" };
+    const { baseDir } = await missingTextDirs();
+    await fs.mkdir(baseDir, { recursive: true });
+    const tmpFile = path.join(baseDir, "_interface-import.tmp.txt");
+    await fs.writeFile(tmpFile, content, "utf8");
+    try {
+      return await _runMissingUiTextImport(tmpFile);
+    } finally {
+      try { await fs.unlink(tmpFile); } catch {}
+    }
+  } catch (e) {
+    return { ok: false, error: String(e.message || e) };
+  }
+});
+
 // Зберігає модифіковані bytes у Done/heightinfo.bin.
 ipcMain.handle("dp2:missing-boxsize-save", async (_event, payload) => {
   try {

@@ -22,6 +22,13 @@ import { EditorFooter } from "../../components/EditorFooter";
 import { LangToggle } from "../../components/LangToggle";
 import { showError, showOk, showToast } from "../../components/Toast";
 import type { CorpusStats } from "../../lib/ipc";
+import { MissingShortcutsModal } from "./MissingShortcutsModal";
+import { HeaderProgress } from "../../components/HeaderProgress";
+import { HeaderMenu, type MenuItem } from "../../components/HeaderMenu";
+import { MissingFileSidebar } from "./MissingFileSidebar";
+import { HighlightedText } from "../../components/HighlightedText";
+import { VirtualRows } from "./VirtualRows";
+import { CommandPalette, type CommandItem } from "../../components/CommandPalette";
 
 interface Props { onHome: () => void; }
 
@@ -72,6 +79,9 @@ interface MissingApi {
   missingDllDialogFix: () => Promise<{ ok: boolean; error?: string; summary?: { applied: number } }>;
   missingDllDialogFixRevert: () => Promise<{ ok: boolean; error?: string }>;
   missingDllDialogFixStatus: () => Promise<{ ok: boolean; summary?: { patched: boolean; ballon: boolean; ballonController: boolean; wordWrap: boolean; bakExists: boolean } }>;
+  missingUiTextExport: (payload?: { outFile?: string; includeNonAscii?: boolean }) => Promise<{ ok: boolean; error?: string; outFile?: string; summary?: { entries: number } }>;
+  missingUiTextImport: (payload?: { inFile?: string }) => Promise<{ ok: boolean; error?: string; inFile?: string; summary?: { applied: number; skippedSame: number; missing: number } }>;
+  missingUiTextImportInline: (payload: { content: string }) => Promise<{ ok: boolean; error?: string; summary?: { applied: number; skippedSame: number; missing: number } }>;
   launchUabea: () => Promise<{ success: boolean; error?: string }>;
   onMissingPrepProgress: (cb: (line: string) => void) => () => void;
   onMissingPackProgress: (cb: (line: string) => void) => () => void;
@@ -169,6 +179,11 @@ export function MissingEditor({ onHome }: Props) {
   const [projectStats, setProjectStats] = useState<{ files: number; total: number; translated: number } | null>(null);
   // Stats-overview modal (HBR-style — total + 8 metric cards + top files).
   const [statsOpen, setStatsOpen] = useState(false);
+  // UX-state: командна палітра (Ctrl+K) + cheatsheet (?) + collapse правого
+  // pane (Monaco). LocalStorage щоб користувач не перевідкривав щоразу.
+  const [cmdOpen, setCmdOpen] = useState(false);
+  const [shortcutsOpen, setShortcutsOpen] = useState(false);
+  const [monacoCollapsed, setMonacoCollapsed] = useLocalStorage<boolean>("missing.ui.monacoCollapsed", false);
   // Pack-success модалка (HBR-style — hero + metrics + paths + actions).
   const [packSuccess, setPackSuccess] = useState<null | {
     applied: number;
@@ -225,13 +240,32 @@ export function MissingEditor({ onHome }: Props) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [edits]);
 
-  // Ctrl+Shift+F — глобальний пошук, Ctrl+B — bookmark активного рядка.
+  // Ctrl+Shift+F — глобальний пошук, Ctrl+B — bookmark, Ctrl+K — палітра,
+  // ? — cheatsheet, Ctrl+S — save, цифри 0-3 у фокусі таблиці → row status.
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       const ctrl = e.ctrlKey || e.metaKey;
       const target = e.target as HTMLElement;
       const inMonaco = target.closest(".monaco-editor") !== null;
       const inInput = target.closest("input, textarea") !== null;
+      // Ctrl+K — командна палітра.
+      if (ctrl && !e.shiftKey && e.key.toLowerCase() === "k") {
+        e.preventDefault();
+        setCmdOpen(true);
+        return;
+      }
+      // ? — cheatsheet (без модифікаторів, поза інпутом).
+      if (!ctrl && !e.shiftKey && e.key === "?" && !inMonaco && !inInput) {
+        e.preventDefault();
+        setShortcutsOpen(true);
+        return;
+      }
+      // Ctrl+S — save active file.
+      if (ctrl && !e.shiftKey && e.key.toLowerCase() === "s") {
+        e.preventDefault();
+        void saveFile();
+        return;
+      }
       if (ctrl && e.shiftKey && e.key.toLowerCase() === "f") {
         e.preventDefault();
         setSearchAllOpen(true);
@@ -245,6 +279,19 @@ export function MissingEditor({ onHome }: Props) {
           patchRowMeta(key, { bookmark: !rowMeta[key]?.bookmark });
         }
         return;
+      }
+      // Цифрові clavishi у активному рядку — швидкий статус.
+      if (!ctrl && !e.shiftKey && !inMonaco && !inInput && activeIdx !== null && origMsg && activeFile) {
+        const map: Record<string, "draft" | "review" | "approved" | undefined> = {
+          "1": "draft", "2": "review", "3": "approved", "0": undefined,
+        };
+        if (e.key in map) {
+          e.preventDefault();
+          const enumN = origMsg.entries[activeIdx]?.msgEnum ?? -1;
+          const key = getMetaKey(enumN, activeFile.name, activeIdx);
+          patchRowMeta(key, { status: map[e.key] });
+          return;
+        }
       }
     };
     window.addEventListener("keydown", onKey);
@@ -518,14 +565,20 @@ export function MissingEditor({ onHome }: Props) {
         let fTotal = 0, fTranslated = 0;
         let uaW = 0, enW = 0, uaC = 0, enC = 0;
         for (let i = 0; i < orig.entries.length; i++) {
-          const o = orig.entries[i]?.text ?? "";
+          const e = orig.entries[i];
+          const o = e?.text ?? "";
           if (o === "" || /^[A-Z_0-9]+_en$/.test(o)) continue;
           fTotal++;
           const d = done.entries[i]?.text ?? "";
-          if (d !== "" && d !== o) {
+          // Manual ПКМ-mark теж рахується як translated (інакше Огляд готовності
+          // показує менше %, ніж header — користувач справедливо плутається).
+          const key = e && e.msgEnum >= 0 ? String(e.msgEnum) : `${f.name}::${i}`;
+          const marked = !!rowMeta[key]?.markedTranslated;
+          if ((d !== "" && d !== o) || marked) {
             fTranslated++;
-            uaW += countWords(d);
-            uaC += d.length;
+            const counted = d || o;
+            uaW += countWords(counted);
+            uaC += counted.length;
           } else {
             enW += countWords(o);
             enC += o.length;
@@ -694,18 +747,18 @@ export function MissingEditor({ onHome }: Props) {
       const idMatch = msg.match(/рядок #(\d+)/);
       if (idMatch) {
         const targetIdx = Number(idMatch[1]);
-        showError(msg, "Збереження неможливе");
-        showToast(`Перейти до рядка #${targetIdx} →`, {
+        showError(msg, t("missing.toast.saveImpossible"));
+        showToast(t("missing.toast.goRow", { idx: String(targetIdx) }), {
           tone: "warning",
           durationMs: 12000,
           action: {
-            label: "Перейти",
+            label: t("missing.toast.goBtn"),
             onClick: () => setActiveIdx(targetIdx),
           },
         });
       } else {
         setErrMsg(`save fail: ${msg}`);
-        showError(msg, "Збереження не вдалося");
+        showError(msg, t("missing.toast.saveFail"));
       }
     } finally {
       setSaving(false);
@@ -869,11 +922,54 @@ export function MissingEditor({ onHome }: Props) {
           lines.push("");
         }
       }
+      // Окрема секція [__Interface__] — UI.Text MonoBehaviour'и з sharedassets
+      // (YES/NO/OPTION/Settings/...). Експорт PS-скрипта пише у Documents-теку;
+      // ми його зчитуємо і додаємо у combined.txt окремими записами `# ui
+      // <file>:<pathId>`. Так перекладач у ОДНОМУ файлі редагує і msg.dat
+      // тексти, і UI labels.
+      let uiEntries = 0;
+      try {
+        const uiR = await W.missingUiTextExport();
+        if (uiR.ok && uiR.outFile) {
+          const uiTxt = await W.readFile(uiR.outFile);
+          if (uiTxt) {
+            // PS-format: коментарі (# ...) + блоки `[file:pathId]\ntext\n\n`.
+            // Перетворюємо у наш combined-style: `[__Interface__]` + записи
+            // `# ui file:pathId\n<text>`.
+            lines.push("");
+            lines.push("[__Interface__]");
+            lines.push("");
+            lines.push("# UI.Text MonoBehaviour'и з sharedassets (YES/NO/OPTION/...).");
+            lines.push("# Не міняй \"# ui <file>:<pathId>\" — за ними import знаходить позиції.");
+            lines.push("");
+            const blockRe = /^\[([^\]\n:]+):(\d+)\]\s*$\n([\s\S]*?)(?=^\[[^\]\n:]+:\d+\]\s*$|\Z)/gm;
+            const norm = uiTxt.replace(/\r\n/g, "\n");
+            // Whitelist UI-надписів які реально треба перекладати. Решта (OPTION,
+            // CHAPTER SELECT, settings labels тощо) — не виводимо, бо переклад
+            // там зустрічається у DLL strings, а UI.Text-копії лише захаращують
+            // combined.txt. Розширюй цей set лише за явним запитом юзера.
+            const UI_ALLOWLIST = new Set(["YES", "NO"]);
+            let m: RegExpExecArray | null;
+            while ((m = blockRe.exec(norm)) != null) {
+              const file = m[1].trim();
+              const pid = m[2].trim();
+              const text = (m[3] || "").replace(/^\n/, "").replace(/\n+$/, "");
+              if (!text) continue;
+              if (!UI_ALLOWLIST.has(text.trim().toUpperCase())) continue;
+              lines.push(`# ui ${file}:${pid}`);
+              lines.push(text);
+              lines.push("");
+              uiEntries++;
+            }
+          }
+        }
+      } catch { /* ігноруємо — UI export опціональний */ }
+
       const ok = await W.writeFile(target, lines.join("\n"));
       if (!ok) await dpAlert(t("missing.export.errTitle"), t("missing.export.errBody"), { tone: "danger" });
       else await dpAlert(
         t("missing.export.doneTitle"),
-        t("missing.export.doneBody", { n: String(files.length), path: target }),
+        t("missing.export.doneBody", { n: String(files.length), path: target }) + (uiEntries > 0 ? `\n\n+ Interface: ${uiEntries} UI-надписів у секції [__Interface__]` : ""),
         { tone: "success" }
       );
     } finally {
@@ -978,13 +1074,52 @@ export function MissingEditor({ onHome }: Props) {
         touchedFiles++;
         totalCells += edits2.size;
       }
+      // Секція [__Interface__] — UI.Text MonoBehaviour'и (sharedassets).
+      // Парсимо записи `# ui file:pathId\n<text>`, перетворюємо у format
+      // PS-скрипта (`[file:pathId]\ntext\n\n`) і викликаємо UI import inline.
+      let uiApplied = 0, uiSkipped = 0, uiMissing = 0;
+      const ifaceHeader = headers.find((h) => h.name === "__Interface__");
+      if (ifaceHeader) {
+        const idx = headers.indexOf(ifaceHeader);
+        const next = idx + 1 < headers.length ? headers[idx + 1].start : norm.length;
+        const body = norm.slice(ifaceHeader.end, next);
+        const uiRecRe = /^#\s+ui\s+(\S+?):(\d+)\s*$/gm;
+        const recs: Array<{ file: string; pid: string; start: number; end: number }> = [];
+        let urm: RegExpExecArray | null;
+        while ((urm = uiRecRe.exec(body)) != null) {
+          recs.push({ file: urm[1].trim(), pid: urm[2].trim(), start: urm.index, end: urm.index + urm[0].length });
+        }
+        if (recs.length > 0) {
+          const outLines: string[] = [];
+          outLines.push("# Inline interface import from combined.txt");
+          for (let i = 0; i < recs.length; i++) {
+            const r = recs[i];
+            const rNext = i + 1 < recs.length ? recs[i + 1].start : body.length;
+            let text = body.slice(r.end, rNext);
+            text = text.replace(/^\r?\n/, "").replace(/\n+$/, "");
+            outLines.push("");
+            outLines.push(`[${r.file}:${r.pid}]`);
+            outLines.push(text);
+          }
+          const uiR = await W.missingUiTextImportInline({ content: outLines.join("\n") });
+          if (uiR.ok && uiR.summary) {
+            uiApplied = uiR.summary.applied;
+            uiSkipped = uiR.summary.skippedSame;
+            uiMissing = uiR.summary.missing;
+          }
+        }
+      }
+
       await refreshFiles();
       await refreshProjectStats();
       if (activeFile) await openFile(activeFile);
       {
+        const uiTail = (uiApplied + uiSkipped + uiMissing) > 0
+          ? `\n\n+ Interface: applied ${uiApplied} · same ${uiSkipped} · missing ${uiMissing}`
+          : "";
         await dpAlert(
           t("missing.import.doneTitle"),
-          t("missing.import.doneBody", { files: String(touchedFiles), cells: String(totalCells) }),
+          t("missing.import.doneBody", { files: String(touchedFiles), cells: String(totalCells) }) + uiTail,
           { tone: "success" }
         );
       }
@@ -1004,6 +1139,121 @@ export function MissingEditor({ onHome }: Props) {
     return { translated, total };
   }, [rows, origMsg]);
 
+  // Командний список для Ctrl+K. Категорії: Дії · Перегляд · Файли · Перехід.
+  const commandItems = useMemo<CommandItem[]>(() => {
+    const out: CommandItem[] = [];
+    const CAT_ACT = t("missing.cmd.cat.actions");
+    const CAT_TOOLS = t("missing.cmd.cat.tools");
+    const CAT_VIEW = t("missing.cmd.cat.view");
+    const CAT_FILTER = t("missing.cmd.cat.filter");
+    const CAT_JUMP = t("missing.cmd.cat.jumpFile");
+    out.push({
+      id: "save", category: CAT_ACT, icon: "💾", label: t("missing.cmd.save"),
+      shortcut: "Ctrl+S", hint: `${edits.size} незбережених`,
+      keywords: "save зберегти збер", disabled: edits.size === 0 || saving,
+      run: () => { void saveFile(); },
+    });
+    out.push({
+      id: "pack", category: CAT_ACT, icon: "📦", label: t("missing.cmd.pack"),
+      keywords: "pack запакувати", disabled: packing,
+      run: () => { void packAll(); },
+    });
+    out.push({
+      id: "export", category: CAT_ACT, icon: "↓", label: t("missing.cmd.export"),
+      keywords: "export експорт txt", disabled: exporting || files.length === 0,
+      run: () => { void exportCombined(); },
+    });
+    out.push({
+      id: "import", category: CAT_ACT, icon: "↑", label: t("missing.cmd.import"),
+      keywords: "import імпорт txt", disabled: importing || files.length === 0,
+      run: () => { void importCombined(); },
+    });
+    out.push({
+      id: "lint", category: CAT_TOOLS, icon: "⚠", label: t("missing.cmd.lint"),
+      keywords: "lint перевірка цілісність теги",
+      disabled: files.length === 0, run: () => setLintOpen(true),
+    });
+    out.push({
+      id: "stats", category: CAT_TOOLS, icon: "📊", label: t("missing.cmd.stats"),
+      keywords: "stats статистика прогрес",
+      disabled: files.length === 0, run: () => setStatsOpen(true),
+    });
+    out.push({
+      id: "dll", category: CAT_TOOLS, icon: "🔧", label: t("missing.cmd.dll"),
+      keywords: "dll assembly csharp strings",
+      run: () => setDllOpen(true),
+    });
+    if (heightInfo) {
+      out.push({
+        id: "autofit", category: CAT_TOOLS, icon: "📏", label: t("missing.cmd.autofit"),
+        keywords: "autofit box розмір ширина", hint: `L${targetLang}`,
+        run: () => setAutoFitOpen(true),
+      });
+    } else {
+      out.push({
+        id: "boxextract", category: CAT_TOOLS, icon: "📐", label: t("missing.cmd.boxExtract"),
+        keywords: "box розмір extract heightinfo",
+        disabled: extractingBox, run: () => { void runBoxsizeExtract(); },
+      });
+    }
+    out.push({
+      id: "dialogfix",
+      category: CAT_TOOLS,
+      icon: dialogFixPatched === true ? "✓" : "🪄",
+      label: dialogFixPatched === true ? t("missing.cmd.dialogFixOn") : t("missing.cmd.dialogFixApply"),
+      keywords: "dialog ballon діалог чат пухир wordwrap",
+      disabled: dialogFixBusy || dialogFixPatched === true,
+      run: () => { void applyDialogFix(); },
+    });
+    out.push({
+      id: "search-global", category: CAT_VIEW, icon: "🔍", label: t("missing.cmd.searchGlobal"),
+      keywords: "search пошук глобальний", shortcut: "Ctrl+Shift+F",
+      run: () => setSearchAllOpen(true),
+    });
+    out.push({
+      id: "toggle-monaco", category: CAT_VIEW, icon: monacoCollapsed ? "▶" : "◀",
+      label: monacoCollapsed ? t("missing.cmd.monacoShow") : t("missing.cmd.monacoHide"),
+      keywords: "monaco pane редактор сховати collapse",
+      run: () => setMonacoCollapsed(!monacoCollapsed),
+    });
+    out.push({
+      id: "shortcuts", category: CAT_VIEW, icon: "⌨", label: t("missing.cmd.shortcuts"),
+      keywords: "shortcuts cheatsheet гарячі клавіші довідка", shortcut: "?",
+      run: () => setShortcutsOpen(true),
+    });
+    const filters: Array<[RowFilter, string]> = [
+      ["all", t("missing.cmd.filter.all")],
+      ["untranslated", t("missing.cmd.filter.untranslated")],
+      ["translated", t("missing.cmd.filter.translated")],
+      ["same", t("missing.cmd.filter.same")],
+      ["bookmarks", t("missing.cmd.filter.bookmarks")],
+      ["placeholder", t("missing.cmd.filter.placeholder")],
+    ];
+    for (const [k, lab] of filters) {
+      out.push({
+        id: `filter-${k}`, category: CAT_FILTER,
+        icon: rowFilter === k ? "●" : "○",
+        label: lab, keywords: `filter ${k}`,
+        run: () => setRowFilter(k),
+      });
+    }
+    for (const f of files) {
+      const st = fileStats[f.file];
+      const pct = st && st.total > 0 ? Math.round((st.translated / st.total) * 100) : 0;
+      out.push({
+        id: `file-${f.file}`, category: CAT_JUMP, icon: "📄",
+        label: f.name, hint: st ? `${st.translated}/${st.total} · ${pct}%` : undefined,
+        keywords: f.file, run: () => { void openFile(f); },
+      });
+    }
+    return out;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [
+    edits.size, saving, packing, exporting, importing, files, fileStats,
+    rowFilter, monacoCollapsed, heightInfo, targetLang, dialogFixBusy,
+    dialogFixPatched, extractingBox,
+  ]);
+
   return (
     <div className="flex-1 flex flex-col min-h-0 h-full">
       <header className="h-12 px-4 border-b border-[var(--border-soft)] bg-[var(--bg)] flex items-center gap-3 shrink-0">
@@ -1013,126 +1263,97 @@ export function MissingEditor({ onHome }: Props) {
         <div className="flex-1" />
         {phase === "ready" && (
           <>
-            {activeFile && <span className="text-[11px] text-[var(--text-muted)] mr-2">{stats.translated} / {stats.total}</span>}
-            {/* Autosave / dirty indicator */}
+            {projectStats && projectStats.total > 0 && (
+              <HeaderProgress
+                translated={projectStats.translated}
+                total={projectStats.total}
+                title={`Загальний прогрес проєкту · ${projectStats.files} файлів`}
+              />
+            )}
             {dirty && (
-              <span className="text-[10.5px] text-[var(--warning,#d97706)] tabular-nums" title="Незбережені правки — автозбереження за 20с">
-                ● незбережено ({edits.size})
+              <span
+                className="text-[10.5px] text-[var(--warning,#d97706)] tabular-nums"
+                title={t("missing.header.unsavedHint")}
+              >
+                {t("missing.header.unsavedDot", { n: String(edits.size) })}
               </span>
             )}
             {!dirty && lastSavedAt && (
-              <span className="text-[10.5px] text-[var(--text-faint)] tabular-nums" title={`Збережено о ${new Date(lastSavedAt).toLocaleTimeString()}`}>
-                ● збережено
+              <span className="text-[10.5px] text-[var(--text-faint)] tabular-nums" title={`${t("missing.header.savedDot")} · ${new Date(lastSavedAt).toLocaleTimeString()}`}>
+                {t("missing.header.savedDot")}
               </span>
             )}
             <button
               className="dp-btn dp-btn--ghost"
-              onClick={() => setSearchAllOpen(true)}
-              title="Глобальний пошук по всіх msg-файлах (Ctrl+Shift+F)"
+              onClick={() => setCmdOpen(true)}
+              title={t("missing.header.cmdHint")}
             >
-              <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+              <svg className="w-3.5 h-3.5 inline" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
                 <path strokeLinecap="round" strokeLinejoin="round" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
               </svg>
+              <span className="ml-1 text-[10px] font-mono px-1 py-0.5 border border-[var(--border-soft)] rounded">⌘K</span>
             </button>
-            <button
-              className="dp-btn dp-btn--ghost"
-              disabled={files.length === 0}
-              onClick={() => setLintOpen(true)}
-              title="Перевірка цілісності перекладу (теги, плейсхолдери, escape)"
-            >
-              ⚠ Lint
-            </button>
-            <button
-              className="dp-btn dp-btn--ghost"
-              disabled={files.length === 0}
-              onClick={() => setStatsOpen(true)}
-              title={t("missing.stats.btnHint")}
-            >
-              {t("missing.stats.btn")}
-            </button>
-            <button
-              className="dp-btn dp-btn--ghost"
-              onClick={async () => {
-                const r = await W.launchUabea();
-                if (!r.success) await dpAlert("UABEA", r.error || "Не вдалось запустити", { tone: "danger" });
-              }}
-              title="Відкрити UABEA для прямої роботи з resources.assets"
-            >
-              UABEA
-            </button>
+            <HeaderMenu
+              trigger={<span className="flex items-center gap-1"><span aria-hidden>🛠</span> {t("missing.header.menuTools")}</span>}
+              items={(() => {
+                const items: MenuItem[] = [
+                  { icon: "⚠", label: t("missing.header.menuLint"), title: t("missing.header.menuLintHint"), disabled: files.length === 0, onClick: () => setLintOpen(true) },
+                  { icon: "📊", label: t("missing.stats.btn"), title: t("missing.stats.btnHint"), disabled: files.length === 0, onClick: () => setStatsOpen(true) },
+                  { icon: "🔍", label: t("missing.header.menuGlobalSearch"), shortcut: "Ctrl+Shift+F", onClick: () => setSearchAllOpen(true) },
+                  {},
+                ];
+                if (heightInfo) {
+                  items.push({ icon: "📏", label: t("missing.header.menuAutoFit", { lang: String(targetLang) }), title: t("missing.header.menuAutoFitHint"), onClick: () => setAutoFitOpen(true) });
+                } else {
+                  items.push({ icon: "📐", label: t("missing.header.menuBoxExtract"), disabled: extractingBox, onClick: () => { void runBoxsizeExtract(); } });
+                }
+                items.push({});
+                items.push({
+                  icon: dialogFixPatched === true ? "✓" : "🪄",
+                  label: dialogFixPatched === true ? t("missing.header.menuDialogFixOn") : t("missing.header.menuDialogFix"),
+                  tone: dialogFixPatched === true ? "success" : "default",
+                  disabled: dialogFixBusy || dialogFixPatched === true,
+                  onClick: () => { void applyDialogFix(); },
+                });
+                items.push({ icon: "🔧", label: t("missing.header.menuDll"), onClick: () => setDllOpen(true) });
+                return items;
+              })()}
+            />
+            <HeaderMenu
+              trigger={<span className="flex items-center gap-1"><span aria-hidden>📁</span> {t("missing.header.menuFile")}</span>}
+              items={[
+                { icon: "↓", label: t("missing.editor.exportAll"), disabled: exporting || files.length === 0, onClick: exportCombined },
+                { icon: "↑", label: t("missing.editor.importAll"), disabled: importing || files.length === 0, onClick: importCombined },
+                {},
+                { icon: "⌨", label: t("missing.header.menuShortcuts"), shortcut: "?", onClick: () => setShortcutsOpen(true) },
+                { icon: monacoCollapsed ? "▶" : "◀", label: monacoCollapsed ? t("missing.header.menuMonacoShow") : t("missing.header.menuMonacoHide"), onClick: () => setMonacoCollapsed(!monacoCollapsed) },
+              ]}
+            />
             {heightInfo && (
-              <>
-                <div
-                  className="flex items-center gap-1 text-[10.5px] text-[var(--text-muted)] px-2 py-1 rounded border border-[var(--border-soft)] bg-[var(--bg)]"
-                  title="Цільовий мовний слот у IMHeightInfo. У грі UA-переклад зазвичай йде у слот англ. локалізації (L0). Інші слоти зберігаємо для JP/CN/KR."
-                >
-                  <span>UA →</span>
-                  <select
-                    className="bg-transparent text-[var(--text)] outline-none cursor-pointer"
-                    value={targetLang}
-                    onChange={(e) => setTargetLang(parseInt(e.target.value, 10))}
-                  >
-                    <option value={0}>L0 (EN)</option>
-                    <option value={1}>L1 (JP)</option>
-                    <option value={2}>L2 (CN?)</option>
-                    <option value={3}>L3 (KR?)</option>
-                  </select>
-                </div>
-                <button
-                  className="dp-btn dp-btn--ghost"
-                  onClick={() => setAutoFitOpen(true)}
-                  title={`Підлаштувати ширину слота L${targetLang} під довжину перекладу — превʼю змін + ручне коригування`}
-                >
-                  📏 Auto-fit…
-                </button>
-              </>
-            )}
-            {!heightInfo && (
-              <button
-                className="dp-btn dp-btn--ghost"
-                disabled={extractingBox}
-                onClick={runBoxsizeExtract}
-                title="Витягнути таблицю box-sizes (IMHeightInfo) з resources.assets"
+              <div
+                className="flex items-center gap-1 text-[10.5px] text-[var(--text-muted)] px-2 py-1 rounded border border-[var(--border-soft)] bg-[var(--bg)]"
+                title={t("missing.header.targetLangHint")}
               >
-                📐 {extractingBox ? "…" : "Box-sizes"}
-              </button>
+                <span>UA →</span>
+                <select
+                  className="bg-transparent text-[var(--text)] outline-none cursor-pointer"
+                  value={targetLang}
+                  onChange={(e) => setTargetLang(parseInt(e.target.value, 10))}
+                >
+                  <option value={0}>L0 (EN)</option>
+                  <option value={1}>L1 (JP)</option>
+                  <option value={2}>L2 (CN?)</option>
+                  <option value={3}>L3 (KR?)</option>
+                </select>
+              </div>
             )}
-            <button className="dp-btn dp-btn--ghost" disabled={exporting || files.length === 0} onClick={exportCombined} title="Експортувати все у combined.txt">
-              {exporting ? "…" : t("missing.editor.exportAll")}
-            </button>
-            <button className="dp-btn dp-btn--ghost" disabled={importing || files.length === 0} onClick={importCombined} title="Імпортувати з combined.txt у всі файли">
-              {importing ? "…" : t("missing.editor.importAll")}
-            </button>
             {activeFile && (
-              <button className="dp-btn dp-btn--primary" disabled={saving || edits.size === 0} onClick={saveFile}>
+              <button className="dp-btn dp-btn--primary" disabled={saving || edits.size === 0} onClick={saveFile} title={t("missing.header.saveHint")}>
                 {saving ? "…" : t("missing.editor.save")} {edits.size > 0 ? `(${edits.size})` : ""}
               </button>
             )}
             <button className="dp-btn dp-btn--success" disabled={packing} onClick={packAll}>
               {packing ? "…" : t("missing.editor.pack")}
-            </button>
-            <button
-              className="dp-btn dp-btn--ghost"
-              onClick={applyDialogFix}
-              disabled={dialogFixBusy || dialogFixPatched === true}
-              title={
-                dialogFixPatched === true
-                  ? "Patch уже застосовано. Натисни DLL → ↺ Відкотити щоб повернути."
-                  : "Виправити обрізання chat-pухирів (Ballon.SizeControlType=UseTextInfo). Single click."
-              }
-            >
-              {dialogFixBusy
-                ? "🪄 …"
-                : dialogFixPatched === true
-                  ? "✓ Діалоги"
-                  : "🪄 Виправити діалоги"}
-            </button>
-            <button
-              className="dp-btn dp-btn--ghost"
-              onClick={() => setDllOpen(true)}
-              title="Редактор string-літералів у Assembly-CSharp.dll"
-            >
-              DLL
             </button>
           </>
         )}
@@ -1143,8 +1364,8 @@ export function MissingEditor({ onHome }: Props) {
         <div className="flex-1 flex items-center justify-center p-8">
           <div className="w-full max-w-[440px] flex flex-col gap-5">
             <div className="text-center">
-              <h2 className="text-[18px] font-bold text-[var(--text-strong)] mb-1">Підготовка редактора…</h2>
-              <p className="text-[12px] text-[var(--text-muted)]">Перевіряємо файли та парсимо meta. Зазвичай це частка секунди.</p>
+              <h2 className="text-[18px] font-bold text-[var(--text-strong)] mb-1">{t("missing.loadingTitle")}</h2>
+              <p className="text-[12px] text-[var(--text-muted)]">{t("missing.loadingBody")}</p>
             </div>
             <div className="dp-card p-5 flex items-center gap-3">
               <span className="inline-block w-3.5 h-3.5 rounded-full border-2 border-[var(--text-faint)] border-t-[var(--accent)] animate-spin" aria-hidden />
@@ -1182,15 +1403,13 @@ export function MissingEditor({ onHome }: Props) {
         <div className="px-4 py-2.5 bg-[var(--warning,#d97706)]/10 border-b border-[var(--warning,#d97706)]/30 flex items-center gap-3">
           <span className="text-[16px]" aria-hidden>🪄</span>
           <div className="flex-1 min-w-0 text-[12px] text-[var(--text)]">
-            <span className="font-semibold">UA-текст обрізається у чат-пухирях?</span>{" "}
-            <span className="text-[var(--text-muted)]">
-              Single-click патч у Assembly-CSharp.dll: chat-bubble буде автоматично розширюватися під переклад. Створиться .dll.bak. Перезапусти гру.
-            </span>
+            <span className="font-semibold">{t("missing.banner.title")}</span>{" "}
+            <span className="text-[var(--text-muted)]">{t("missing.banner.body")}</span>
           </div>
           <button className="dp-btn dp-btn--success" disabled={dialogFixBusy} onClick={applyDialogFix}>
-            {dialogFixBusy ? "…" : "Виправити"}
+            {dialogFixBusy ? "…" : t("missing.banner.fix")}
           </button>
-          <button className="dp-btn dp-btn--ghost" onClick={() => setDialogFixDismissed(true)} title="Сховати банер (можна повернутися через header-кнопку)">
+          <button className="dp-btn dp-btn--ghost" onClick={() => setDialogFixDismissed(true)} title={t("missing.banner.dismissHint")}>
             ✕
           </button>
         </div>
@@ -1198,48 +1417,16 @@ export function MissingEditor({ onHome }: Props) {
 
       {phase === "ready" && (
         <div className="flex-1 flex min-h-0">
-          {/* Left: file list */}
-          <aside className="w-[260px] shrink-0 border-r border-[var(--border-soft)] flex flex-col min-h-0">
-            <div className="px-3 py-2 border-b border-[var(--border-soft)] text-[10px] uppercase tracking-wider text-[var(--text-faint)]">
-              {t("missing.editor.fileTree")} · {files.length}
-            </div>
-            <div className="flex-1 overflow-auto">
-              {files.map((f) => {
-                const st = fileStats[f.file];
-                const pct = st && st.total > 0 ? Math.round((st.translated / st.total) * 100) : 0;
-                const isActive = activeFile?.file === f.file;
-                const borderColor = !st || pct === 0
-                  ? "border-l-[var(--danger)]"
-                  : pct >= 100
-                    ? "border-l-[var(--success)]"
-                    : "border-l-[var(--warning,#d97706)]";
-                const barColor = pct === 0
-                  ? "bg-[var(--danger)]"
-                  : pct >= 100
-                    ? "bg-[var(--success)]"
-                    : "bg-[var(--warning,#d97706)]";
-                return (
-                  <button
-                    key={f.file}
-                    onClick={() => openFile(f)}
-                    className={`w-full text-left px-3 py-2 border-b border-[var(--border-soft)] border-l-2 ${borderColor} hover:bg-[var(--row-hover)] ${isActive ? "bg-[var(--row-active)]" : ""}`}
-                  >
-                    <p className="text-[11.5px] font-mono text-[var(--text)] truncate" title={f.name}>{f.name}</p>
-                    {st && (
-                      <div className="flex items-center gap-2 mt-1">
-                        <div className="flex-1 h-1 bg-[var(--bg-elevated)] rounded overflow-hidden">
-                          <div className={`h-full transition-all ${barColor}`} style={{ width: `${pct}%` }} />
-                        </div>
-                        <span className="text-[10px] font-mono tabular-nums text-[var(--text-faint)] shrink-0">
-                          {st.translated}/{st.total} · {pct}%
-                        </span>
-                      </div>
-                    )}
-                  </button>
-                );
-              })}
-            </div>
-          </aside>
+          {/* Left: file list — з пошуком / sort / tabs (MissingFileSidebar). */}
+          <MissingFileSidebar
+            files={files.map((f) => ({ name: f.name, file: f.file, scriptLen: f.scriptLen }))}
+            activeKey={activeFile?.file ?? null}
+            fileStats={fileStats}
+            onPick={(sf) => {
+              const full = files.find((x) => x.file === sf.file);
+              if (full) void openFile(full);
+            }}
+          />
 
           {/* Center: rows table */}
           <main className="flex-1 flex flex-col min-w-0 min-h-0">
@@ -1267,8 +1454,8 @@ export function MissingEditor({ onHome }: Props) {
                       ["untranslated", t("missing.filter.untranslated")],
                       ["translated",   t("missing.filter.translated")],
                       ["same",         t("missing.filter.same")],
-                      ["bookmarks",    "🔖 Закладки"],
-                      ["placeholder",  "Плейсхолдери"],
+                      ["bookmarks",    t("missing.filter.bookmarks")],
+                      ["placeholder",  t("missing.filter.placeholder")],
                     ] as Array<[RowFilter, string]>).map(([k, lab]) => (
                       <button
                         key={k}
@@ -1278,90 +1465,96 @@ export function MissingEditor({ onHome }: Props) {
                         {lab}
                       </button>
                     ))}
-                    <label className="flex items-center gap-1 text-[10.5px] text-[var(--text-muted)] ml-2 cursor-pointer" title="Враховувати NO_TEXT_en та voice-refs у статистиці">
+                    <label className="flex items-center gap-1 text-[10.5px] text-[var(--text-muted)] ml-2 cursor-pointer" title={t("missing.filter.includePhHint")}>
                       <input type="checkbox" checked={includePlaceholders} onChange={(e) => setIncludePlaceholders(e.target.checked)} />
-                      +PH
+                      {t("missing.filter.includePh")}
                     </label>
                   </div>
                 </div>
-                <div className="flex-1 overflow-auto">
-                  <table className="w-full text-[12px] table-fixed">
-                    <thead className="sticky top-0 z-10 bg-[var(--bg-surface)] text-[10px] uppercase tracking-wider text-[var(--text-faint)] border-b border-[var(--border-soft)]">
-                      <tr>
-                        <th className="text-center px-1 py-1.5 w-[26px]" title="Стан перекладу">✓</th>
-                        <th className="text-center px-1 py-1.5 w-[26px]" title="Закладка">·</th>
-                        <th className="text-left px-2 py-1.5 w-[100px]" title="msgBase*10000 + i у length-table">MsgEnum</th>
-                        <th className="text-left px-2 py-1.5 w-[90px]" title="Зсув у m_Script (нестабільний після pack)">Offset</th>
-                        <th className="text-left px-2 py-1.5 w-1/2">{t("missing.editor.originalCol")}</th>
-                        <th className="text-left px-2 py-1.5 w-1/2">{t("missing.editor.translationCol")}</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {rows.map((r) => {
-                        const orig = origMsg.entries[r.idx]?.text ?? "";
-                        const isActive = activeIdx === r.idx;
-                        const meta = r.meta;
-                        const statusBorder = meta?.status === "approved"
-                          ? "border-l-[3px] border-l-[var(--success)]"
-                          : meta?.status === "review"
-                            ? "border-l-[3px] border-l-[var(--accent)]"
-                            : meta?.status === "draft"
-                              ? "border-l-[3px] border-l-dashed border-l-[var(--warning,#d97706)]"
-                              : meta?.markedTranslated
-                                ? "border-l-2 border-l-[var(--success)]"
-                                : r.isEmpty
-                                  ? "border-l-2 border-l-[var(--danger)]"
-                                  : r.isSame
-                                    ? "border-l-2 border-l-[var(--warning,#d97706)]"
-                                    : "border-l-2 border-l-[var(--success)]";
-                        const enumDisplay = r.entry.msgEnum >= 0 ? String(r.entry.msgEnum) : "—";
-                        return (
-                          <tr
-                            key={r.idx}
-                            className={`border-b border-[var(--border-soft)] cursor-pointer hover:bg-[var(--bg-elev)] ${isActive ? "bg-[var(--bg-elev)]" : ""} ${statusBorder}`}
-                            onClick={() => setActiveIdx(r.idx)}
-                            onContextMenu={(ev) => {
-                              ev.preventDefault();
-                              setActiveIdx(r.idx);
-                              setCtxMenu({ x: ev.clientX, y: ev.clientY, idx: r.idx, msgEnum: r.entry.msgEnum });
-                            }}
-                          >
-                            <td className="px-1 py-1 text-center align-top">
-                              {meta?.bookmark && <span title="Закладка (Ctrl+B)">🔖</span>}
-                            </td>
-                            <td
-                              className="px-2 py-1 font-mono text-[10.5px] text-[var(--text)] align-top tabular-nums"
-                              title={r.entry.enumCount > 1 ? `${r.entry.enumCount} enum-слотів посилаються на цей рядок (плейсхолдер)` : undefined}
-                            >
-                              {enumDisplay}
-                              {r.entry.enumCount > 1 && <span className="ml-1 text-[var(--text-faint)]">×{r.entry.enumCount}</span>}
-                            </td>
-                            <td className="px-2 py-1 font-mono text-[10.5px] text-[var(--text-faint)] align-top">{"0x" + r.entry.offset.toString(16).padStart(6, "0")}</td>
-                            <td className="px-2 py-1 whitespace-pre-wrap break-words text-[var(--text-muted)] align-top">{orig}</td>
-                            <td className="px-2 py-1 whitespace-pre-wrap break-words align-top text-[var(--text-muted)]">{r.entry.text || <span className="italic text-[var(--text-faint)]">—</span>}</td>
-                          </tr>
-                        );
-                      })}
-                    </tbody>
-                  </table>
+                {/* Sticky header — той самий layout, що й рядки нижче (CSS-grid). */}
+                <div
+                  className="sticky-row-header grid items-center text-[10px] uppercase tracking-wider text-[var(--text-faint)] bg-[var(--bg-surface)] border-b border-[var(--border-soft)] px-1 shrink-0"
+                  style={{ gridTemplateColumns: "26px 100px 90px 1fr 1fr" }}
+                >
+                  <div className="text-center py-1.5" title={t("missing.col.bookmark")}>·</div>
+                  <div className="px-2 py-1.5" title={t("missing.col.enumHint")}>MsgEnum</div>
+                  <div className="px-2 py-1.5" title={t("missing.col.offsetHint")}>Offset</div>
+                  <div className="px-2 py-1.5">{t("missing.editor.originalCol")}</div>
+                  <div className="px-2 py-1.5">{t("missing.editor.translationCol")}</div>
                 </div>
+                <VirtualRows
+                  items={rows}
+                  rowHeight={64}
+                  overscan={10}
+                  scrollToIndex={activeIdx !== null ? rows.findIndex((r) => r.idx === activeIdx) : null}
+                  renderRow={(r) => {
+                    const orig = origMsg.entries[r.idx]?.text ?? "";
+                    const isActive = activeIdx === r.idx;
+                    const meta = r.meta;
+                    const statusBorder = meta?.status === "approved"
+                      ? "border-l-[3px] border-l-[var(--success)]"
+                      : meta?.status === "review"
+                        ? "border-l-[3px] border-l-[var(--accent)]"
+                        : meta?.status === "draft"
+                          ? "border-l-[3px] border-l-dashed border-l-[var(--warning,#d97706)]"
+                          : meta?.markedTranslated
+                            ? "border-l-2 border-l-[var(--success)]"
+                            : r.isEmpty
+                              ? "border-l-2 border-l-[var(--danger)]"
+                              : r.isSame
+                                ? "border-l-2 border-l-[var(--warning,#d97706)]"
+                                : "border-l-2 border-l-[var(--success)]";
+                    const enumDisplay = r.entry.msgEnum >= 0 ? String(r.entry.msgEnum) : "—";
+                    return (
+                      <div
+                        key={r.idx}
+                        className={`grid items-start border-b border-[var(--border-soft)] cursor-pointer hover:bg-[var(--bg-elev)] ${isActive ? "bg-[var(--bg-elev)]" : ""} ${statusBorder} text-[12px] px-1`}
+                        style={{ gridTemplateColumns: "26px 100px 90px 1fr 1fr", minHeight: 64 }}
+                        onClick={() => setActiveIdx(r.idx)}
+                        onContextMenu={(ev) => {
+                          ev.preventDefault();
+                          setActiveIdx(r.idx);
+                          setCtxMenu({ x: ev.clientX, y: ev.clientY, idx: r.idx, msgEnum: r.entry.msgEnum });
+                        }}
+                      >
+                        <div className="text-center py-2">
+                          {meta?.bookmark && <span title="Закладка (Ctrl+B)">🔖</span>}
+                        </div>
+                        <div
+                          className="px-2 py-2 font-mono text-[10.5px] text-[var(--text)] tabular-nums"
+                          title={r.entry.enumCount > 1 ? `${r.entry.enumCount} enum-слотів` : undefined}
+                        >
+                          {enumDisplay}
+                          {r.entry.enumCount > 1 && <span className="ml-1 text-[var(--text-faint)]">×{r.entry.enumCount}</span>}
+                        </div>
+                        <div className="px-2 py-2 font-mono text-[10.5px] text-[var(--text-faint)]">{"0x" + r.entry.offset.toString(16).padStart(6, "0")}</div>
+                        <div className="px-2 py-2 whitespace-pre-wrap break-words text-[var(--text-muted)] overflow-hidden" style={{ maxHeight: 60 }}>
+                          <HighlightedText text={orig} />
+                        </div>
+                        <div className="px-2 py-2 whitespace-pre-wrap break-words text-[var(--text-muted)] overflow-hidden" style={{ maxHeight: 60 }}>
+                          <HighlightedText text={r.entry.text} />
+                        </div>
+                      </div>
+                    );
+                  }}
+                />
                 <EditorFooter
                   fileName={activeFile?.name}
                   stats={[
-                    { label: "Видно", value: rows.length, tone: "default" },
-                    { label: "Усього", value: stats.total, tone: "default" },
+                    { label: t("missing.footer.shown"), value: rows.length, tone: "default" },
+                    { label: t("missing.footer.total"), value: stats.total, tone: "default" },
                     {
-                      label: "Перекладено",
+                      label: t("missing.footer.translated"),
                       value: `${stats.translated} (${stats.total > 0
                         ? ((stats.translated / stats.total) * 100).toFixed(1)
                         : "0.0"}%)`,
                       tone: "success",
                     },
                     ...(activeIdx !== null
-                      ? [{ label: "Позиція", value: `${activeIdx + 1}/${origMsg?.entries.length ?? 0}`, tone: "accent" as const }]
+                      ? [{ label: t("missing.footer.position"), value: `${activeIdx + 1}/${origMsg?.entries.length ?? 0}`, tone: "accent" as const }]
                       : []),
                     ...(edits.size > 0
-                      ? [{ label: "Незбережено", value: edits.size, tone: "warning" as const }]
+                      ? [{ label: t("missing.footer.unsaved"), value: edits.size, tone: "warning" as const }]
                       : []),
                   ]}
                 />
@@ -1369,23 +1562,36 @@ export function MissingEditor({ onHome }: Props) {
             )}
           </main>
 
-          {/* Right: Monaco — той самий патерн що у HBR. */}
-          <MissingItemEditor
-            item={activeItem}
-            prev={prevNext.prev}
-            next={prevNext.next}
-            targetLang={targetLang}
-            onSizeChange={handleSizeChange}
-            onChange={(v) => {
-              if (activeIdx === null) return;
-              const next = new Map(edits);
-              next.set(activeIdx, v);
-              setEdits(next);
-            }}
-            onJumpPrev={() => prevNext.prev && setActiveIdx(prevNext.prev.index)}
-            onJumpNext={() => prevNext.next && setActiveIdx(prevNext.next.index)}
-            onClose={() => setActiveIdx(null)}
-          />
+          {/* Right: Monaco editor pane. Можна сховати через кнопку у хедері
+              або command palette → отримуємо повну ширину для таблиці. */}
+          {!monacoCollapsed && (
+            <MissingItemEditor
+              item={activeItem}
+              prev={prevNext.prev}
+              next={prevNext.next}
+              targetLang={targetLang}
+              onSizeChange={handleSizeChange}
+              onChange={(v) => {
+                if (activeIdx === null) return;
+                const next = new Map(edits);
+                next.set(activeIdx, v);
+                setEdits(next);
+              }}
+              onJumpPrev={() => prevNext.prev && setActiveIdx(prevNext.prev.index)}
+              onJumpNext={() => prevNext.next && setActiveIdx(prevNext.next.index)}
+              onClose={() => setActiveIdx(null)}
+            />
+          )}
+          {monacoCollapsed && (
+            <button
+              className="w-7 shrink-0 border-l border-[var(--border-soft)] text-[var(--text-faint)] hover:bg-[var(--row-hover)] hover:text-[var(--text)] flex flex-col items-center justify-center gap-1"
+              onClick={() => setMonacoCollapsed(false)}
+              title={t("missing.monacoExpand")}
+            >
+              <span aria-hidden>◀</span>
+              <span className="text-[9px] [writing-mode:vertical-rl] tracking-wider uppercase">Editor</span>
+            </button>
+          )}
         </div>
       )}
 
@@ -1443,6 +1649,19 @@ export function MissingEditor({ onHome }: Props) {
 
       <MissingDllEditor open={dllOpen} onClose={() => setDllOpen(false)} />
 
+      {/* Command palette (Ctrl+K) — fuzzy-search дій, файлів, фільтрів. */}
+      <CommandPalette
+        open={cmdOpen}
+        onClose={() => setCmdOpen(false)}
+        items={commandItems}
+      />
+
+      {/* Cheatsheet (?). */}
+      <MissingShortcutsModal
+        open={shortcutsOpen}
+        onClose={() => setShortcutsOpen(false)}
+      />
+
       {/* Контекстне меню рядка */}
       {ctxMenu && (
         <>
@@ -1466,27 +1685,27 @@ export function MissingEditor({ onHome }: Props) {
               );
               return (
                 <>
-                  {item("Позначити як чернетку", () => setStatus("draft"), cur?.status === "draft")}
-                  {item("Позначити на перевірку", () => setStatus("review"), cur?.status === "review")}
-                  {item("Затвердити", () => setStatus("approved"), cur?.status === "approved")}
-                  {item("Зняти стан", () => setStatus(undefined), !cur?.status, true)}
+                  {item(t("missing.ctx.markDraft"), () => setStatus("draft"), cur?.status === "draft")}
+                  {item(t("missing.ctx.markReview"), () => setStatus("review"), cur?.status === "review")}
+                  {item(t("missing.ctx.markApproved"), () => setStatus("approved"), cur?.status === "approved")}
+                  {item(t("missing.ctx.clear"), () => setStatus(undefined), !cur?.status, true)}
                   <div className="border-t border-[var(--border-soft)] my-1" />
                   {item(
-                    cur?.bookmark ? "🔖 Прибрати закладку (Ctrl+B)" : "🔖 Закладка (Ctrl+B)",
+                    cur?.bookmark ? t("missing.ctx.bookmarkOff") : t("missing.ctx.bookmark"),
                     () => { patchRowMeta(key, { bookmark: !cur?.bookmark }); close(); },
                   )}
                   {item(
-                    cur?.markedTranslated ? "✓ Зняти позначку «перекладено»" : "✓ Позначити перекладеним",
+                    cur?.markedTranslated ? t("missing.ctx.unmarkTranslated") : t("missing.ctx.markTranslated"),
                     () => { patchRowMeta(key, { markedTranslated: !cur?.markedTranslated }); close(); },
                     !!cur?.markedTranslated,
                   )}
                   <div className="border-t border-[var(--border-soft)] my-1" />
-                  {item("Скопіювати оригінал у переклад", () => {
+                  {item(t("missing.ctx.copyOriginal"), () => {
                     const o = origMsg?.entries[idx]?.text ?? "";
                     setEdits((m) => { const n = new Map(m); n.set(idx, o); return n; });
                     close();
                   })}
-                  {item("Trim пробілів", () => {
+                  {item(t("missing.ctx.trim"), () => {
                     const cur = edits.has(idx) ? (edits.get(idx) ?? "") : (doneMsg?.entries[idx]?.text ?? "");
                     setEdits((m) => { const n = new Map(m); n.set(idx, cur.trim()); return n; });
                     close();
