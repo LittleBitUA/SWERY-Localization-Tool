@@ -1285,7 +1285,9 @@ async function taskHbrCorpusStats(payload) {
 }
 
 const MISSING_PLACEHOLDER_RE = /^[A-Z_0-9]+_en$|^V_[A-Z]{2}_\d{3}$/;
-const MISSING_HAS_CYR = /[Ѐ-ӿ]/;
+// Розширений парсер: повертає strings[] і enums[] (msgBase*10000 + stringIndex),
+// — потрібен щоб у home worker'і узгодити підрахунок з Огляд готовності,
+// який враховує `markedTranslated` ключі з Meta/status.json.
 function missingParseMsgCounts(buf) {
   let script = buf;
   if (buf.length >= 4 && (buf[0] !== 0x4D || buf[1] !== 0x53 || buf[2] !== 0x47)) {
@@ -1296,11 +1298,14 @@ function missingParseMsgCounts(buf) {
       }
     }
   }
-  if (script.length < 0x40) return { strings: [] };
+  if (script.length < 0x40) return { strings: [], enums: [] };
   const dv = new DataView(script.buffer, script.byteOffset, script.byteLength);
+  const lto = dv.getUint32(0x0C, true);  // length-table offset
   const sto = dv.getUint32(0x10, true);
   const sb  = dv.getUint32(0x14, true);
+  const lc  = dv.getUint32(0x2C, true);  // length-table count
   const sc  = dv.getUint32(0x30, true);
+  const msgBase = dv.getUint32(0x38, true);
   const strings = [];
   for (let i = 0; i < sc; i++) {
     const off = dv.getInt32(sto + i * 4, true);
@@ -1309,12 +1314,39 @@ function missingParseMsgCounts(buf) {
     while (end < script.length && script[end] !== 0) end++;
     strings.push(Buffer.from(script.subarray(sb + off, end)).toString('utf8'));
   }
-  return { strings };
+  // Будуємо мапу stringIndex → lengthTable position[0] (як у src/games/missing/parser.ts).
+  const indexToEnumOffset = new Map();
+  for (let i = 0; i < lc; i++) {
+    const stringIndex = dv.getInt32(lto + i * 16, true);
+    if (stringIndex >= 0 && stringIndex < sc && !indexToEnumOffset.has(stringIndex)) {
+      indexToEnumOffset.set(stringIndex, i);
+    }
+  }
+  const enums = [];
+  for (let i = 0; i < sc; i++) {
+    const eOff = indexToEnumOffset.get(i);
+    enums.push(eOff !== undefined ? msgBase * 10000 + eOff : -1);
+  }
+  return { strings, enums };
 }
 async function taskMissingCorpusStatsQuick(payload) {
   const { originalDir, doneDir } = payload;
   let total = 0, translated = 0;
   let files = 0;
+  // Читаємо status.json (Meta/status.json), щоб врахувати manual-marked рядки —
+  // інакше home-екран показує менший % ніж Огляд готовності, де ПКМ-mark
+  // зараховує рядки типу ":)" / "..." як перекладені.
+  const metaDir = path.join(path.dirname(originalDir), 'Meta');
+  const markedKeys = new Set();
+  try {
+    const raw = await fs.readFile(path.join(metaDir, 'status.json'), 'utf8');
+    const j = JSON.parse(raw);
+    if (j && j.rows && typeof j.rows === 'object') {
+      for (const [key, meta] of Object.entries(j.rows)) {
+        if (meta && meta.markedTranslated) markedKeys.add(key);
+      }
+    }
+  } catch {}
   let entries;
   try { entries = await fs.readdir(originalDir); }
   catch { return { total: 0, translated: 0, files: 0, hasData: false }; }
@@ -1327,12 +1359,22 @@ async function taskMissingCorpusStatsQuick(payload) {
       let doneBuf = null;
       try { doneBuf = await fs.readFile(path.join(doneDir, fn)); } catch {}
       const done = doneBuf ? missingParseMsgCounts(doneBuf) : orig;
+      // m_Name з ім'я файлу (без `-<pathId>.dat` суфікса) — потрібно щоб
+      // зіставити з ключами status.json формату `<fileName>::<idx>`.
+      const fileName = fn.replace(/-\d+\.dat$/i, '');
       for (let i = 0; i < orig.strings.length; i++) {
         const o = orig.strings[i] || '';
         if (!o || MISSING_PLACEHOLDER_RE.test(o)) continue;
         total++;
         const d = (done.strings[i] || '');
-        if (d !== o && d.trim().length > 0 && MISSING_HAS_CYR.test(d)) translated++;
+        // 1) Реальний переклад: d не дорівнює o і не порожній. БЕЗ перевірки
+        //    на кирилицю — теж узгоджуємо з Огляд готовності (інакше рядки
+        //    перекладені латиницею типу "OK"→"OK" не рахувалися).
+        if (d !== o && d.trim().length > 0) { translated++; continue; }
+        // 2) Manual markedTranslated: ПКМ → «Позначити перекладеним».
+        const enumN = orig.enums[i];
+        const key = enumN >= 0 ? String(enumN) : `${fileName}::${i}`;
+        if (markedKeys.has(key)) translated++;
       }
     } catch {}
   }
