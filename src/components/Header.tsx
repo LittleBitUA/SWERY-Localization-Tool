@@ -38,7 +38,6 @@ export function Header({
 }: HeaderProps = {}) {
   const t = useT();
   const folder = useStore((s) => s.folder);
-  const pickFolder = useStore((s) => s.pickFolder);
   const dirty = useStore((s) => s.dirty);
   const saveFile = useStore((s) => s.saveFile);
   const selectedFilePath = useStore((s) => s.selectedFilePath);
@@ -212,17 +211,6 @@ export function Header({
           <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
             <path strokeLinecap="round" strokeLinejoin="round" d="M9 19V9m4 10V5m4 14v-6M5 19h14" />
           </svg>
-        </button>
-
-        <button
-          className="dp-btn shrink-0"
-          onClick={pickFolder}
-          title={t("header.folder.hint")}
-        >
-          <svg className="w-3.5 h-3.5 mr-1 inline" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-            <path strokeLinecap="round" strokeLinejoin="round" d="M3 7a2 2 0 012-2h4l2 2h8a2 2 0 012 2v8a2 2 0 01-2 2H5a2 2 0 01-2-2V7z" />
-          </svg>
-          {t("header.folder")}
         </button>
 
         <LangToggle compact />

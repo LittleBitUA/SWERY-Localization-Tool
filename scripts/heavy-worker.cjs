@@ -252,12 +252,39 @@ function countWords(s) {
   return trimmed.split(/\s+/).filter(Boolean).length;
 }
 
+// Ключ статусу для DP2 entry (паралель до src/lib/store.ts → dp2StatusKey).
+// Format: `<fileName>::<id|"_">::<sheetIndex>:<listIndex>[:<scenarioIndex>]`.
+function dp2StatusKeyForEntry(e) {
+  const base = (e.filePath.split(/[\\/]/).pop()) || e.filePath;
+  const tail = e.kind === 'sentence'
+    ? `${e.sheetIndex}:${e.listIndex}:${e.scenarioIndex}`
+    : `${e.sheetIndex}:${e.listIndex}`;
+  return `${base}::${e.id || '_'}::${tail}`;
+}
+
+async function readDp2StatusFile(folder) {
+  // Файл лежить у `<folder>/.dp-status.json`. Якщо нема — пуста мапа.
+  const sep = folder.includes('\\') ? '\\' : '/';
+  const p = folder.endsWith(sep) ? folder + '.dp-status.json' : folder + sep + '.dp-status.json';
+  try {
+    const raw = await fs.readFile(p, 'utf8');
+    const j = JSON.parse(raw);
+    if (j && j.entries && typeof j.entries === 'object') return j.entries;
+  } catch {}
+  return {};
+}
+
 async function taskCorpusStats(folder) {
   const summary = {
     files: 0,
     totalEntries: 0,
     translatedEntries: 0,
+    /** «Готовність редагування» — рядки явно затверджені через ПКМ → Затвердити.
+     *  Окрема метрика поряд з translatedEntries (translated = реально-перекладені).
+     *  Home-екран DP2 буде показувати approvedEntries як прогрес «готовності». */
+    approvedEntries: 0,
     percent: 0,
+    approvedPercent: 0,
     uaWords: 0,
     enWords: 0,
     uaChars: 0,
@@ -265,13 +292,17 @@ async function taskCorpusStats(folder) {
     topFiles: [],
   };
   if (!folder) return summary;
-  const all = await readAllFromFolder(folder);
+  const [all, statusEntries] = await Promise.all([
+    readAllFromFolder(folder),
+    readDp2StatusFile(folder),
+  ]);
   const perFile = [];
   for (const f of all) {
     const entries = getEntries(f);
     if (!entries) continue;
     let fileTotal = 0;
     let fileTrans = 0;
+    let fileApproved = 0;
     for (const e of entries) {
       fileTotal++;
       if (isTranslated(e)) {
@@ -284,19 +315,27 @@ async function taskCorpusStats(folder) {
         summary.enWords += countWords(text);
         summary.enChars += text.length;
       }
+      const key = dp2StatusKeyForEntry(e);
+      const st = statusEntries[key];
+      if (st && st.status === 'approved') fileApproved++;
     }
     summary.totalEntries += fileTotal;
     summary.translatedEntries += fileTrans;
+    summary.approvedEntries += fileApproved;
     summary.files++;
     const fileName = (f.path.split(/[\\/]/).pop() || f.path).replace(/\.json$/i, '');
     perFile.push({
       fileName, filePath: f.path,
-      total: fileTotal, translated: fileTrans,
+      total: fileTotal, translated: fileTrans, approved: fileApproved,
       percent: fileTotal ? +(fileTrans / fileTotal * 100).toFixed(2) : 0,
+      approvedPercent: fileTotal ? +(fileApproved / fileTotal * 100).toFixed(2) : 0,
     });
   }
   summary.percent = summary.totalEntries
     ? +(summary.translatedEntries / summary.totalEntries * 100).toFixed(2)
+    : 0;
+  summary.approvedPercent = summary.totalEntries
+    ? +(summary.approvedEntries / summary.totalEntries * 100).toFixed(2)
     : 0;
   // Топ-15 за обсягом — більше не вміщається у модалку без скролу.
   perFile.sort((a, b) => b.total - a.total);

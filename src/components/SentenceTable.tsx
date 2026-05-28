@@ -470,11 +470,15 @@ export function SentenceTable() {
         </table>
       </div>
 
-      {/* Context menu */}
+      {/* Context menu — позиція clamped, щоб не вилазило за viewport
+         (інакше на нижніх рядках частина пунктів не видно). */}
       {ctxMenu && (
         <div
-          className="fixed z-50 dp-card py-1 text-[12px] min-w-[220px]"
-          style={{ left: ctxMenu.x, top: ctxMenu.y }}
+          className="fixed z-50 dp-card py-1 text-[12px] min-w-[240px] shadow-xl"
+          style={{
+            left: Math.min(ctxMenu.x, window.innerWidth - 260),
+            top: Math.min(ctxMenu.y, window.innerHeight - 320),
+          }}
           onMouseDown={(e) => e.stopPropagation()}
         >
           {(() => {

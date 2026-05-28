@@ -160,11 +160,20 @@ export function HomeV2({ onPickGame, onOpenSetup, onOpenFolder, onOpenRecent }: 
         if (settings.lastFolder) {
           window.dp2.corpusStatsWorker({ folder: settings.lastFolder })
             .then((stats) => {
+              // На home показуємо «готовність редагування» — кількість рядків,
+              // які явно затверджені через ПКМ → Затвердити (status="approved").
+              // Це показує що "готово до пакування у гру", а не "просто щось
+              // друкнуто". Якщо status.json порожній або approved=0 — fallback
+              // на translatedEntries, щоб новий проєкт не показував 0% даремно.
+              const approved = stats.approvedEntries;
+              const done = typeof approved === "number" && approved > 0
+                ? approved
+                : stats.translatedEntries;
               setState((prev) => ({
                 ...prev,
                 dp2: {
                   hasPath: true,
-                  progress: { done: stats.translatedEntries, total: stats.totalEntries },
+                  progress: { done, total: stats.totalEntries },
                 },
               }));
             })

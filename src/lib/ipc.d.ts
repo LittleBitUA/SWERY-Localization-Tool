@@ -696,6 +696,10 @@ export interface CorpusStats {
   files: number;
   totalEntries: number;
   translatedEntries: number;
+  /** «Готовність редагування» — рядки явно затверджені через ПКМ → Затвердити.
+   *  Опційне поле — присутнє у DP2 corpus-stats; у MISSING/HBR/DP1 — undefined. */
+  approvedEntries?: number;
+  approvedPercent?: number;
   percent: number;
   uaWords: number;
   enWords: number;
@@ -707,6 +711,8 @@ export interface CorpusStats {
     total: number;
     translated: number;
     percent: number;
+    approved?: number;
+    approvedPercent?: number;
   }>;
 }
 
