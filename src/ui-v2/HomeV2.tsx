@@ -86,7 +86,7 @@ export function HomeV2({ onPickGame, onOpenSetup, onOpenFolder, onOpenRecent }: 
   const [mounted, setMounted] = useState(false);
   const [state, setState] = useState<Record<GameId, {
     hasPath: boolean;
-    progress: { done: number; total: number } | null;
+    progress: { done: number; total: number; approved?: number } | null;
   }>>({
     dp1: { hasPath: false, progress: null },
     dp2: { hasPath: false, progress: null },
@@ -160,20 +160,19 @@ export function HomeV2({ onPickGame, onOpenSetup, onOpenFolder, onOpenRecent }: 
         if (settings.lastFolder) {
           window.dp2.corpusStatsWorker({ folder: settings.lastFolder })
             .then((stats) => {
-              // На home показуємо «готовність редагування» — кількість рядків,
-              // які явно затверджені через ПКМ → Затвердити (status="approved").
-              // Це показує що "готово до пакування у гру", а не "просто щось
-              // друкнуто". Якщо status.json порожній або approved=0 — fallback
-              // на translatedEntries, щоб новий проєкт не показував 0% даремно.
-              const approved = stats.approvedEntries;
-              const done = typeof approved === "number" && approved > 0
-                ? approved
-                : stats.translatedEntries;
+              // На home показуємо ПЕРЕКЛАДЕНІ рядки як основну метрику (це
+              // те, що користувач сприймає як «готовність» — реальна робота
+              // перекладу). approvedEntries (явно затверджені через ПКМ →
+              // Затвердити) показуємо як додаткову info нижче.
               setState((prev) => ({
                 ...prev,
                 dp2: {
                   hasPath: true,
-                  progress: { done, total: stats.totalEntries },
+                  progress: {
+                    done: stats.translatedEntries,
+                    total: stats.totalEntries,
+                    approved: stats.approvedEntries,
+                  },
                 },
               }));
             })
@@ -343,9 +342,17 @@ export function HomeV2({ onPickGame, onOpenSetup, onOpenFolder, onOpenRecent }: 
                     <div className="v2-folder__field">
                       <span className="v2-folder__field-label">{t("home.v2.field.progress")}</span>
                       <span className="v2-folder__field-value">
-                        {pct !== null && s.progress
-                          ? `${s.progress.done.toLocaleString("uk-UA")} / ${s.progress.total.toLocaleString("uk-UA")} · ${pct}%`
-                          : "—"}
+                        {pct !== null && s.progress ? (
+                          <>
+                            {`${s.progress.done.toLocaleString("uk-UA")} / ${s.progress.total.toLocaleString("uk-UA")} · ${pct}%`}
+                            {s.progress.approved !== undefined && s.progress.approved > 0 && (
+                              <span className="block text-[10px] mt-0.5 opacity-70">
+                                затверджено: {s.progress.approved.toLocaleString("uk-UA")}
+                                {s.progress.total > 0 && ` · ${((s.progress.approved / s.progress.total) * 100).toFixed(1)}%`}
+                              </span>
+                            )}
+                          </>
+                        ) : "—"}
                       </span>
                     </div>
 
