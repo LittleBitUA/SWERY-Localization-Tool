@@ -3510,6 +3510,109 @@ async function missingTextDirs() {
   };
 }
 
+// «Зібрати білд для релізу» — копіює усі модифіковані ігрові файли (ті, для
+// яких є .bak) у `<docs>/SWERY-Localization-Tool/MISSING/Release/<relative-path>`.
+// Логіка: рекурсивно обходимо <gameData> і його підтеки, шукаємо `*.bak`, для
+// кожного знайденого backup-файла копіюємо «живий» counterpart (без .bak/.tex.bak/
+// .resS.bak/.uitxt.bak/.dll.bak суфіксів). Це дає мінімальний набір файлів, які
+// користувач має покласти у свою гру, щоб отримати локалізацію.
+ipcMain.handle("dp2:missing-build-release", async () => {
+  try {
+    const settings = await readSettings();
+    const assetsPath = settings.missingAssetsPath;
+    if (!assetsPath) return { ok: false, error: "missingAssetsPath не задано" };
+    const dataDir = path.dirname(assetsPath); // ...\TheMISSING_Data
+    // Корінь гри = parent від data-dir (на випадок, якщо колись треба буде
+    // включати щось поза _Data, типу Steam-DRM patches). Зараз обмежуємось
+    // самим _Data.
+    const gameRoot = path.dirname(dataDir);
+    const toolsDir = settings.toolsDir || path.join(app.getPath("documents"), "SWERY-Localization-Tool");
+    const releaseDir = path.join(toolsDir, "MISSING", "Release");
+
+    // Розпізнаємо різні .bak-суфікси, які наш pipeline створює.
+    const BAK_SUFFIXES = [".bak", ".tex.bak", ".resS.bak", ".uitxt.bak", ".dll.bak"];
+    function stripBak(name) {
+      for (const s of BAK_SUFFIXES) {
+        if (name.toLowerCase().endsWith(s)) return name.slice(0, -s.length);
+      }
+      return null;
+    }
+
+    // Рекурсивний walk з обмеженням на 4 рівні (без сюрпризів типу __MACOSX).
+    const found = [];
+    async function walk(dir, depth) {
+      if (depth > 4) return;
+      let ents;
+      try { ents = await fs.readdir(dir, { withFileTypes: true }); } catch { return; }
+      for (const e of ents) {
+        const p = path.join(dir, e.name);
+        if (e.isDirectory()) {
+          await walk(p, depth + 1);
+          continue;
+        }
+        const liveName = stripBak(e.name);
+        if (!liveName) continue;
+        const live = path.join(dir, liveName);
+        try { await fs.access(live); } catch { continue; } // нема живого counterpart'у
+        found.push(live);
+      }
+    }
+    await walk(dataDir, 0);
+
+    if (found.length === 0) {
+      return { ok: false, error: "Не знайдено жодного модифікованого файлу (.bak відсутні). Спочатку запакуй текст/текстури/шрифти/DLL у гру." };
+    }
+
+    // Чистимо попередню Release-теку (щоб не лишалися застарілі файли).
+    try { await fs.rm(releaseDir, { recursive: true, force: true }); } catch {}
+    await fs.mkdir(releaseDir, { recursive: true });
+
+    const filesCopied = [];
+    let totalSize = 0;
+    for (const src of found) {
+      const rel = path.relative(gameRoot, src);
+      const dst = path.join(releaseDir, rel);
+      await fs.mkdir(path.dirname(dst), { recursive: true });
+      await fs.copyFile(src, dst);
+      const st = await fs.stat(dst);
+      filesCopied.push({ rel: rel.replace(/\\/g, "/"), size: st.size });
+      totalSize += st.size;
+    }
+
+    // Шапка з версією + датою + інструкція як використати реліз.
+    let pkgVersion = "?";
+    try { pkgVersion = require("../package.json").version; } catch {}
+    const ts = new Date().toISOString().replace("T", " ").slice(0, 19);
+    const lines = [
+      `# THE MISSING — Ukrainian Localization Release`,
+      `# Built: ${ts}`,
+      `# Tool version: SWERY Localization Tool v${pkgVersion}`,
+      `#`,
+      `# Інструкція:`,
+      `#  1. Закрий гру.`,
+      `#  2. Зроби резервну копію оригінальних файлів зі своєї гри (на випадок).`,
+      `#  3. Скопіюй увесь вміст цієї теки у корінь TheMISSING (де лежить TheMISSING.exe),`,
+      `#     ПЕРЕЗАПИШИ існуючі файли. Відносна структура збережена.`,
+      `#  4. Запускай гру через Steam — українська локалізація буде активна.`,
+      `#`,
+      `# Файли (${filesCopied.length}, ${(totalSize / (1024*1024)).toFixed(1)} MB):`,
+      ``,
+      ...filesCopied.map((f) => `  ${f.rel}  (${(f.size / (1024*1024)).toFixed(2)} MB)`),
+    ];
+    await fs.writeFile(path.join(releaseDir, "README.txt"), lines.join("\r\n"), "utf8");
+
+    return {
+      ok: true,
+      releaseDir,
+      files: filesCopied,
+      count: filesCopied.length,
+      totalSize,
+    };
+  } catch (e) {
+    return { ok: false, error: String(e.message || e) };
+  }
+});
+
 ipcMain.handle("dp2:missing-prep-status", async () => {
   const settings = await readSettings();
   const assetsPath = settings.missingAssetsPath || null;

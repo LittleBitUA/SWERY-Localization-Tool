@@ -82,6 +82,14 @@ interface MissingApi {
   missingUiTextExport: (payload?: { outFile?: string; includeNonAscii?: boolean }) => Promise<{ ok: boolean; error?: string; outFile?: string; summary?: { entries: number } }>;
   missingUiTextImport: (payload?: { inFile?: string }) => Promise<{ ok: boolean; error?: string; inFile?: string; summary?: { applied: number; skippedSame: number; missing: number } }>;
   missingUiTextImportInline: (payload: { content: string }) => Promise<{ ok: boolean; error?: string; summary?: { applied: number; skippedSame: number; missing: number } }>;
+  missingBuildRelease: () => Promise<{
+    ok: boolean;
+    error?: string;
+    releaseDir?: string;
+    files?: Array<{ rel: string; size: number }>;
+    count?: number;
+    totalSize?: number;
+  }>;
   launchUabea: () => Promise<{ success: boolean; error?: string }>;
   onMissingPrepProgress: (cb: (line: string) => void) => () => void;
   onMissingPackProgress: (cb: (line: string) => void) => () => void;
@@ -417,6 +425,33 @@ export function MissingEditor({ onHome }: Props) {
   }, [heightInfo]);
 
   // Користувацький trigger — кнопка у header'і "Extract box-sizes".
+  // «Зібрати білд для релізу» — копіює усі модифіковані ігрові файли (ті,
+  // для яких є .bak у teMISSING_Data) у Documents\…\MISSING\Release\
+  // + README.txt з інструкцією. Після цього відкриваємо теку у Explorer.
+  const [buildingRelease, setBuildingRelease] = useState(false);
+  async function runBuildRelease() {
+    if (buildingRelease) return;
+    setBuildingRelease(true);
+    try {
+      const r = await W.missingBuildRelease();
+      if (!r.ok) {
+        await dpAlert("Зібрати білд", r.error ?? "?", { tone: "danger" });
+        return;
+      }
+      const sizeMb = ((r.totalSize ?? 0) / (1024 * 1024)).toFixed(1);
+      const ok = await dpConfirm(
+        "Білд готовий",
+        `Скопійовано ${r.count ?? 0} файлів (${sizeMb} MB) у:\n${r.releaseDir}\n\nВідкрити теку у Провіднику?`,
+        { okLabel: "Відкрити", cancelLabel: "Закрити", tone: "success" },
+      );
+      if (ok && r.releaseDir) {
+        (window.dp2 as unknown as { openFolder?: (p: string) => void }).openFolder?.(r.releaseDir);
+      }
+    } finally {
+      setBuildingRelease(false);
+    }
+  }
+
   async function runBoxsizeExtract() {
     setExtractingBox(true);
     try {
@@ -1245,6 +1280,13 @@ export function MissingEditor({ onHome }: Props) {
       });
     }
     out.push({
+      id: "build-release", category: CAT_TOOLS, icon: "📦",
+      label: buildingRelease ? "Збираю білд…" : "Зібрати білд для релізу",
+      keywords: "release build збирати ship реліз готовий",
+      disabled: buildingRelease,
+      run: () => { void runBuildRelease(); },
+    });
+    out.push({
       id: "dialogfix",
       category: CAT_TOOLS,
       icon: dialogFixPatched === true ? "✓" : "🪄",
@@ -1299,7 +1341,7 @@ export function MissingEditor({ onHome }: Props) {
   }, [
     edits.size, saving, packing, exporting, importing, files, fileStats,
     rowFilter, monacoCollapsed, heightInfo, targetLang, dialogFixBusy,
-    dialogFixPatched, extractingBox,
+    dialogFixPatched, extractingBox, buildingRelease,
   ]);
 
   return (
@@ -1364,6 +1406,15 @@ export function MissingEditor({ onHome }: Props) {
                   onClick: () => { void applyDialogFix(); },
                 });
                 items.push({ icon: "🔧", label: t("missing.header.menuDll"), onClick: () => setDllOpen(true) });
+                items.push({});
+                items.push({
+                  icon: "📦",
+                  label: buildingRelease ? "Збираю білд…" : "Зібрати білд для релізу",
+                  title: "Копіює всі модифіковані ігрові файли (.bak counterparts) у Documents/SWERY-Localization-Tool/MISSING/Release/",
+                  disabled: buildingRelease,
+                  tone: "success",
+                  onClick: () => { void runBuildRelease(); },
+                });
                 return items;
               })()}
             />

@@ -167,6 +167,7 @@ contextBridge.exposeInMainWorld("dp2", {
   missingUiTextExport: (payload) => ipcRenderer.invoke("dp2:missing-ui-text-export", payload),
   missingUiTextImport: (payload) => ipcRenderer.invoke("dp2:missing-ui-text-import", payload),
   missingUiTextImportInline: (payload) => ipcRenderer.invoke("dp2:missing-ui-text-import-inline", payload),
+  missingBuildRelease: () => ipcRenderer.invoke("dp2:missing-build-release"),
   onMissingPrepProgress: (cb) => {
     const h = (_e, payload) => cb(payload);
     ipcRenderer.on("dp2:missing-prep-progress", h);
