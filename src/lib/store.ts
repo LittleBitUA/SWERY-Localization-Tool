@@ -19,8 +19,10 @@ let _loadFileGen = 0;
 import {
   emptyStatusFile,
   pruneEntry,
+  pruneFileMeta,
   readStatusFile,
   writeStatusFile,
+  type FileMeta,
   type StatusEntry,
   type StatusFile,
   type StatusKind,
@@ -102,6 +104,13 @@ interface State {
    * відкритий — перезавантажить ентрі. Повертає true, якщо успіх.
    */
   restoreOriginal: (filePath: string) => Promise<boolean>;
+  /** Файл-level: позначити всі рядки markedTranslated=true/false (Зекономлено
+   *  Перекладено). Читає файл через IPC, парсить, оновлює entries map. */
+  bulkMarkFileTranslated: (filePath: string, mark: boolean) => Promise<{ count: number }>;
+  /** Файл-level: «Зредаговано» — файл малюється помаранчевим у sidebar. */
+  setFileEdited: (filePath: string, edited: boolean) => Promise<void>;
+  /** Зчитати file-meta для FileNode (`allTranslated` / `edited` прапорці). */
+  getFileMeta: (filePath: string) => import("./status").FileMeta | undefined;
   /** Зробити snapshot поточного entries+tree для майбутнього undo. */
   pushUndo: (label: string) => void;
   /** Чи є відкатуване — для UI Ctrl+Z indicator. */
@@ -518,6 +527,58 @@ export const useStore = create<State>((set, get) => ({
     }
     get().refreshFileMeta(filePath);
     return true;
+  },
+
+  // ── File-level marks (ПКМ → «Перекладено» / «Зредаговано») ─────────────
+  async bulkMarkFileTranslated(filePath, mark) {
+    const { folder, statuses } = get();
+    if (!folder) return { count: 0 };
+    try {
+      const [raw, bak] = await Promise.all([
+        window.dp2.readFile(filePath),
+        window.dp2.readBackup(filePath),
+      ]);
+      const tree = JSON.parse(raw);
+      let originalTree: any = null;
+      if (bak) { try { originalTree = JSON.parse(bak); } catch {} }
+      const entries = flatten(filePath, tree, originalTree);
+      const keys = entries.map(dp2StatusKey);
+      const map = { ...statuses.entries };
+      for (const k of keys) {
+        const cur = map[k] ?? {};
+        map[k] = { ...cur, markedTranslated: mark ? true : undefined };
+      }
+      // Файл-level прапор: «всі рядки позначені перекладеними» — щоб FileList
+      // міг швидко малювати файл зеленим без перепідрахунку.
+      const files = { ...(statuses.files ?? {}) };
+      const cur = files[filePath] ?? {};
+      files[filePath] = { ...cur, allTranslated: mark ? true : undefined };
+      let next: StatusFile = { ...statuses, entries: map, files };
+      for (const k of keys) next = pruneEntry(next, k);
+      next = pruneFileMeta(next, filePath);
+      set({ statuses: next });
+      try { await writeStatusFile(statusFilePath(folder), next); } catch {}
+      return { count: keys.length };
+    } catch (e) {
+      console.warn("bulkMarkFileTranslated failed:", e);
+      return { count: 0 };
+    }
+  },
+
+  async setFileEdited(filePath, edited) {
+    const { folder, statuses } = get();
+    if (!folder) return;
+    const files = { ...(statuses.files ?? {}) };
+    const cur = files[filePath] ?? {};
+    files[filePath] = { ...cur, edited: edited ? true : undefined };
+    let next: StatusFile = { ...statuses, files };
+    next = pruneFileMeta(next, filePath);
+    set({ statuses: next });
+    try { await writeStatusFile(statusFilePath(folder), next); } catch {}
+  },
+
+  getFileMeta(filePath): FileMeta | undefined {
+    return get().statuses.files?.[filePath];
   },
 
   importTxtContent(txt) {

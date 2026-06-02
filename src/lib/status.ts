@@ -15,14 +15,24 @@ export interface StatusEntry {
   markedTranslated?: true;
 }
 
+/** File-level marks (для DP2 ПКМ-меню на файл у sidebar). */
+export interface FileMeta {
+  /** «Перекладено» — усі рядки явно позначені перекладеними. Файл малюється зеленим. */
+  allTranslated?: true;
+  /** «Зредаговано» — файл прозвучаний пройдений редактором. Малюється помаранчевим. */
+  edited?: true;
+}
+
 export interface StatusFile {
   version: 1;
   /** Мапа key → стан. Key — стабільний ідентифікатор запису у грі. */
   entries: Record<string, StatusEntry>;
+  /** Файлові марки. Ключ — повний шлях до файлу. */
+  files?: Record<string, FileMeta>;
 }
 
 export function emptyStatusFile(): StatusFile {
-  return { version: 1, entries: {} };
+  return { version: 1, entries: {}, files: {} };
 }
 
 export async function readStatusFile(path: string): Promise<StatusFile> {
@@ -50,4 +60,14 @@ export function pruneEntry(file: StatusFile, key: string): StatusFile {
   if (!isEmpty) return file;
   const { [key]: _drop, ...rest } = file.entries;
   return { ...file, entries: rest };
+}
+
+/** Видалити file-meta, якщо обидва прапорці зняті. */
+export function pruneFileMeta(file: StatusFile, path: string): StatusFile {
+  if (!file.files) return file;
+  const cur = file.files[path];
+  if (!cur) return file;
+  if (cur.allTranslated || cur.edited) return file;
+  const { [path]: _drop, ...rest } = file.files;
+  return { ...file, files: rest };
 }

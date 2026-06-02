@@ -16,22 +16,45 @@ function FileNode({
 }) {
   const selectedFilePath = useStore((s) => s.selectedFilePath);
   const loadFile = useStore((s) => s.loadFile);
+  // File-level marks (з ПКМ-меню): edited → помаранчевий, allTranslated → зелений.
+  const fileMeta = useStore((s) => s.statuses.files?.[node.path]);
 
   const isActive = node.path === selectedFilePath;
   const total = node.totalEntries ?? 0;
   const translated = node.translatedCount ?? 0;
   const pct = total > 0 ? Math.round((translated / total) * 100) : 0;
   const isComplete = total > 0 && translated >= total;
+  const isMarkedAll = !!fileMeta?.allTranslated;
+  const isEdited = !!fileMeta?.edited;
   const padLeft = 8 + depth * 14;
 
-  // Якщо файл повністю перекладено — назва і лічильник у success-кольорі,
-  // прогрес-бар теж зелений. Active state перекриває success (білий текст
-  // на акцент-фоні залишається читабельним).
-  const baseColor = isActive
-    ? "text-[var(--text-strong)]"
-    : isComplete
-    ? "text-[var(--success)] hover:text-[var(--success)]"
-    : "text-[var(--text-muted)] hover:text-[var(--text)]";
+  // Пріоритет кольорів: edited (помаранчевий) > complete/allTranslated (зелений)
+  // > default. Active state перекриває все — переходимо на яскравий strong.
+  const tone: "active" | "edited" | "done" | "default" = isActive
+    ? "active"
+    : isEdited
+    ? "edited"
+    : (isComplete || isMarkedAll)
+    ? "done"
+    : "default";
+  const TONE_TEXT: Record<typeof tone, string> = {
+    active: "text-[var(--text-strong)]",
+    edited: "text-[var(--warning,#d97706)] hover:text-[var(--warning,#d97706)]",
+    done: "text-[var(--success)] hover:text-[var(--success)]",
+    default: "text-[var(--text-muted)] hover:text-[var(--text)]",
+  };
+  const TONE_ICON: Record<typeof tone, string> = {
+    active: "text-[var(--text-faint)]",
+    edited: "text-[var(--warning,#d97706)]",
+    done: "text-[var(--success)]",
+    default: "text-[var(--text-faint)]",
+  };
+  const TONE_BAR: Record<typeof tone, string> = {
+    active: "bg-[var(--accent)]",
+    edited: "bg-[var(--warning,#d97706)]",
+    done: "bg-[var(--success)]",
+    default: "bg-[var(--accent)]",
+  };
 
   return (
     <button
@@ -39,18 +62,21 @@ function FileNode({
       onContextMenu={(e) => onContext(e, node)}
       className={`group w-full text-left py-1 transition-colors ${
         isActive ? "bg-[var(--row-active)]" : "hover:bg-[var(--row-hover)]"
-      } ${baseColor}`}
+      } ${TONE_TEXT[tone]}`}
       style={{ paddingLeft: padLeft, paddingRight: 8 }}
     >
       <div className="flex items-center gap-1.5">
         <svg
-          className={`w-3.5 h-3.5 shrink-0 ${isComplete ? "text-[var(--success)]" : "text-[var(--text-faint)]"}`}
+          className={`w-3.5 h-3.5 shrink-0 ${TONE_ICON[tone]}`}
           fill="none"
           viewBox="0 0 24 24"
           stroke="currentColor"
           strokeWidth={2}
         >
-          {isComplete ? (
+          {tone === "edited" ? (
+            // Pen icon — означає «файл зредаговано».
+            <path strokeLinecap="round" strokeLinejoin="round" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" />
+          ) : (tone === "done") ? (
             <path strokeLinecap="round" strokeLinejoin="round" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" />
           ) : (
             <path strokeLinecap="round" strokeLinejoin="round" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
@@ -61,7 +87,9 @@ function FileNode({
         </span>
         {total > 0 && (
           <span className={`text-[10px] tabular-nums shrink-0 ${
-            isComplete ? "text-[var(--success)] font-semibold" : "text-[var(--text-faint)]"
+            tone === "done" ? "text-[var(--success)] font-semibold"
+              : tone === "edited" ? "text-[var(--warning,#d97706)] font-semibold"
+              : "text-[var(--text-faint)]"
           }`}>
             {translated}/{total}
           </span>
@@ -70,7 +98,7 @@ function FileNode({
       {total > 0 && (
         <div className="mt-1 h-[2px] rounded-full bg-[var(--border-soft)] overflow-hidden" style={{ marginLeft: 18 }}>
           <div
-            className={`h-full transition-all ${isComplete ? "bg-[var(--success)]" : "bg-[var(--accent)]"}`}
+            className={`h-full transition-all ${TONE_BAR[tone]}`}
             style={{ width: `${pct}%` }}
           />
         </div>
@@ -154,6 +182,9 @@ export function FileList() {
   const pickFolder = useStore((s) => s.pickFolder);
   const loading = useStore((s) => s.loading);
   const restoreOriginal = useStore((s) => s.restoreOriginal);
+  const bulkMarkFileTranslated = useStore((s) => s.bulkMarkFileTranslated);
+  const setFileEdited = useStore((s) => s.setFileEdited);
+  const filesMeta = useStore((s) => s.statuses.files);
 
   const [ctxMenu, setCtxMenu] = useState<CtxMenuState | null>(null);
 
@@ -227,20 +258,52 @@ export function FileList() {
         )}
       </div>
 
-      {ctxMenu && (
-        <div
-          className="fixed z-50 dp-card py-1 text-[12px] min-w-[220px]"
-          style={{ left: ctxMenu.x, top: ctxMenu.y }}
-          onMouseDown={(e) => e.stopPropagation()}
-        >
-          <button
-            onClick={() => handleRestore(ctxMenu.node)}
-            className="block w-full text-left px-3 py-1.5 hover:bg-[var(--row-hover)]"
+      {ctxMenu && (() => {
+        const meta = filesMeta?.[ctxMenu.node.path];
+        const allTranslated = !!meta?.allTranslated;
+        const edited = !!meta?.edited;
+        const close = () => setCtxMenu(null);
+        return (
+          <div
+            className="fixed z-50 dp-card py-1 text-[12px] min-w-[260px] shadow-xl"
+            style={{
+              left: Math.min(ctxMenu.x, window.innerWidth - 280),
+              top: Math.min(ctxMenu.y, window.innerHeight - 240),
+            }}
+            onMouseDown={(e) => e.stopPropagation()}
           >
-            {t("files.restoreOriginal")}
-          </button>
-        </div>
-      )}
+            <div className="px-3 py-1 text-[10.5px] text-[var(--text-faint)] font-mono truncate" title={ctxMenu.node.name}>
+              {ctxMenu.node.name}
+            </div>
+            <div className="border-t border-[var(--border-soft)] my-1" />
+            <button
+              onClick={async () => {
+                close();
+                await bulkMarkFileTranslated(ctxMenu.node.path, !allTranslated);
+              }}
+              className={`block w-full text-left px-3 py-1.5 hover:bg-[var(--row-hover)] ${allTranslated ? "text-[var(--success)] font-semibold" : ""}`}
+            >
+              {allTranslated ? "✓ Зняти позначку «Перекладено»" : "✓ Позначити «Перекладено»"}
+            </button>
+            <button
+              onClick={async () => {
+                close();
+                await setFileEdited(ctxMenu.node.path, !edited);
+              }}
+              className={`block w-full text-left px-3 py-1.5 hover:bg-[var(--row-hover)] ${edited ? "text-[var(--warning,#d97706)] font-semibold" : ""}`}
+            >
+              {edited ? "✎ Зняти позначку «Зредаговано»" : "✎ Позначити «Зредаговано»"}
+            </button>
+            <div className="border-t border-[var(--border-soft)] my-1" />
+            <button
+              onClick={() => handleRestore(ctxMenu.node)}
+              className="block w-full text-left px-3 py-1.5 hover:bg-[var(--row-hover)]"
+            >
+              {t("files.restoreOriginal")}
+            </button>
+          </div>
+        );
+      })()}
     </aside>
   );
 }

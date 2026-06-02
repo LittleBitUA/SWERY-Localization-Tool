@@ -305,7 +305,12 @@ async function taskCorpusStats(folder) {
     let fileApproved = 0;
     for (const e of entries) {
       fileTotal++;
-      if (isTranslated(e)) {
+      const key = dp2StatusKeyForEntry(e);
+      const st = statusEntries[key];
+      // Реальний переклад АБО manual ПКМ-mark «Перекладено» (markedTranslated).
+      const realTranslated = isTranslated(e);
+      const counts = realTranslated || (st && st.markedTranslated);
+      if (counts) {
         fileTrans++;
         const text = e.en || '';
         summary.uaWords += countWords(text);
@@ -315,8 +320,6 @@ async function taskCorpusStats(folder) {
         summary.enWords += countWords(text);
         summary.enChars += text.length;
       }
-      const key = dp2StatusKeyForEntry(e);
-      const st = statusEntries[key];
       if (st && st.status === 'approved') fileApproved++;
     }
     summary.totalEntries += fileTotal;
