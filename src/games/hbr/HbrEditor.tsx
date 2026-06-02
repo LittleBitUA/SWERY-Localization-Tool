@@ -1112,6 +1112,37 @@ export function HbrEditor({ onHome }: Props) {
     showOk(`Auto-fill: ${applied} рядків з Translation Memory`, "Translation Memory");
   }
 
+  // Знайти перший неперекладений рядок у всьому проєкті. Іде по всіх файлах,
+  // парсить кожен, шукає item де парсер не вважає рядок перекладеним AND
+  // markedTranslated не виставлено. Якщо знайдено — відкриває файл і ставить
+  // активним рядком. Корисно, коли загальний % застряг на 99.9% і не зрозуміло,
+  // де саме той 1 рядок.
+  async function findFirstUntranslated() {
+    if (!files.length) return;
+    const w = window.dp2 as unknown as { hbrTextRead: (p: string) => Promise<{ ok: boolean; raw?: string }> };
+    // Серіально, не паралельно — бо хочемо ПЕРШИЙ за алфавітом, не випадковий.
+    for (const f of files) {
+      try {
+        const [d, o] = await Promise.all([w.hbrTextRead(f.donePath), w.hbrTextRead(f.origPath)]);
+        if (!d.ok || !d.raw) continue;
+        const p = parseHbrJson(d.raw, o.ok ? o.raw! : null, f.donePath, f.origPath);
+        for (let i = 0; i < p.items.length; i++) {
+          const it = p.items[i];
+          if (isHbrItemTranslatedByParser(it.original, it.current)) continue;
+          if (isHbrSystemRow(it.original)) continue; // система — пропускаємо
+          const sk = statusKey(f.file, it.textId, it.variantIdx);
+          if (statusFile.entries[sk]?.markedTranslated) continue;
+          // Знайдено! Відкриваємо файл, ставимо активним рядок.
+          await openFile(f);
+          setActiveItemIndex(i);
+          showOk(`Знайдено у ${f.file}, textId=${it.textId}`, "Untranslated");
+          return;
+        }
+      } catch { /* skip broken file */ }
+    }
+    showOk("Усі рядки перекладені або позначені перекладеними 🎉", "Untranslated");
+  }
+
   // Перевірка patch-міграції: коли редактор стає ready, питаємо main чи bundle
   // на диску ще відповідає тому, з якого ми робили extract. Якщо ні — піднімаємо
   // банер з кнопкою "Перемігрувати".
@@ -1538,6 +1569,13 @@ export function HbrEditor({ onHome }: Props) {
       run: () => { void rebuildTm(); },
     });
     out.push({
+      id: "find-untranslated", category: "Інструменти", icon: "🔎",
+      label: "Знайти перший неперекладений рядок",
+      keywords: "untranslated 99 99% missing search неперекладений",
+      disabled: files.length === 0,
+      run: () => { void findFirstUntranslated(); },
+    });
+    out.push({
       id: "glossary", category: "Інструменти", icon: "📚", label: "Glossary…",
       disabled: !status?.doneDir, run: () => setGlossaryOpen(true),
     });
@@ -1621,6 +1659,7 @@ export function HbrEditor({ onHome }: Props) {
                 { icon: "🔍", label: "Знайти / Замінити", shortcut: "Ctrl+H", disabled: !parsed || !parsed.items.length, onClick: () => setFindReplaceOpen(true) },
                 {},
                 { icon: "✨", label: `Translation Memory: auto-fill`, title: `${tm.size} оригіналів у пам'яті`, disabled: !parsed || tm.size === 0, onClick: () => applyTmToActiveFile() },
+                { icon: "🔎", label: "Знайти неперекладений рядок", title: "Сканує всі файли і відкриває перший неперекладений рядок. Корисно коли % застряг на 99.9%.", disabled: files.length === 0, onClick: () => { void findFirstUntranslated(); } },
                 { icon: "📚", label: "Glossary…", title: "Терміновий словник UK ↔ EN для консистентності перекладу", disabled: !status?.doneDir, onClick: () => setGlossaryOpen(true) },
                 { icon: "🧬", label: "Перегляд змін bundle…", title: "Diff між старим/новим bundle після patch-migrate", disabled: diffEntries.length === 0, onClick: () => setDiffOpen(true) },
               ]}
