@@ -1270,6 +1270,21 @@ async function taskHbrCorpusStats(payload) {
     if (/^-+$/.test(stripped)) return true;
     return false;
   };
+  // Зчитуємо `<doneDir>/.hbr-status.json` — sidecar з manual ПКМ-марками
+  // (`markedTranslated`). Без цього home показує % нижчий за header (бо header
+  // додає markedTranslated bonus, а home worker його не бачив).
+  const markedKeys = new Set();
+  try {
+    const sep = doneDir.includes('\\') ? '\\' : '/';
+    const sidecar = doneDir.endsWith(sep) ? doneDir + '.hbr-status.json' : doneDir + sep + '.hbr-status.json';
+    const raw = await fs.readFile(sidecar, 'utf8');
+    const j = JSON.parse(raw);
+    if (j && j.entries && typeof j.entries === 'object') {
+      for (const [key, meta] of Object.entries(j.entries)) {
+        if (meta && meta.markedTranslated) markedKeys.add(key);
+      }
+    }
+  } catch {}
   let total = 0; let translated = 0; let files = 0;
   let uaWords = 0; let enWords = 0; let uaChars = 0; let enChars = 0;
   const topFiles = [];
@@ -1287,7 +1302,10 @@ async function taskHbrCorpusStats(payload) {
       const doneList = (done && done._List && done._List.Array) || [];
       let fileTotal = 0; let fileTranslated = 0;
       for (let i = 0; i < doneList.length; i++) {
-        const dTexts = (doneList[i] && doneList[i]._Texts && doneList[i]._Texts.Array) || [];
+        const entry = doneList[i] || {};
+        // textId формат паралельний з parser.ts: `_TextId ?? "#<listIdx>"`
+        const textId = entry._TextId !== undefined && entry._TextId !== null ? String(entry._TextId) : `#${i}`;
+        const dTexts = (entry._Texts && entry._Texts.Array) || [];
         const oTexts = (origList[i] && origList[i]._Texts && origList[i]._Texts.Array) || [];
         for (let j = 0; j < dTexts.length; j++) {
           total++; fileTotal++;
@@ -1298,10 +1316,17 @@ async function taskHbrCorpusStats(payload) {
             translated++; fileTranslated++;
             uaWords += countWords(d);
             uaChars += d.length;
-          } else {
-            enWords += countWords(o);
-            enChars += o.length;
+            continue;
           }
+          // Manual markedTranslated через ПКМ — теж рахується, інакше home
+          // показує менший % за header.
+          const sk = `${fname}::${textId}::${j}`;
+          if (markedKeys.has(sk)) {
+            translated++; fileTranslated++;
+            continue;
+          }
+          enWords += countWords(o);
+          enChars += o.length;
         }
       }
       files++;
