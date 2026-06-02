@@ -499,6 +499,53 @@ export function HbrEditor({ onHome }: Props) {
     });
   }
 
+  // Bulk-операція: позначити/зняти markedTranslated для УСІХ рядків файлу.
+  // Викликається з ПКМ-меню файлу у sidebar. Читає Done-JSON (або Original
+  // fallback), парсить через parseHbrJson, генерує statusKey для кожного
+  // item і одним setStatusFile пише патч.
+  async function bulkMarkFileTranslated(file: FileItem, mark: boolean) {
+    try {
+      const w = window.dp2 as unknown as {
+        hbrTextRead: (p: string) => Promise<{ ok: boolean; raw?: string; error?: string }>;
+      };
+      const sourcePath = file.donePath;
+      const r = await w.hbrTextRead(sourcePath);
+      if (!r.ok || !r.raw) {
+        const o = await w.hbrTextRead(file.origPath);
+        if (!o.ok || !o.raw) {
+          showError("Не вдалося прочитати файл", "Bulk-mark");
+          return;
+        }
+        r.raw = o.raw;
+      }
+      const origRes = await w.hbrTextRead(file.origPath);
+      const p = parseHbrJson(r.raw, origRes.ok ? origRes.raw! : null, file.donePath, file.origPath);
+      const keys = p.items.map((it) => statusKey(file.file, it.textId, it.variantIdx));
+      if (keys.length === 0) {
+        showError("У файлі нема рядків для позначення", "Bulk-mark");
+        return;
+      }
+      setStatusFile((f) => {
+        let next = { ...f, entries: { ...f.entries } };
+        for (const k of keys) {
+          const cur = next.entries[k] ?? {};
+          const merged = { ...cur, markedTranslated: mark ? true : undefined } as typeof cur;
+          next.entries[k] = merged;
+          next = pruneEntry(next, k);
+        }
+        return next;
+      });
+      showOk(
+        mark
+          ? `Позначено ${keys.length} рядків як перекладені`
+          : `Знято позначку з ${keys.length} рядків`,
+        file.file,
+      );
+    } catch (e) {
+      showError(e, "Bulk-mark failed");
+    }
+  }
+
   // Live прогрес.
   useEffect(() => {
     const w = window.dp2 as unknown as { onHbrTextPrepProgress?: (cb: (l: string) => void) => () => void };
@@ -2067,35 +2114,59 @@ export function HbrEditor({ onHome }: Props) {
               </>
             );
           })()}
-          {ctxMenu.kind === "file" && (
-            <>
-              <li className="px-3 py-1 text-[10px] uppercase tracking-wider text-[var(--text-faint)] border-b border-[var(--border-soft)] truncate" title={ctxMenu.file.file}>
-                {ctxMenu.file.file}
-              </li>
-              <li
-                className="px-3 py-1.5 hover:bg-[var(--row-hover)] cursor-pointer"
-                onClick={() => { restoreFileFromBak(ctxMenu.file); setCtxMenu(null); }}
-              >
-                {t("hbr.ctx.restoreFromBak")}
-              </li>
-              <li
-                className="px-3 py-1.5 hover:bg-[var(--row-hover)] cursor-pointer"
-                onClick={() => { restoreFileFromOriginal(ctxMenu.file); setCtxMenu(null); }}
-              >
-                {t("hbr.ctx.restoreOriginal")}
-              </li>
-              <li
-                className="px-3 py-1.5 hover:bg-[var(--row-hover)] cursor-pointer"
-                onClick={async () => {
-                  const w = window.dp2 as unknown as { openFolder?: (p: string) => void };
-                  if (w.openFolder) w.openFolder(ctxMenu.file.donePath.replace(/[\\/][^\\/]+$/, ""));
-                  setCtxMenu(null);
-                }}
-              >
-                {t("hbr.ctx.openFolder")}
-              </li>
-            </>
-          )}
+          {ctxMenu.kind === "file" && (() => {
+            // Перевіряємо, чи цей файл вже на 100% (translated >= total —
+            // means усі рядки парсер бачить як перекладені або marked-translated
+            // вже стояли). У такому разі основна дія — «Зняти позначку».
+            const st = fileStats[ctxMenu.file.file];
+            const extra = markedTranslatedByFile.get(ctxMenu.file.file) ?? 0;
+            const total = st?.total ?? 0;
+            const translated = (st?.translated ?? 0) + extra;
+            const isFullyMarked = total > 0 && translated >= total;
+            const file = ctxMenu.file;
+            return (
+              <>
+                <li className="px-3 py-1 text-[10px] uppercase tracking-wider text-[var(--text-faint)] border-b border-[var(--border-soft)] truncate" title={file.file}>
+                  {file.file}
+                </li>
+                <li
+                  className="px-3 py-1.5 hover:bg-[var(--row-hover)] cursor-pointer text-[var(--success)]"
+                  onClick={() => { void bulkMarkFileTranslated(file, true); setCtxMenu(null); }}
+                >
+                  ✓ Позначити увесь файл перекладеним
+                </li>
+                <li
+                  className={`px-3 py-1.5 hover:bg-[var(--row-hover)] cursor-pointer ${isFullyMarked ? "text-[var(--text)]" : "text-[var(--text-faint)]"}`}
+                  onClick={() => { void bulkMarkFileTranslated(file, false); setCtxMenu(null); }}
+                >
+                  ✗ Зняти позначку з усього файлу
+                </li>
+                <li className="border-t border-[var(--border-soft)] my-1" />
+                <li
+                  className="px-3 py-1.5 hover:bg-[var(--row-hover)] cursor-pointer"
+                  onClick={() => { restoreFileFromBak(file); setCtxMenu(null); }}
+                >
+                  {t("hbr.ctx.restoreFromBak")}
+                </li>
+                <li
+                  className="px-3 py-1.5 hover:bg-[var(--row-hover)] cursor-pointer"
+                  onClick={() => { restoreFileFromOriginal(file); setCtxMenu(null); }}
+                >
+                  {t("hbr.ctx.restoreOriginal")}
+                </li>
+                <li
+                  className="px-3 py-1.5 hover:bg-[var(--row-hover)] cursor-pointer"
+                  onClick={async () => {
+                    const w = window.dp2 as unknown as { openFolder?: (p: string) => void };
+                    if (w.openFolder) w.openFolder(file.donePath.replace(/[\\/][^\\/]+$/, ""));
+                    setCtxMenu(null);
+                  }}
+                >
+                  {t("hbr.ctx.openFolder")}
+                </li>
+              </>
+            );
+          })()}
         </ul>
       )}
 
