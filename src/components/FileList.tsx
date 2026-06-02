@@ -28,33 +28,38 @@ function FileNode({
   const isEdited = !!fileMeta?.edited;
   const padLeft = 8 + depth * 14;
 
-  // Пріоритет кольорів: edited (помаранчевий) > complete/allTranslated (зелений)
-  // > default. Active state перекриває все — переходимо на яскравий strong.
-  const tone: "active" | "edited" | "done" | "default" = isActive
-    ? "active"
-    : isEdited
+  // Кольорова класифікація: edited (помаранчевий) > complete/allTranslated
+  // (зелений) > default. Active state лише ПІДСВІЧУЄ текст (text-strong) і
+  // фон (row-active) — НЕ перекриває колір іконки/бару, інакше повний файл
+  // після кліку «втрачає» зелений.
+  type ColorTone = "edited" | "done" | "default";
+  const colorTone: ColorTone = isEdited
     ? "edited"
     : (isComplete || isMarkedAll)
     ? "done"
     : "default";
-  const TONE_TEXT: Record<typeof tone, string> = {
-    active: "text-[var(--text-strong)]",
+  const TEXT: Record<ColorTone, string> = {
     edited: "text-[var(--warning,#d97706)] hover:text-[var(--warning,#d97706)]",
     done: "text-[var(--success)] hover:text-[var(--success)]",
     default: "text-[var(--text-muted)] hover:text-[var(--text)]",
   };
-  const TONE_ICON: Record<typeof tone, string> = {
-    active: "text-[var(--text-faint)]",
+  const ICON: Record<ColorTone, string> = {
     edited: "text-[var(--warning,#d97706)]",
     done: "text-[var(--success)]",
     default: "text-[var(--text-faint)]",
   };
-  const TONE_BAR: Record<typeof tone, string> = {
-    active: "bg-[var(--accent)]",
+  const BAR: Record<ColorTone, string> = {
     edited: "bg-[var(--warning,#d97706)]",
     done: "bg-[var(--success)]",
     default: "bg-[var(--accent)]",
   };
+  const COUNTER: Record<ColorTone, string> = {
+    edited: "text-[var(--warning,#d97706)] font-semibold",
+    done: "text-[var(--success)] font-semibold",
+    default: "text-[var(--text-faint)]",
+  };
+  // Active перекриває текст на strong; колір іконки/бару зберігається.
+  const textClass = isActive ? "text-[var(--text-strong)]" : TEXT[colorTone];
 
   return (
     <button
@@ -62,21 +67,20 @@ function FileNode({
       onContextMenu={(e) => onContext(e, node)}
       className={`group w-full text-left py-1 transition-colors ${
         isActive ? "bg-[var(--row-active)]" : "hover:bg-[var(--row-hover)]"
-      } ${TONE_TEXT[tone]}`}
+      } ${textClass}`}
       style={{ paddingLeft: padLeft, paddingRight: 8 }}
     >
       <div className="flex items-center gap-1.5">
         <svg
-          className={`w-3.5 h-3.5 shrink-0 ${TONE_ICON[tone]}`}
+          className={`w-3.5 h-3.5 shrink-0 ${ICON[colorTone]}`}
           fill="none"
           viewBox="0 0 24 24"
           stroke="currentColor"
           strokeWidth={2}
         >
-          {tone === "edited" ? (
-            // Pen icon — означає «файл зредаговано».
+          {colorTone === "edited" ? (
             <path strokeLinecap="round" strokeLinejoin="round" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" />
-          ) : (tone === "done") ? (
+          ) : colorTone === "done" ? (
             <path strokeLinecap="round" strokeLinejoin="round" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" />
           ) : (
             <path strokeLinecap="round" strokeLinejoin="round" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
@@ -86,11 +90,7 @@ function FileNode({
           {node.name}
         </span>
         {total > 0 && (
-          <span className={`text-[10px] tabular-nums shrink-0 ${
-            tone === "done" ? "text-[var(--success)] font-semibold"
-              : tone === "edited" ? "text-[var(--warning,#d97706)] font-semibold"
-              : "text-[var(--text-faint)]"
-          }`}>
+          <span className={`text-[10px] tabular-nums shrink-0 ${COUNTER[colorTone]}`}>
             {translated}/{total}
           </span>
         )}
@@ -98,7 +98,7 @@ function FileNode({
       {total > 0 && (
         <div className="mt-1 h-[2px] rounded-full bg-[var(--border-soft)] overflow-hidden" style={{ marginLeft: 18 }}>
           <div
-            className={`h-full transition-all ${TONE_BAR[tone]}`}
+            className={`h-full transition-all ${BAR[colorTone]}`}
             style={{ width: `${pct}%` }}
           />
         </div>
