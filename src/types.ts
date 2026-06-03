@@ -12,7 +12,7 @@ export const LANG_NAMES = ["JP", "EN", "FR", "IT", "DE", "ES"] as const;
 export const LANG_INDEX = { JP: 0, EN: 1, FR: 2, IT: 3, DE: 4, ES: 5 } as const;
 export type LangIndex = typeof LANG_INDEX[keyof typeof LANG_INDEX];
 
-export type EntryKind = "sentence" | "item";
+export type EntryKind = "sentence" | "item" | "uilabel";
 
 export interface SentenceLocator {
   kind: "sentence";
@@ -31,7 +31,14 @@ export interface ItemLocator {
   textIndex: number; // 1 = EN
 }
 
-export type Locator = SentenceLocator | ItemLocator;
+// UILabel — окремий MonoBehaviour з плоским полем `mText`. Один файл = один
+// рядок перекладу (немає множинного списку чи мовних слотів).
+export interface UiLabelLocator {
+  kind: "uilabel";
+  filePath: string;
+}
+
+export type Locator = SentenceLocator | ItemLocator | UiLabelLocator;
 
 export interface FileEntry {
   name: string;

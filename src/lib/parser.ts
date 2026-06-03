@@ -26,12 +26,35 @@ interface Sheet {
   m_sheetName?: string;
   m_list?: AnyArr<ListItem>;
 }
-interface Root {
+interface UiLabelRoot {
+  // UILabel — плоский MonoBehaviour. Поле `mText` стрінг, без масиву мов.
+  // Розпізнаємо по наявності `mText` на корені.
+  mText?: string;
+  mFontSize?: number;
+}
+interface Root extends UiLabelRoot {
   m_Name?: string;
   m_sheets?: AnyArr<Sheet>;
 }
 
 export function flatten(filePath: string, root: Root, originalRoot?: Root): FlatEntry[] {
+  // ── UILabel form ────────────────────────────────────────────────
+  // Якщо корінь має поле `mText` і немає `m_sheets` — це UILabel-asset з
+  // Others/Done/. Один файл → один рядок (поле для редагування — `mText`).
+  if (root.mText !== undefined && !root.m_sheets) {
+    const fileName = filePath.split(/[\\/]/).pop() ?? filePath;
+    return [{
+      locator: { kind: "uilabel", filePath },
+      kind: "uilabel",
+      id: fileName.replace(/^UILabel-/, "").replace(/\.json$/i, ""),
+      category: "Others",
+      context: "mText",
+      jp: "",
+      en: root.mText ?? "",
+      originalEn: originalRoot?.mText,
+    }];
+  }
+
   const out: FlatEntry[] = [];
   const sheets = root.m_sheets?.Array ?? [];
   const origSheets = originalRoot?.m_sheets?.Array ?? [];
@@ -117,6 +140,11 @@ export function applyEdit(
   newCharaName: string,
   newText: string
 ): boolean {
+  if (locator.kind === "uilabel") {
+    root.mText = newText;
+    return true;
+  }
+
   if (locator.kind === "sentence") {
     const scen =
       root.m_sheets?.Array?.[locator.sheetIndex]?.m_list?.Array?.[locator.listIndex]?.m_scenarioList

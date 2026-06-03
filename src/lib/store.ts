@@ -27,13 +27,20 @@ import {
   type StatusFile,
   type StatusKind,
 } from "./status";
+import { DP2_OTHERS_PATH_IDS } from "../games/dp2/othersPathIds";
 
 /** Стабільний ключ статусу для DP2 entry. */
 export function dp2StatusKey(e: FlatEntry): string {
   const loc = e.locator;
-  const tail = loc.kind === "sentence"
-    ? `${loc.sheetIndex}:${loc.listIndex}:${loc.scenarioIndex}`
-    : `${loc.sheetIndex}:${loc.listIndex}`;
+  let tail: string;
+  if (loc.kind === "sentence") {
+    tail = `${loc.sheetIndex}:${loc.listIndex}:${loc.scenarioIndex}`;
+  } else if (loc.kind === "item") {
+    tail = `${loc.sheetIndex}:${loc.listIndex}`;
+  } else {
+    // UILabel — один рядок на файл, фіксований tail.
+    tail = "ui:mText";
+  }
   const base = loc.filePath.split(/[\\/]/).pop() ?? loc.filePath;
   return `${base}::${e.id || "_"}::${tail}`;
 }
@@ -128,6 +135,8 @@ interface State {
   /** Запис sidecar `<file>.autosave.json` з поточним currentTree. */
   autosave: () => Promise<void>;
   refreshFileMeta: (fullPath: string) => void;
+  /** Перебудувати дерево «Others» (викликати після extract/clear модалки). */
+  refreshOthers: () => Promise<void>;
   /** Find/Replace по всіх записах поточного файла (charaName + текст). */
   findReplaceAll: (find: string, replace: string, opts: { caseSensitive: boolean; wholeWord: boolean }) =>
     { entries: number; replacements: number };
@@ -139,6 +148,39 @@ interface State {
     { matches: Array<{ entryIndex: number; src: string; tgt: string }> };
   /** Застосувати TM auto-fill 1:1: пише tgt у entry.en для exact-збігів. */
   applyTmExact: (tm: Array<{ src: string; tgt: string }>) => number;
+}
+
+/**
+ * Доклеїти до кореня DP2-tree віртуальну теку `Others` зі списком
+ * UILabel-Done-файлів. Викликається після кожного `listTree`.
+ * Якщо у Others/Done нічого ще нема (extract не запускався) — не додаємо
+ * пусту теку, щоб не засмічувати дерево.
+ */
+async function withOthersBranch(tree: TreeNode | null): Promise<TreeNode | null> {
+  if (!tree) return tree;
+  try {
+    const r = await window.dp2.dp2OthersStatus({ pathIds: Array.from(DP2_OTHERS_PATH_IDS) });
+    if (!r.ok || !r.doneDir || !r.files) return tree;
+    const presentFiles = r.files.filter((f) => f.doneSize != null);
+    if (presentFiles.length === 0) return tree;
+    const otherChildren: TreeNode[] = presentFiles.map((f) => ({
+      type: "file",
+      name: f.name,
+      path: f.donePath,
+    }));
+    const othersNode: TreeNode = {
+      type: "folder",
+      name: "Others",
+      path: r.doneDir,
+      children: otherChildren,
+    };
+    // Видаляємо попередню «Others»-гілку (якщо є) і додаємо свіжу — це робить
+    // повторні виклики (post-extract) ідемпотентними.
+    const filtered = (tree.children ?? []).filter((c) => !(c.type === "folder" && c.path === r.doneDir));
+    return { ...tree, children: [...filtered, othersNode] };
+  } catch {
+    return tree;
+  }
 }
 
 /** Перший .json-файл у дереві (DFS), або null. */
@@ -205,8 +247,9 @@ export const useStore = create<State>((set, get) => ({
       const settings = await window.dp2.getSettings();
       const last = settings.lastFolder;
       if (!last) return;
-      const tree = await window.dp2.listTree(last);
-      if (!tree) return;
+      const rawTree = await window.dp2.listTree(last);
+      if (!rawTree) return;
+      const tree = await withOthersBranch(rawTree);
       const statuses = await readStatusFile(statusFilePath(last));
       set({ folder: last, tree, statuses });
 
@@ -246,7 +289,8 @@ export const useStore = create<State>((set, get) => ({
         set({ loading: false });
         return;
       }
-      const tree = await window.dp2.listTree(folder);
+      const rawTree = await window.dp2.listTree(folder);
+      const tree = await withOthersBranch(rawTree);
       try { await window.dp2.saveSettings({ lastFolder: folder }); } catch {}
       const statuses = await readStatusFile(statusFilePath(folder));
       set({
@@ -753,6 +797,17 @@ export const useStore = create<State>((set, get) => ({
     }
     const nextTree = updateFileStats(tree, fullPath, translatable, translated);
     set({ tree: nextTree });
+  },
+
+  async refreshOthers() {
+    const { tree } = get();
+    if (!tree) return;
+    // Знімаємо стару Others-гілку перед перебудовою — інакше withOthersBranch
+    // побачить уже додану й залишить її як є (хоча воно і ідемпотентне через
+    // фільтрацію за `path === r.doneDir`, явно знімаємо для прозорості).
+    const stripped: TreeNode = { ...tree, children: (tree.children ?? []).slice() };
+    const next = await withOthersBranch(stripped);
+    if (next) set({ tree: next });
   },
 
   previewTmExact(tm) {

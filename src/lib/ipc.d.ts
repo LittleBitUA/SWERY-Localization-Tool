@@ -54,7 +54,25 @@ declare global {
       getSettings: () => Promise<DpSettings>;
       saveSettings: (partial: Record<string, unknown>) => Promise<DpSettings>;
       launchUabea: () => Promise<{ success: boolean; error?: string }>;
-      buildAssets: () => Promise<{ success: boolean; outputPath?: string; error?: string; log?: string; logPath?: string }>;
+      buildAssets: () => Promise<{
+        success: boolean;
+        outputPath?: string;
+        error?: string;
+        log?: string;
+        logPath?: string;
+        /** Результат пакування UILabel («Інші рядки») у sharedassets1.assets.
+         *  Виконується автоматично після основного збирання — якщо у Others/Done
+         *  є файли. skipped=true означає «нічого не було пакувати». */
+        others?: {
+          ok: boolean;
+          summary?: { ok: boolean; outputPath?: string; imported?: number; skipped?: number; errors?: number; note?: string } | null;
+          imported?: number;
+          skipped?: boolean;
+          reason?: string;
+          logPath?: string;
+          error?: string;
+        };
+      }>;
       fontsExport: () => Promise<{
         success: boolean;
         outDir?: string;
@@ -73,6 +91,40 @@ declare global {
       onFontsExportProgress: (cb: (line: string) => void) => () => void;
       onFontsReplaceProgress: (cb: (line: string) => void) => () => void;
       openFolder: (folder: string) => Promise<void>;
+      // DP2 Others — UILabel-корпус («переклад інших рядків»).
+      // Original/ = еталони з sharedassets1.assets, Done/ = робочі копії.
+      dp2OthersStatus: (payload: { pathIds: number[] }) => Promise<{
+        ok: boolean;
+        baseDir?: string;
+        originalDir?: string;
+        doneDir?: string;
+        sharedAssets1?: string | null;
+        sharedAssets1Exists?: boolean;
+        files?: Array<{
+          pathId: number;
+          name: string;
+          donePath: string;
+          originalSize: number | null;
+          doneSize: number | null;
+          doneMtime: number | null;
+        }>;
+        error?: string;
+      }>;
+      dp2OthersExtract: (payload: { pathIds: number[] }) => Promise<{
+        ok: boolean;
+        summary?: {
+          ok: boolean;
+          outDir?: string;
+          exported?: Array<{ pathId: number; file: string; size: number }>;
+          failed?: Array<{ pathId: number; error: string }>;
+          total?: number;
+        } | null;
+        copiedToDone?: number;
+        log?: string;
+        error?: string;
+      }>;
+      dp2OthersClear: () => Promise<{ ok: boolean; error?: string }>;
+      onDp2OthersProgress: (cb: (line: string) => void) => () => void;
       openExternal: (url: string) => Promise<{ ok: boolean; error?: string }>;
       appVersion: () => Promise<string>;
       // Auto-detect Steam game folder. Reads HKCU\Software\Valve\Steam → SteamPath,

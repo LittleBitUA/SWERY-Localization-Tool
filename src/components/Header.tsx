@@ -5,6 +5,7 @@ import { useStore } from "../lib/store";
 import { SettingsModal } from "./SettingsModal";
 import { LogViewer } from "./LogViewer";
 import { CorpusStatsModal } from "./CorpusStatsModal";
+import { Dp2OthersModal } from "../games/dp2/Dp2OthersModal";
 import { GlossaryConsistencyModal } from "./GlossaryConsistencyModal";
 import { NameConsistencyModal } from "./NameConsistencyModal";
 import { useT } from "../lib/i18n";
@@ -48,6 +49,7 @@ export function Header({
 
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [statsOpen, setStatsOpen] = useState(false);
+  const [othersOpen, setOthersOpen] = useState(false);
   const [gcOpen, setGcOpen] = useState(false);
   const [ncOpen, setNcOpen] = useState(false);
   const [tmApplying, setTmApplying] = useState(false);
@@ -154,8 +156,23 @@ export function Header({
       });
       return;
     }
-    showToast(t("build.toast.done", { path: res.outputPath ?? "" }), {
-      tone: "success", title: t("build.toast.doneTitle"), durationMs: 12000,
+    // Фаза 2 — UILabel («Інші рядки»). Не валить успіх корпусу, але якщо вона
+    // зафейлилась — варто попередити, бо це окремий .assets-файл.
+    const others = res.others;
+    let extraMsg = "";
+    if (others) {
+      if (others.skipped) {
+        // тихо — нічого не було пакувати
+      } else if (!others.ok) {
+        extraMsg = `\n⚠️ UILabel-пакування зафейлилось: ${others.error ?? "?"}${others.logPath ? `\nЛог: ${others.logPath}` : ""}`;
+      } else if (others.summary?.imported) {
+        extraMsg = `\n+ UILabel: ${others.summary.imported} рядків у sharedassets1.assets`;
+      }
+    }
+    showToast(t("build.toast.done", { path: res.outputPath ?? "" }) + extraMsg, {
+      tone: others && !others.ok && !others.skipped ? "warning" : "success",
+      title: t("build.toast.doneTitle"),
+      durationMs: 14000,
     });
   }
 
@@ -201,6 +218,15 @@ export function Header({
             {t("header.log")}
           </button>
         )}
+
+        <button
+          className="dp-btn dp-btn--ghost shrink-0"
+          onClick={() => setOthersOpen(true)}
+          title="Переклад інших рядків — додатковий staging-корпус (DP2/Others)"
+          disabled={!folder}
+        >
+          📥 <span className="hidden 2xl:inline ml-1">Інші рядки</span>
+        </button>
 
         <button
           className="dp-btn dp-btn--ghost shrink-0"
@@ -368,6 +394,7 @@ export function Header({
       </header>
 
       <SettingsModal open={settingsOpen} onClose={() => setSettingsOpen(false)} />
+      <Dp2OthersModal open={othersOpen} onClose={() => setOthersOpen(false)} />
       <CorpusStatsModal
         open={statsOpen}
         onClose={() => setStatsOpen(false)}

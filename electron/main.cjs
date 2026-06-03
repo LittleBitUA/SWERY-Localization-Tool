@@ -822,6 +822,177 @@ function streamChildOutput(child, channel) {
   });
 }
 
+// ── DP2 Others (переклад інших рядків) ────────────────────────────────
+// `<toolsDir>/DP2/Others/Original/` — еталонні UILabel-JSON, витягнуті зі
+// `sharedassets1.assets` поточної інсталяції DP2.
+// `<toolsDir>/DP2/Others/Done/` — робочі копії, у яких користувач править
+// поле `mText`.
+// Список PathID, що треба витягти, передається з рендера (фіксований TS-
+// масив `DP2_OTHERS_PATH_IDS`).
+async function dp2OthersBaseDir() {
+  const settings = await readSettings();
+  let toolsDir = settings.toolsDir;
+  if (!toolsDir) toolsDir = path.join(app.getPath("documents"), "SWERY-Localization-Tool");
+  return path.join(toolsDir, "DP2", "Others");
+}
+async function dp2OthersOriginalDir() { return path.join(await dp2OthersBaseDir(), "Original"); }
+async function dp2OthersDoneDir()     { return path.join(await dp2OthersBaseDir(), "Done"); }
+
+// Похідний шлях до sharedassets1.assets — у тій самій теці, що sharedassets0.
+async function dp2Sharedassets1Path() {
+  const settings = await readSettings();
+  if (!settings.assetsPath) return null;
+  return path.join(path.dirname(settings.assetsPath), "sharedassets1.assets");
+}
+
+function dp2OthersFileNameFor(pathId) {
+  return `UILabel-sharedassets1.assets-${pathId}.json`;
+}
+
+ipcMain.handle("dp2:others-status", async (_e, payload) => {
+  try {
+    const wantedIds = Array.isArray(payload?.pathIds) ? payload.pathIds.map(Number).filter(Number.isFinite) : [];
+    const baseDir = await dp2OthersBaseDir();
+    const originalDir = await dp2OthersOriginalDir();
+    const doneDir = await dp2OthersDoneDir();
+    const sharedAssets1 = await dp2Sharedassets1Path();
+    let sharedAssets1Exists = false;
+    if (sharedAssets1) {
+      try { await fs.access(sharedAssets1); sharedAssets1Exists = true; } catch {}
+    }
+
+    async function safeStat(p) { try { return await fs.stat(p); } catch { return null; } }
+
+    const files = [];
+    for (const pid of wantedIds) {
+      const name = dp2OthersFileNameFor(pid);
+      const origPath = path.join(originalDir, name);
+      const donePath = path.join(doneDir, name);
+      const [origSt, doneSt] = await Promise.all([safeStat(origPath), safeStat(donePath)]);
+      files.push({
+        pathId: pid,
+        name,
+        donePath,
+        originalSize: origSt ? origSt.size : null,
+        doneSize: doneSt ? doneSt.size : null,
+        doneMtime: doneSt ? doneSt.mtimeMs : null,
+      });
+    }
+    return {
+      ok: true,
+      baseDir,
+      originalDir,
+      doneDir,
+      sharedAssets1,
+      sharedAssets1Exists,
+      files,
+    };
+  } catch (e) { return { ok: false, error: String(e.message || e) }; }
+});
+
+ipcMain.handle("dp2:others-extract", async (_e, payload) => {
+  try {
+    const wantedIds = Array.isArray(payload?.pathIds) ? payload.pathIds.map(Number).filter(Number.isFinite) : [];
+    if (wantedIds.length === 0) return { ok: false, error: "Не передано жодного PathID" };
+
+    const settings = await readSettings();
+    const { uabeaPath } = settings;
+    if (!uabeaPath) return { ok: false, error: "UABEA не задано (Налаштування)" };
+    const uabeaDir = path.dirname(uabeaPath);
+
+    const assetsPath = await dp2Sharedassets1Path();
+    if (!assetsPath) return { ok: false, error: "Шлях до DP2 не задано (Налаштування)" };
+    try { await fs.access(assetsPath); }
+    catch { return { ok: false, error: "sharedassets1.assets не знайдено: " + assetsPath }; }
+
+    const pwshLookup = await findPwsh(settings);
+    if (!pwshLookup) return { ok: false, error: "PowerShell 7 (pwsh.exe) не знайдено" };
+
+    const originalDir = await dp2OthersOriginalDir();
+    const doneDir = await dp2OthersDoneDir();
+    await fs.mkdir(originalDir, { recursive: true });
+    await fs.mkdir(doneDir, { recursive: true });
+
+    const scriptPath = resolveResource("scripts/dp2-others-extract.ps1");
+
+    return await new Promise((resolve) => {
+      const args = [
+        "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass",
+        "-File", scriptPath,
+        "-AssetsPath", assetsPath,
+        "-OutDir", originalDir,
+        "-UabeaDir", uabeaDir,
+        "-PathIds", wantedIds.join(","),
+      ];
+      const child = spawn(pwshLookup, args, { windowsHide: true });
+      let allStdout = "";
+      let leftover = "";
+      const win = BrowserWindow.getAllWindows()[0];
+      const emit = (chunk) => {
+        allStdout += chunk;
+        leftover += chunk;
+        const lines = leftover.split(/\r?\n/);
+        leftover = lines.pop() || "";
+        for (const ln of lines) {
+          if (!ln.trim()) continue;
+          try { win?.webContents.send("dp2:others-progress", ln); } catch {}
+        }
+      };
+      child.stdout.on("data", (d) => emit(d.toString()));
+      child.stderr.on("data", (d) => emit(d.toString()));
+      child.on("error", (err) => resolve({ ok: false, error: err.message, log: allStdout }));
+      child.on("exit", async (code) => {
+        if (leftover.trim()) {
+          try { win?.webContents.send("dp2:others-progress", leftover); } catch {}
+        }
+        if (code !== 0) {
+          const tail = allStdout.split("\n").slice(-20).join("\n").trim();
+          resolve({ ok: false, error: tail || `Exit ${code}`, log: allStdout });
+          return;
+        }
+        // Скопіювати свіжовитягнуті оригінали у Done/, якщо там ще не існує
+        // (щоб не затирати уже зроблений переклад). Також залити кожен файл
+        // як `<basename>.bak.json` (схема, яку очікує штатний `dp2:read-backup`
+        // — `*.json` -> `*.bak.json`), щоб редактор бачив originalEn для
+        // diff/мітки «перекладено».
+        let copied = 0;
+        try {
+          const ents = await fs.readdir(originalDir, { withFileTypes: true });
+          for (const e of ents) {
+            if (!e.isFile() || !e.name.endsWith(".json")) continue;
+            const src = path.join(originalDir, e.name);
+            const dst = path.join(doneDir, e.name);
+            const bak = path.join(doneDir, e.name.replace(/\.json$/i, ".bak.json"));
+            try { await fs.access(dst); }
+            catch {
+              try { await fs.copyFile(src, dst); copied++; } catch {}
+            }
+            // .bak завжди оновлюємо до свіжого оригіналу — він має дзеркалити
+            // те, що зараз у sharedassets1.assets, без огляду на стан Done/.
+            try { await fs.copyFile(src, bak); } catch {}
+          }
+        } catch {}
+
+        let summary = null;
+        const m = allStdout.match(/RESULT_JSON:\s*(.+)$/m);
+        if (m) { try { summary = JSON.parse(m[1]); } catch {} }
+        resolve({ ok: true, summary, copiedToDone: copied, log: allStdout });
+      });
+    });
+  } catch (e) { return { ok: false, error: String(e.message || e) }; }
+});
+
+ipcMain.handle("dp2:others-clear", async () => {
+  try {
+    const baseDir = await dp2OthersBaseDir();
+    try { await fs.rm(baseDir, { recursive: true, force: true }); } catch {}
+    await fs.mkdir(path.join(baseDir, "Original"), { recursive: true });
+    await fs.mkdir(path.join(baseDir, "Done"), { recursive: true });
+    return { ok: true };
+  } catch (e) { return { ok: false, error: String(e.message || e) }; }
+});
+
+
 // ── IPC: export 4 fonts з sharedassets0.assets у toolsDir/dp2-fonts/ ─────
 ipcMain.handle("dp2:fonts-export", async () => {
   const settings = await readSettings();
@@ -2705,9 +2876,7 @@ ipcMain.handle("dp2:build-assets", async () => {
         `--- STDERR ---\n${stderr}\n`;
       try { await fs.writeFile(logPath, fullLog, "utf8"); } catch {}
 
-      if (code === 0) {
-        resolve({ success: true, outputPath, logPath, log: fullLog });
-      } else {
+      if (code !== 0) {
         // Показуємо stderr + останні 30 рядків stdout (DIAG/STEP включно).
         const tail = stdout.split("\n").slice(-30).join("\n").trim();
         const errMsg =
@@ -2715,10 +2884,84 @@ ipcMain.handle("dp2:build-assets", async () => {
             ? stderr.trim() + (tail ? "\n\n--- last log lines ---\n" + tail : "")
             : tail) || `Exit code ${code}`;
         resolve({ success: false, error: errMsg, logPath, log: fullLog });
+        return;
       }
+      // Фаза 2: UILabel («Інші рядки») у sharedassets1.assets. Робимо тільки
+      // якщо у Others/Done щось є. Помилка тут не валить весь build — корпус
+      // уже зібраний у фазі 1.
+      const others = await runOthersImport(pwshLookup, settings).catch((e) => ({ ok: false, error: String(e.message || e) }));
+      resolve({
+        success: true,
+        outputPath,
+        logPath,
+        log: fullLog,
+        others,
+      });
     });
   });
 });
+
+// Фаза 2 «Зберегти та зібрати»: пакує UILabel-Done JSON-и у sharedassets1.assets.
+// Викликається після успішного імпорту корпусу (sharedassets0). Якщо у
+// `Others/Done` нічого нема — повертає { ok: true, imported: 0, skipped: true }.
+async function runOthersImport(pwshLookup, settings) {
+  const doneDir = await dp2OthersDoneDir();
+  let hasAny = false;
+  try {
+    const ents = await fs.readdir(doneDir, { withFileTypes: true });
+    for (const e of ents) {
+      if (!e.isFile() || !e.name.startsWith("UILabel-") || !e.name.endsWith(".json")) continue;
+      if (e.name.endsWith(".bak.json")) continue;
+      hasAny = true; break;
+    }
+  } catch { /* теки нема — просто скіп */ }
+  if (!hasAny) return { ok: true, imported: 0, skipped: true, reason: "empty-others" };
+
+  const sharedAssets1 = await dp2Sharedassets1Path();
+  if (!sharedAssets1) return { ok: false, error: "DP2 path not set (sharedassets1)" };
+  try { await fs.access(sharedAssets1); }
+  catch { return { ok: false, error: "sharedassets1.assets not found: " + sharedAssets1 }; }
+
+  const uabeaDir = path.dirname(settings.uabeaPath);
+  const scriptPath = resolveResource("scripts/dp2-others-import.ps1");
+
+  return await new Promise((resolve) => {
+    const args = [
+      "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass",
+      "-File", scriptPath,
+      "-AssetsPath", sharedAssets1,
+      "-JsonDir", doneDir,
+      "-UabeaDir", uabeaDir,
+    ];
+    const child = spawn(pwshLookup, args, { windowsHide: true });
+    let stdout = "";
+    let stderr = "";
+    child.stdout.on("data", (d) => { stdout += d.toString(); });
+    child.stderr.on("data", (d) => { stderr += d.toString(); });
+    child.on("error", (err) => resolve({ ok: false, error: err.message }));
+    child.on("exit", async (code) => {
+      const logPath = path.join(path.dirname(sharedAssets1), "dp2-others-import.log");
+      const ts = new Date().toISOString();
+      const fullLog =
+        `=== DP2 Others import @ ${ts} (exit=${code}) ===\n` +
+        `assets: ${sharedAssets1}\n` +
+        `jsonDir: ${doneDir}\n\n` +
+        `--- STDOUT ---\n${stdout}\n` +
+        `--- STDERR ---\n${stderr}\n`;
+      try { await fs.writeFile(logPath, fullLog, "utf8"); } catch {}
+
+      if (code !== 0) {
+        const tail = stdout.split("\n").slice(-20).join("\n").trim();
+        resolve({ ok: false, error: stderr.trim() || tail || `Exit ${code}`, logPath });
+        return;
+      }
+      let summary = null;
+      const m = stdout.match(/RESULT_JSON:\s*(.+)$/m);
+      if (m) { try { summary = JSON.parse(m[1]); } catch {} }
+      resolve({ ok: true, summary, logPath });
+    });
+  });
+}
 
 // ── IPC: DP2 Textures (resources.assets + .resS in-place patch) ─────────
 // Експорт усіх або вибраних PathID у PNG; заміна окремого PathID одним

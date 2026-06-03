@@ -168,6 +168,15 @@ contextBridge.exposeInMainWorld("dp2", {
   missingUiTextImport: (payload) => ipcRenderer.invoke("dp2:missing-ui-text-import", payload),
   missingUiTextImportInline: (payload) => ipcRenderer.invoke("dp2:missing-ui-text-import-inline", payload),
   missingBuildRelease: () => ipcRenderer.invoke("dp2:missing-build-release"),
+  // DP2 Others — додатковий корпус UILabel («переклад інших рядків»).
+  dp2OthersStatus: (payload) => ipcRenderer.invoke("dp2:others-status", payload),
+  dp2OthersExtract: (payload) => ipcRenderer.invoke("dp2:others-extract", payload),
+  dp2OthersClear: () => ipcRenderer.invoke("dp2:others-clear"),
+  onDp2OthersProgress: (cb) => {
+    const h = (_e, payload) => cb(payload);
+    ipcRenderer.on("dp2:others-progress", h);
+    return () => ipcRenderer.removeListener("dp2:others-progress", h);
+  },
   onMissingPrepProgress: (cb) => {
     const h = (_e, payload) => cb(payload);
     ipcRenderer.on("dp2:missing-prep-progress", h);
