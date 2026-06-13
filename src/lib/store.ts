@@ -103,7 +103,7 @@ interface State {
   bulkCopyOriginalToTranslation: (indices: number[]) => void;
   bulkTrim: (indices: number[]) => void;
   /** Експортувати поточний файл у .txt для зовнішнього перекладу. */
-  exportTxt: () => { fileName: string; content: string } | null;
+  exportTxt: (kind?: "translation" | "original" | "auto") => { fileName: string; content: string } | null;
   /** Імпортувати раніше експортований .txt назад у поточний файл. */
   importTxtContent: (txt: string) => { applied: number; missing: number; mismatched: number };
   /**
@@ -473,10 +473,13 @@ export const useStore = create<State>((set, get) => ({
     }
   },
 
-  exportTxt() {
+  exportTxt(kind = "auto") {
     const { entries, selectedFilePath } = get();
     if (!entries.length || !selectedFilePath) return null;
-    const fileName = (selectedFilePath.split(/[\\/]/).pop() ?? "export").replace(/\.json$/i, "");
+    const baseName = (selectedFilePath.split(/[\\/]/).pop() ?? "export").replace(/\.json$/i, "");
+    const fileName = kind === "original" ? baseName + ".original"
+                   : kind === "translation" ? baseName + ".translation"
+                   : baseName;
     const HAS_CYR = /[Ѐ-ӿ]/;
     // Заголовок/speaker мусять бути одно-рядковими. У DP2 поля `m_name`
     // та `m_charaName` іноді містять справжні `\n` (мультирядкові підказки
@@ -493,13 +496,21 @@ export const useStore = create<State>((set, get) => ({
         const nm = oneLine(e.itemName);
         if (nm) hintParts.push(nm);
       }
-      // Якщо рядок уже перекладений (en має кирилицю і відрізняється від .bak)
-      // — експортуємо ПЕРЕКЛАД, щоб людина продовжила. Інакше — англ-оригінал.
-      const isAlreadyTranslated =
-        !!e.originalEn && e.en !== e.originalEn && HAS_CYR.test(e.en);
-      const text = isAlreadyTranslated
-        ? e.en
-        : (e.originalEn ?? e.en ?? "");
+      // Кінцевий текст залежить від обраного режиму:
+      //   "original"    — завжди беремо .bak/originalEn (англ-еталон)
+      //   "translation" — поточне значення (.en, навіть якщо ще не перекладене)
+      //   "auto"        — старий smart-режим: переклад якщо є кирилиця і ≠ orig,
+      //                   інакше англ-оригінал
+      let text: string;
+      if (kind === "original") {
+        text = e.originalEn ?? e.en ?? "";
+      } else if (kind === "translation") {
+        text = e.en ?? "";
+      } else {
+        const isAlreadyTranslated =
+          !!e.originalEn && e.en !== e.originalEn && HAS_CYR.test(e.en);
+        text = isAlreadyTranslated ? e.en : (e.originalEn ?? e.en ?? "");
+      }
       return {
         index: i + 1,
         speaker,
@@ -612,10 +623,44 @@ export const useStore = create<State>((set, get) => ({
   async setFileEdited(filePath, edited) {
     const { folder, statuses } = get();
     if (!folder) return;
+
+    // Файл-level прапор «edited».
     const files = { ...(statuses.files ?? {}) };
     const cur = files[filePath] ?? {};
     files[filePath] = { ...cur, edited: edited ? true : undefined };
-    let next: StatusFile = { ...statuses, files };
+
+    // Розставити статус «approved» (ПКМ-затвердити) на всі рядки файла, коли
+    // користувач вмикає «Зредаговано». При знятті — прибираємо тільки
+    // «approved», бо ручні draft/review мають залишитись.
+    const entryMap = { ...statuses.entries };
+    const touchedKeys: string[] = [];
+    try {
+      const [raw, bak] = await Promise.all([
+        window.dp2.readFile(filePath),
+        window.dp2.readBackup(filePath),
+      ]);
+      const tree = JSON.parse(raw);
+      let originalTree: any = null;
+      if (bak) { try { originalTree = JSON.parse(bak); } catch {} }
+      const fileEntries = flatten(filePath, tree, originalTree);
+      for (const e of fileEntries) {
+        const k = dp2StatusKey(e);
+        const curEntry = entryMap[k];
+        if (edited) {
+          entryMap[k] = { ...(curEntry ?? {}), status: "approved" };
+          touchedKeys.push(k);
+        } else if (curEntry?.status === "approved") {
+          entryMap[k] = { ...curEntry, status: undefined };
+          touchedKeys.push(k);
+        }
+      }
+    } catch (e) {
+      console.warn("setFileEdited: failed to read file for status bulk-update:", e);
+    }
+
+    let next: StatusFile = { ...statuses, files, entries: entryMap };
+    // Прибрати порожні entry/file-meta, утворені при знятті прапорців.
+    for (const k of touchedKeys) next = pruneEntry(next, k);
     next = pruneFileMeta(next, filePath);
     set({ statuses: next });
     try { await writeStatusFile(statusFilePath(folder), next); } catch {}

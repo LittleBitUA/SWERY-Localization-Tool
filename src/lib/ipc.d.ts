@@ -678,6 +678,148 @@ declare global {
       tglFontsReadAtlasBase64: (path: string) => Promise<{ ok: boolean; base64?: string; error?: string }>;
       tglFontsWriteAtlasBase64: (payload: { pngPath: string; base64: string }) => Promise<{ ok: boolean; bakPath?: string; error?: string }>;
 
+      // D4 — Fonts
+      d4FontsStatus: () => Promise<{
+        ok: boolean;
+        d4Root: string | null;
+        utilityCooked: string | null;
+        utilityUncompressed: string | null;
+        dirs: {
+          baseDir: string; metaDir: string; atlasDir: string;
+          previewDir: string; generatedDir: string; mappingFile: string;
+        };
+        extracted: boolean;
+        extractedCount: number;
+        previewCount: number;
+        mapping: Record<string, { ttfPath: string; source?: string }>;
+        tools: { decompressExe: string | null; uelibDll: string | null; ready: boolean };
+      }>;
+      d4FontsExtract: () => Promise<{
+        ok: boolean; error?: string; warning?: string;
+        metadata?: { count?: number; items?: Array<{ name: string; charactersCount?: number; fontSize?: number; textures?: number }> } | null;
+        previews?: { count?: number; items?: Array<{ name: string; ok: boolean; w?: number; h?: number; format?: string; error?: string }> } | null;
+      }>;
+      d4FontsGenerate: () => Promise<{
+        ok: boolean; error?: string;
+        results?: Array<{ name: string; ok: boolean; error?: string; outDir?: string }>;
+      }>;
+      d4FontsPack: () => Promise<{
+        ok: boolean; error?: string;
+        outUpk?: string; gameUpk?: string;
+        fonts?: Array<{ name: string; ok: boolean; error?: string }>;
+      }>;
+      d4FontsPickTtf: (payload: { fontName: string }) => Promise<{ ok: boolean; error?: string; fontName?: string; ttfPath?: string }>;
+      d4FontsClearTtf: (fontName: string) => Promise<{ ok: boolean; error?: string }>;
+      d4FontsReadPreview: (fontName: string) => Promise<{ ok: boolean; base64?: string; error?: string }>;
+      d4FontsReadGenerated: (fontName: string) => Promise<{ ok: boolean; base64?: string; error?: string }>;
+      onD4FontsProgress: (cb: (line: string) => void) => () => void;
+
+      // D4 (Dark Dreams Don't Die) — UE3 v888 text editor.
+      d4TextStatus: () => Promise<{
+        ok: boolean;
+        d4Root: string | null;
+        cooked: string | null;
+        cookedError: string | null;
+        sourceFiles: Array<{ name: string; fullPath: string; isUtility: boolean }>;
+        baseDir: string;
+        originalDir: string;
+        doneDir: string;
+        decompressedDir: string;
+        toolsDir: string;
+        originalCount: number;
+        doneCount: number;
+        tools: {
+          decompressExe: string | null;
+          uelibDll: string | null;
+          ready: boolean;
+        };
+      }>;
+      d4TextExtract: () => Promise<{
+        ok: boolean;
+        error?: string;
+        results?: Array<{ name: string; ok: boolean; entries?: number; error?: string }>;
+      }>;
+      d4TextList: () => Promise<{
+        ok: boolean;
+        items: Array<{
+          name: string;
+          origPath: string;
+          donePath: string;
+          origSize: number;
+          doneSize: number;
+          doneMtime: number;
+          entries: number;
+          strings: number;
+          translated: number;
+        }>;
+      }>;
+      d4TextRead: (fullPath: string) => Promise<{ ok: boolean; content?: string; error?: string }>;
+      d4TextWrite: (payload: { fullPath: string; content: string }) => Promise<{ ok: boolean; error?: string }>;
+      d4TextPack: () => Promise<{
+        ok: boolean;
+        error?: string;
+        results?: Array<{ name: string; ok: boolean; error?: string }>;
+      }>;
+      d4TextCorpusStats: () => Promise<{
+        ok: boolean; error?: string;
+        files?: number; total?: number; translated?: number;
+        percent?: number; hasData?: boolean;
+      }>;
+      d4TextCorpusStatsFull: () => Promise<{
+        ok: boolean; error?: string;
+        filesCount?: number; totalEntries?: number; totalStrings?: number;
+        totalTranslated?: number; percent?: number;
+        enWords?: number; uaWords?: number; enChars?: number; uaChars?: number;
+        files?: Array<{
+          name: string; entries: number; strings: number; translated: number;
+          percent: number; enWords: number; uaWords: number; enChars: number; uaChars: number;
+        }>;
+      }>;
+      d4TextSearchAll: (payload: {
+        query: string;
+        opts: { caseSensitive?: boolean; wholeWord?: boolean; regex?: boolean };
+      }) => Promise<{
+        ok: boolean; error?: string; truncated?: boolean;
+        hits?: Array<{
+          file: string; msgIdx: number; objectName: string;
+          fileName: string | null; field: string; strIdx: number; text: string;
+        }>;
+      }>;
+      d4TextBatchReplace: (payload: {
+        query: string; replacement: string;
+        opts: { caseSensitive?: boolean; wholeWord?: boolean; regex?: boolean; dryRun?: boolean };
+      }) => Promise<{
+        ok: boolean; error?: string; dryRun?: boolean; totalReplaced?: number;
+        files?: Array<{ name: string; replaced: number }>;
+      }>;
+      d4MetaRead: (donePath?: string) => Promise<{
+        ok: boolean; error?: string;
+        all?: Record<string, Record<string, { status?: string; bookmark?: boolean; note?: string }>>;
+        perFile?: Record<string, { status?: string; bookmark?: boolean; note?: string }>;
+      }>;
+      d4MetaWrite: (payload: {
+        donePath: string;
+        perFile: Record<string, { status?: string; bookmark?: boolean; note?: string }>;
+      }) => Promise<{ ok: boolean; error?: string }>;
+      d4GlossaryRead: () => Promise<{
+        ok: boolean; error?: string;
+        entries?: Array<{ src: string; tgt: string; note?: string }>;
+      }>;
+      d4GlossaryWrite: (payload: { entries: Array<{ src: string; tgt: string; note?: string }> }) => Promise<{ ok: boolean; error?: string }>;
+      d4TmBuild: () => Promise<{
+        ok: boolean; error?: string;
+        pairs?: Array<{ en: string; ua: string; file: string; objectName: string }>;
+      }>;
+      d4TextExportTxt: (payload: { donePath: string; outPath?: string }) => Promise<{
+        ok: boolean; error?: string; txtPath?: string; bytes?: number;
+      }>;
+      d4TextImportTxt: (payload: { donePath: string; txtPath: string }) => Promise<{
+        ok: boolean; error?: string;
+        applied?: number; skipped?: number; missing?: number; blocks?: number;
+      }>;
+      onD4TextProgress: (cb: (line: string) => void) => () => void;
+      onD4TextPackProgress: (cb: (line: string) => void) => () => void;
+
       // TGL (The Good Life)
       tglLoad: (binPath: string) => Promise<{
         ok?: boolean;
@@ -872,6 +1014,8 @@ export interface DpSettings {
   dp1GameDir?: string;
   // TGL (The Good Life)
   tglBinPath?: string;
+  // D4 (Dark Dreams Don't Die) — корінь Steam-теки гри.
+  d4Root?: string;
   // Update check
   lastUpdateCheck?: number;
   lastUpdateCache?: {

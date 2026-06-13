@@ -14,11 +14,12 @@ interface Props {
 export function AppSettingsModal({ open, onClose }: Props) {
   const t = useT();
   const [lang, setLangState] = useState<Lang>(getLang());
-  // Корінні теки 4 ігор. main.cjs сам шукає всередині потрібні ассети.
+  // Корінні теки 5 ігор. main.cjs сам шукає всередині потрібні ассети.
   const [dp2Root, setDp2Root] = useState("");
   const [tglRoot, setTglRoot] = useState("");
   const [dp1Root, setDp1Root] = useState("");
   const [hbrRoot, setHbrRoot] = useState("");
+  const [d4Root, setD4Root] = useState("");
   const [detectStatus, setDetectStatus] = useState<Record<string, string>>({});
   // Autosave (crash-recovery)
   const [autosaveDir, setAutosaveDir] = useState("");
@@ -33,11 +34,12 @@ export function AppSettingsModal({ open, onClose }: Props) {
     if (!open) return;
     setLangState(getLang());
     window.dp2.getSettings().then((s) => {
-      const ss = s as { dp2Root?: string; tglRoot?: string; dp1Root?: string; hbrRoot?: string; autosaveDir?: string; autosaveIntervalMin?: number };
+      const ss = s as { dp2Root?: string; tglRoot?: string; dp1Root?: string; hbrRoot?: string; d4Root?: string; autosaveDir?: string; autosaveIntervalMin?: number };
       setDp2Root(ss.dp2Root ?? "");
       setTglRoot(ss.tglRoot ?? "");
       setDp1Root(ss.dp1Root ?? "");
       setHbrRoot(ss.hbrRoot ?? "");
+      setD4Root(ss.d4Root ?? "");
       setAutosaveDir(ss.autosaveDir ?? "");
       setAutosaveIntervalMin(typeof ss.autosaveIntervalMin === "number" ? ss.autosaveIntervalMin : 1);
     });
@@ -157,6 +159,7 @@ export function AppSettingsModal({ open, onClose }: Props) {
                 { key: "tglRoot", folder: "The Good Life",                         label: t("set.games.tgl"), value: tglRoot, setter: setTglRoot, placeholder: "…\\steamapps\\common\\The Good Life" },
                 { key: "dp1Root", folder: "Deadly Premonition The Director's Cut", label: t("set.games.dp1"), value: dp1Root, setter: setDp1Root, placeholder: "…\\steamapps\\common\\Deadly Premonition The Director's Cut" },
                 { key: "hbrRoot", folder: "HOTEL BARCELONA",                       label: t("set.games.hbr"), value: hbrRoot, setter: setHbrRoot, placeholder: "…\\steamapps\\common\\HOTEL BARCELONA" },
+                { key: "d4Root",  folder: "D4 Dark Dreams Dont Die",               label: t("set.games.d4"),  value: d4Root,  setter: setD4Root,  placeholder: "…\\steamapps\\common\\D4 Dark Dreams Dont Die" },
               ] as const).map((g) => (
                 <div key={g.key}>
                   <div className="flex items-center justify-between mb-1">

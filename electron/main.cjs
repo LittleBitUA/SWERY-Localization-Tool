@@ -217,7 +217,7 @@ const RENDERER_ALLOWED_KEYS = new Set([
   "dp1EngPath", "tglBinPath", "tglTxtPath",
   "tglMonoBundlePath", "tglMonoOutDir", "tglMonoFilter",
   "dp2LastFile",
-  "dp1Root", "dp2Root", "tglRoot", "hbrRoot", "missingRoot",
+  "dp1Root", "dp2Root", "tglRoot", "hbrRoot", "missingRoot", "d4Root",
   "autosaveDir", "autosaveIntervalMin",
   "recentItemsDismissed", "hbrFontsGuideSeen",
   "dismissedUpdateVersion",
@@ -6385,6 +6385,1244 @@ async function findSteamGame(folderName) {
   }
   return { ok: false, error: `Game folder "${folderName}" not found in any Steam library` };
 }
+
+// ── D4 (Dark Dreams Don't Die) — UE3 v888 text editor ────────────
+// Pipeline: COMPRESSED (LZO) msg_en_*.upk у грі → decompress.exe (Gildor) →
+// uncompressed .upk → d4-text-export.ps1 (UELib + UPropertyTag stream)
+// → JSON у Documents\SWERY-Localization-Tool\D4\Text\Original\.
+// Mirror у Done/ для редагування. Pack — d4-text-import.ps1 будує
+// uncompressed .upk з виправленим ExportTable + Latin-1 FString.
+
+async function d4TextDirs() {
+  const settings = await readSettings();
+  let toolsDir = settings.toolsDir;
+  if (!toolsDir) toolsDir = path.join(app.getPath("documents"), "SWERY-Localization-Tool");
+  const baseDir = path.join(toolsDir, "D4", "Text");
+  const tools = path.join(toolsDir, "D4", "Tools");
+  return {
+    baseDir,
+    originalDir: path.join(baseDir, "Original"),
+    doneDir: path.join(baseDir, "Done"),
+    decompressedDir: path.join(baseDir, "Decompressed"),
+    toolsDir: tools,
+  };
+}
+
+// Шукаємо decompress.exe (Gildor) + Eliot.UELib.dll по кільком стандартним
+// розташуванням. Якщо нема — повертаємо missing, UI запропонує prep.
+async function d4ResolveTools() {
+  const { toolsDir } = await d4TextDirs();
+  const cands = {
+    decompress: [
+      path.join(toolsDir, "decompress.exe"),
+      resolveResource("scripts/d4-tools/decompress.exe"),
+    ],
+    uelib: [
+      path.join(toolsDir, "Eliot.UELib.dll"),
+      path.join(toolsDir, "lib", "net8.0", "Eliot.UELib.dll"),
+      path.join(app.getPath("temp"), "uelib", "extracted", "lib", "net8.0", "Eliot.UELib.dll"),
+      resolveResource("scripts/d4-tools/Eliot.UELib.dll"),
+    ],
+  };
+  async function firstExists(arr) {
+    for (const p of arr) { try { await fs.access(p); return p; } catch {} }
+    return null;
+  }
+  return {
+    decompressExe: await firstExists(cands.decompress),
+    uelibDll: await firstExists(cands.uelib),
+  };
+}
+
+// Знаходимо у <d4Root> теку Ms01Game\CookedPCConsole і повертаємо список
+// upk-файлів, які підлягають перекладу: msg_en_*.upk + Ms01Utility_LOC_INT.upk.
+async function d4ResolveCooked(d4Root) {
+  if (!d4Root) return { ok: false, error: "d4Root not set" };
+  const cookedDir = path.join(d4Root, "Ms01Game", "CookedPCConsole");
+  try { await fs.access(cookedDir); }
+  catch { return { ok: false, error: "CookedPCConsole not found at " + cookedDir }; }
+  let entries = [];
+  try { entries = await fs.readdir(cookedDir); }
+  catch (e) { return { ok: false, error: String(e?.message ?? e) }; }
+  // Тільки msg_en_*_SF.upk — там лежать всі ігрові діалоги (Ms01DataMessage).
+  // Ms01Utility_LOC_INT.upk до тексту НЕ відноситься: цей пакет містить лише
+  // 25 UFont + 175 Texture2D-атласів (бібліотека шрифтів гри). Для нього
+  // окремий font-pipeline у вкладці «Шрифти».
+  const msg = entries.filter((n) => /^msg_en_.+_SF\.upk$/i.test(n)).sort();
+  return {
+    ok: true,
+    cookedDir,
+    files: msg.map((name) => ({
+      name,
+      fullPath: path.join(cookedDir, name),
+      isUtility: false,
+    })),
+  };
+}
+
+ipcMain.handle("dp2:d4-text-status", async () => {
+  const settings = await readSettings();
+  const d4Root = settings.d4Root || null;
+  const { baseDir, originalDir, doneDir, decompressedDir, toolsDir } = await d4TextDirs();
+  const cooked = d4Root ? await d4ResolveCooked(d4Root) : { ok: false, error: "d4Root not set" };
+  const tools = await d4ResolveTools();
+  // Поточний стан файлів у Done/Original: скільки .json лежить + швидкі
+  // обсяги (для прогрес-бара та "X / Y" на головній картці).
+  let originalCount = 0, doneCount = 0;
+  try { const e = await fs.readdir(originalDir); originalCount = e.filter((f) => f.endsWith(".json")).length; } catch {}
+  try { const e = await fs.readdir(doneDir); doneCount = e.filter((f) => f.endsWith(".json")).length; } catch {}
+  return {
+    ok: true,
+    d4Root,
+    cooked: cooked.ok ? cooked.cookedDir : null,
+    cookedError: cooked.ok ? null : cooked.error,
+    sourceFiles: cooked.ok ? cooked.files : [],
+    baseDir, originalDir, doneDir, decompressedDir, toolsDir,
+    originalCount, doneCount,
+    tools: {
+      decompressExe: tools.decompressExe,
+      uelibDll: tools.uelibDll,
+      ready: !!tools.decompressExe && !!tools.uelibDll,
+    },
+  };
+});
+
+ipcMain.handle("dp2:d4-text-extract", async () => {
+  const settings = await readSettings();
+  const d4Root = settings.d4Root;
+  if (!d4Root) return { ok: false, error: "d4Root не задано" };
+  const cooked = await d4ResolveCooked(d4Root);
+  if (!cooked.ok) return { ok: false, error: cooked.error };
+  const tools = await d4ResolveTools();
+  if (!tools.decompressExe) return { ok: false, error: "decompress.exe не знайдено" };
+  if (!tools.uelibDll) return { ok: false, error: "Eliot.UELib.dll не знайдено (поклади у Documents/SWERY-Localization-Tool/D4/Tools/)" };
+  const pwshLookup = await findPwsh(settings);
+  if (!pwshLookup) return { ok: false, error: "PowerShell 7 не знайдено" };
+  const { originalDir, doneDir, decompressedDir } = await d4TextDirs();
+  await fs.mkdir(originalDir, { recursive: true });
+  await fs.mkdir(doneDir, { recursive: true });
+  // Скидаємо кеш Decompressed/ — раніше тут могли залишитись compressed
+  // копії від попередньої (зламаної) версії pipeline, які parser приймає
+  // як готові й валиться на CompressionFlags=2. Безпечніше завжди заново.
+  try { await fs.rm(decompressedDir, { recursive: true, force: true }); } catch {}
+  await fs.mkdir(decompressedDir, { recursive: true });
+  const exportScript = resolveResource("scripts/d4-text-export.ps1");
+  const win = BrowserWindow.getAllWindows()[0];
+  function emit(line) {
+    try { win?.webContents.send("dp2:d4-text-progress", line); } catch {}
+  }
+  // Працюємо файл за файлом: decompress (якщо ще нема uncompressed копії у
+  // Decompressed/) → export JSON у Original/<name>.json → копія в Done/ (якщо
+  // там ще нема — Done — це робоча тека користувача).
+  const results = [];
+  for (const src of cooked.files) {
+    const baseName = src.name.replace(/\.upk$/i, "");
+    const decompressedPath = path.join(decompressedDir, src.name);
+    const jsonOrig = path.join(originalDir, baseName + ".json");
+    const jsonDone = path.join(doneDir, baseName + ".json");
+    emit(`[STEP] ${src.name}`);
+    // 1. Decompress (якщо потрібно).
+    let needsDecompress = true;
+    try { const st = await fs.stat(decompressedPath); if (st.size > 0) needsDecompress = false; } catch {}
+    if (needsDecompress) {
+      emit(`[STEP] decompress ${src.name}…`);
+      const dec = await new Promise((resolve) => {
+        // Gildor decompress.exe: `-out=<dir> <src>` → пише <dir>/<srcName>
+        // напряму (без .dec суфіксу). Працюємо безпосередньо з ігровим
+        // файлом — у Steam-тецi нічого не змінюємо, output у Decompressed/.
+        const args = [`-out=${decompressedDir}`, src.fullPath];
+        const child = spawn(tools.decompressExe, args, { windowsHide: true });
+        let all = "";
+        child.stdout.on("data", (d) => { all += d.toString(); });
+        child.stderr.on("data", (d) => { all += d.toString(); });
+        child.on("error", (err) => resolve({ ok: false, error: err.message, log: all }));
+        child.on("exit", async () => {
+          try {
+            const st = await fs.stat(decompressedPath);
+            if (st.size > 0) { resolve({ ok: true, log: all }); return; }
+            resolve({ ok: false, error: "decompress: output 0 bytes", log: all });
+          } catch (e) {
+            const tail = all.split("\n").slice(-6).join(" ").trim();
+            resolve({ ok: false, error: `decompress: no output at ${decompressedPath}. ${tail || e.message}`, log: all });
+          }
+        });
+      });
+      if (!dec.ok) {
+        emit(`[ERR] decompress ${src.name}: ${dec.error}`);
+        results.push({ name: src.name, ok: false, error: dec.error });
+        continue;
+      }
+    } else {
+      emit(`[SKIP] decompress (cached) ${src.name}`);
+    }
+    // 2. Export JSON.
+    emit(`[STEP] export ${baseName}.json…`);
+    const exp = await new Promise((resolve) => {
+      const args = [
+        "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass",
+        "-File", exportScript,
+        "-SrcUpk", decompressedPath,
+        "-OutJson", jsonOrig,
+        "-UelibDll", tools.uelibDll,
+      ];
+      const child = spawn(pwshLookup, args, { windowsHide: true });
+      let leftover = "", all = "";
+      const onData = (chunk) => {
+        all += chunk;
+        leftover += chunk;
+        const lines = leftover.split(/\r?\n/);
+        leftover = lines.pop() || "";
+        for (const ln of lines) {
+          if (!ln.trim()) continue;
+          emit(`  ${ln}`);
+        }
+      };
+      child.stdout.on("data", (d) => onData(d.toString()));
+      child.stderr.on("data", (d) => onData(d.toString()));
+      child.on("error", (err) => resolve({ ok: false, error: err.message, log: all }));
+      child.on("exit", (code) => {
+        if (code !== 0) {
+          const tail = all.split("\n").slice(-15).join("\n").trim();
+          resolve({ ok: false, error: tail || `exit ${code}`, log: all });
+          return;
+        }
+        let summary = null;
+        const m = all.match(/RESULT_JSON:\s*(.+)$/m);
+        if (m) { try { summary = JSON.parse(m[1]); } catch {} }
+        resolve({ ok: true, summary, log: all });
+      });
+    });
+    if (!exp.ok) {
+      emit(`[ERR] export ${src.name}: ${exp.error}`);
+      results.push({ name: src.name, ok: false, error: exp.error });
+      continue;
+    }
+    // 3. Mirror у Done/ (якщо ще нема — копіюємо з Original).
+    try { await fs.access(jsonDone); }
+    catch {
+      try { await fs.copyFile(jsonOrig, jsonDone); }
+      catch (e) { emit(`[WARN] mirror Done: ${e.message}`); }
+    }
+    results.push({ name: src.name, ok: true, entries: exp.summary?.entries ?? 0 });
+  }
+  const ok = results.every((r) => r.ok);
+  return { ok, results };
+});
+
+ipcMain.handle("dp2:d4-text-list", async () => {
+  const { originalDir, doneDir } = await d4TextDirs();
+  let names = [];
+  try { names = (await fs.readdir(originalDir)).filter((n) => n.endsWith(".json")).sort(); } catch {}
+  const items = [];
+  for (const name of names) {
+    const origPath = path.join(originalDir, name);
+    const donePath = path.join(doneDir, name);
+    let origSize = 0, doneSize = 0, doneMtime = 0;
+    try { const st = await fs.stat(origPath); origSize = st.size; } catch {}
+    try { const st = await fs.stat(donePath); doneSize = st.size; doneMtime = st.mtimeMs; } catch {}
+    // «Перекладено» = m_aString рядок у Done відрізняється від відповідного
+    // у Original (реальна правка користувача). Це точніше, ніж шукати
+    // кирилицю — у DLC-пакетах гри є власні юнікод-рядки (імена в credits
+    // тощо), які давали хибно-позитивний "переклад" без жодної дії юзера.
+    let entries = 0, strings = 0, translated = 0;
+    try {
+      const [origRaw, doneRaw] = await Promise.all([
+        fs.readFile(origPath, "utf8").catch(() => "[]"),
+        fs.readFile(donePath, "utf8").catch(() => "[]"),
+      ]);
+      const origArr = JSON.parse(origRaw);
+      const doneArr = JSON.parse(doneRaw);
+      if (Array.isArray(doneArr)) {
+        entries = doneArr.length;
+        const origByName = new Map();
+        if (Array.isArray(origArr)) {
+          for (const e of origArr) if (e?.objectName) origByName.set(e.objectName, e);
+        }
+        for (const e of doneArr) {
+          const s = Array.isArray(e?.m_aString) ? e.m_aString : [];
+          strings += s.length;
+          const orig = origByName.get(e?.objectName);
+          const origStr = Array.isArray(orig?.m_aString) ? orig.m_aString : [];
+          for (let i = 0; i < s.length; i++) {
+            const v = s[i];
+            const ov = origStr[i] ?? "";
+            if (typeof v === "string" && v !== ov && v.trim() !== "") translated++;
+          }
+        }
+      }
+    } catch {}
+    items.push({
+      name, origPath, donePath,
+      origSize, doneSize, doneMtime,
+      entries, strings, translated,
+    });
+  }
+  return { ok: true, items };
+});
+
+ipcMain.handle("dp2:d4-text-read", async (_e, fullPath) => {
+  try {
+    const raw = await fs.readFile(String(fullPath), "utf8");
+    return { ok: true, content: raw };
+  } catch (e) { return { ok: false, error: String(e?.message ?? e) }; }
+});
+
+ipcMain.handle("dp2:d4-text-write", async (_e, payload) => {
+  const fullPath = String((payload && payload.fullPath) || "").trim();
+  const content = String((payload && payload.content) ?? "");
+  if (!fullPath) return { ok: false, error: "fullPath missing" };
+  try {
+    const safe = assertSafeWritePath(fullPath);
+    return await withFileLock(safe, async () => {
+      // Quick sanity: чи парситься JSON, щоб не зберігати ламаний файл.
+      try { JSON.parse(content); }
+      catch (e) { return { ok: false, error: "Invalid JSON: " + e.message }; }
+      await fs.mkdir(path.dirname(safe), { recursive: true });
+      // .bak — перший save за сесію (якщо ще нема .bak і файл існує).
+      const bakPath = safe + ".bak";
+      try {
+        await fs.access(bakPath);
+      } catch {
+        try { await fs.copyFile(safe, bakPath); } catch {}
+      }
+      await fs.writeFile(safe, content, "utf8");
+      return { ok: true };
+    });
+  } catch (e) { return { ok: false, error: String(e?.message ?? e) }; }
+});
+
+// Повна статистика — для CorpusStatsModal. Делегуємо у heavy-worker
+// (worker_threads), щоб не блокувати main під час парсингу cmn.json (~13 MB).
+ipcMain.handle("dp2:d4-text-corpus-stats-full", async () => {
+  try {
+    const { originalDir, doneDir } = await d4TextDirs();
+    const r = await callHeavy("d4-corpus-stats-full", { originalDir, doneDir });
+    return { ok: true, ...r };
+  } catch (e) { return { ok: false, error: String(e?.message ?? e) }; }
+});
+
+// Глобальний пошук по всіх Done JSON — теж у worker.
+ipcMain.handle("dp2:d4-text-search-all", async (_e, payload) => {
+  const query = String((payload && payload.query) || "");
+  const opts = (payload && payload.opts) || {};
+  if (!query) return { ok: true, hits: [], truncated: false };
+  try {
+    const { doneDir } = await d4TextDirs();
+    const r = await callHeavy("d4-search-all", { doneDir, query, opts });
+    return { ok: true, ...r };
+  } catch (e) { return { ok: false, error: String(e?.message ?? e) }; }
+});
+
+// Batch replace cross-file. Йде по Done JSON всіх 14, робить заміну, пише.
+ipcMain.handle("dp2:d4-text-batch-replace", async (_e, payload) => {
+  const query = String((payload && payload.query) || "");
+  const replacement = String((payload && payload.replacement) ?? "");
+  const opts = (payload && payload.opts) || {};
+  const dryRun = !!opts.dryRun;
+  if (!query) return { ok: false, error: "query missing" };
+  let rx;
+  try {
+    const flags = opts.caseSensitive ? "g" : "gi";
+    if (opts.regex) rx = new RegExp(query, flags);
+    else {
+      let q = query.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+      if (opts.wholeWord) q = `\\b${q}\\b`;
+      rx = new RegExp(q, flags);
+    }
+  } catch (e) { return { ok: false, error: "bad-regex: " + e.message }; }
+  const { doneDir } = await d4TextDirs();
+  let names = [];
+  try { names = (await fs.readdir(doneDir)).filter((n) => n.endsWith(".json")); } catch {}
+  const results = [];
+  let totalReplaced = 0;
+  for (const name of names) {
+    const donePath = path.join(doneDir, name);
+    try {
+      const raw = await fs.readFile(donePath, "utf8");
+      const arr = JSON.parse(raw);
+      if (!Array.isArray(arr)) continue;
+      let count = 0;
+      for (const m of arr) {
+        if (Array.isArray(m?.m_aString)) {
+          for (let i = 0; i < m.m_aString.length; i++) {
+            const v = m.m_aString[i] ?? "";
+            const next = v.replace(rx, (m0) => { count++; return replacement; });
+            if (next !== v) m.m_aString[i] = next;
+          }
+        }
+      }
+      if (count > 0) {
+        totalReplaced += count;
+        if (!dryRun) {
+          const safe = assertSafeWritePath(donePath);
+          const bak = safe + ".bak";
+          try { await fs.access(bak); } catch { try { await fs.copyFile(safe, bak); } catch {} }
+          await fs.writeFile(safe, JSON.stringify(arr, null, 2), "utf8");
+        }
+        results.push({ name, replaced: count });
+      }
+    } catch {}
+  }
+  return { ok: true, dryRun, totalReplaced, files: results };
+});
+
+// Per-entry meta: статус (draft/review/approved) + закладка + нотатка.
+// Sidecar: <doneDir>/.d4-meta.json — { "<fileName>": { "<objectName>": {...} } }.
+async function d4MetaFile() {
+  const { doneDir } = await d4TextDirs();
+  return path.join(doneDir, ".d4-meta.json");
+}
+ipcMain.handle("dp2:d4-meta-read", async (_e, donePath) => {
+  try {
+    const file = await d4MetaFile();
+    const name = donePath ? path.basename(String(donePath)) : null;
+    let all = {};
+    try { all = JSON.parse(await fs.readFile(file, "utf8")); } catch {}
+    return { ok: true, all, perFile: name ? (all[name] ?? {}) : {} };
+  } catch (e) { return { ok: false, error: String(e?.message ?? e) }; }
+});
+ipcMain.handle("dp2:d4-meta-write", async (_e, payload) => {
+  const donePath = String((payload && payload.donePath) || "");
+  const perFile = (payload && payload.perFile) || {};
+  if (!donePath) return { ok: false, error: "donePath missing" };
+  try {
+    const file = await d4MetaFile();
+    let all = {};
+    try { all = JSON.parse(await fs.readFile(file, "utf8")); } catch {}
+    all[path.basename(donePath)] = perFile;
+    await fs.mkdir(path.dirname(file), { recursive: true });
+    await fs.writeFile(file, JSON.stringify(all, null, 2), "utf8");
+    return { ok: true };
+  } catch (e) { return { ok: false, error: String(e?.message ?? e) }; }
+});
+
+// Glossary: <doneDir>/.d4-glossary.json — масив { src, tgt, note? }.
+async function d4GlossaryFile() {
+  const { doneDir } = await d4TextDirs();
+  return path.join(doneDir, ".d4-glossary.json");
+}
+ipcMain.handle("dp2:d4-glossary-read", async () => {
+  try {
+    const file = await d4GlossaryFile();
+    let entries = [];
+    try { entries = JSON.parse(await fs.readFile(file, "utf8")); } catch {}
+    if (!Array.isArray(entries)) entries = [];
+    return { ok: true, entries };
+  } catch (e) { return { ok: false, error: String(e?.message ?? e) }; }
+});
+ipcMain.handle("dp2:d4-glossary-write", async (_e, payload) => {
+  const entries = Array.isArray(payload?.entries) ? payload.entries : [];
+  try {
+    const file = await d4GlossaryFile();
+    await fs.mkdir(path.dirname(file), { recursive: true });
+    await fs.writeFile(file, JSON.stringify(entries, null, 2), "utf8");
+    return { ok: true };
+  } catch (e) { return { ok: false, error: String(e?.message ?? e) }; }
+});
+
+// Translation Memory — у worker_threads (швидке для cmn).
+ipcMain.handle("dp2:d4-tm-build", async () => {
+  try {
+    const { originalDir, doneDir } = await d4TextDirs();
+    const r = await callHeavy("d4-tm-build", { originalDir, doneDir });
+    return { ok: true, ...r };
+  } catch (e) { return { ok: false, error: String(e?.message ?? e) }; }
+});
+
+// Швидка статистика для головного екрану (HomeV2): сума по всіх 14 JSON.
+// Підраховує totalStrings (м_aString) + translated (Done != Original).
+ipcMain.handle("dp2:d4-text-corpus-stats", async () => {
+  try {
+    const { originalDir, doneDir } = await d4TextDirs();
+    let names = [];
+    try { names = (await fs.readdir(originalDir)).filter((n) => n.endsWith(".json")); } catch {}
+    let total = 0, translated = 0, files = 0;
+    for (const name of names) {
+      const origPath = path.join(originalDir, name);
+      const donePath = path.join(doneDir, name);
+      try {
+        const [origRaw, doneRaw] = await Promise.all([
+          fs.readFile(origPath, "utf8").catch(() => "[]"),
+          fs.readFile(donePath, "utf8").catch(() => "[]"),
+        ]);
+        const origArr = JSON.parse(origRaw);
+        const doneArr = JSON.parse(doneRaw);
+        if (!Array.isArray(doneArr)) continue;
+        files++;
+        const origByName = new Map();
+        if (Array.isArray(origArr)) for (const e of origArr) if (e?.objectName) origByName.set(e.objectName, e);
+        for (const e of doneArr) {
+          const arr = Array.isArray(e?.m_aString) ? e.m_aString : [];
+          const origArrStr = origByName.get(e?.objectName)?.m_aString ?? [];
+          total += arr.length;
+          for (let i = 0; i < arr.length; i++) {
+            const v = arr[i], ov = origArrStr[i] ?? "";
+            if (typeof v === "string" && v !== ov && v.trim() !== "") translated++;
+          }
+        }
+      } catch {}
+    }
+    return { ok: true, files, total, translated, percent: total > 0 ? (translated / total) * 100 : 0, hasData: names.length > 0 };
+  } catch (e) {
+    return { ok: false, error: String(e?.message ?? e) };
+  }
+});
+
+// ── TXT round-trip: експорт m_aString у .txt + імпорт назад ──────
+// Формат блоку:
+//   ### N — <objectName>[strIdx] — <fileName>
+//   <text>
+//   <blank line>
+// На відміну від JSON-структури, у .txt йде ОДИН рядок m_aString за блок
+// (flatten), щоб людина-перекладач легко обробляла. Імпорт мапить назад
+// за ключем "<objectName>[strIdx]".
+
+function d4EscapeForTxt(s) {
+  if (!s) return "";
+  let leading = 0;
+  while (s.startsWith("\n")) { leading++; s = s.slice(1); }
+  let trailing = 0;
+  while (s.endsWith("\n")) { trailing++; s = s.slice(0, -1); }
+  return "\\n".repeat(leading) + s + "\\n".repeat(trailing);
+}
+function d4UnescapeFromTxt(s) {
+  if (!s) return "";
+  return s.replace(/\r\n/g, "\n").replace(/\r/g, "\n")
+          .replace(/\\n/g, "\n").replace(/\\r/g, "\r");
+}
+
+function d4BuildTxt(donePayload, fileNameHint) {
+  const arr = Array.isArray(donePayload) ? donePayload : [];
+  const lines = [];
+  lines.push(`# D4 Text Export — ${fileNameHint}`);
+  lines.push(`# Формат: «### N — <objectName>[strIdx] — <fileName>». Між блоками — порожній рядок.`);
+  lines.push("");
+  let idx = 0;
+  for (const e of arr) {
+    const arrStr = Array.isArray(e?.m_aString) ? e.m_aString : [];
+    for (let i = 0; i < arrStr.length; i++) {
+      idx++;
+      const key = `${e.objectName}[${i}]`;
+      const head = `### ${idx} — ${key}` + (e.fileName ? ` — ${e.fileName}` : "");
+      lines.push(head);
+      lines.push(d4EscapeForTxt(String(arrStr[i] ?? "")));
+      lines.push("");
+    }
+  }
+  return lines.join("\r\n");
+}
+
+function d4ParseTxt(text) {
+  const norm = text.replace(/\r\n/g, "\n").replace(/\r/g, "\n");
+  const rows = norm.split("\n");
+  const BLOCK_RE = /^\s*###\s*(\d+)\s*[—–-]\s*([^\s—–-]+)\[(\d+)\](?:\s*[—–-]\s*(.+?))?\s*$/;
+  const blocks = [];
+  let cur = null;
+  for (const ln of rows) {
+    const m = ln.match(BLOCK_RE);
+    if (m) {
+      if (cur) blocks.push(cur);
+      cur = { idx: parseInt(m[1], 10), objectName: m[2], strIdx: parseInt(m[3], 10),
+              fileName: m[4] ?? null, lines: [] };
+    } else if (cur) {
+      cur.lines.push(ln);
+    }
+  }
+  if (cur) blocks.push(cur);
+  for (const b of blocks) {
+    while (b.lines.length && b.lines[b.lines.length - 1].trim() === "") b.lines.pop();
+    while (b.lines.length && b.lines[0].trim() === "") b.lines.shift();
+    b.text = d4UnescapeFromTxt(b.lines.join("\n"));
+    delete b.lines;
+  }
+  return blocks;
+}
+
+ipcMain.handle("dp2:d4-text-export-txt", async (_e, payload) => {
+  const donePath = String((payload && payload.donePath) || "").trim();
+  const outPath  = String((payload && payload.outPath)  || "").trim();
+  if (!donePath) return { ok: false, error: "donePath missing" };
+  try {
+    const raw = await fs.readFile(donePath, "utf8");
+    const data = JSON.parse(raw);
+    // Якщо renderer передав outPath (через pickSaveFile) — пишемо туди.
+    // Інакше — поруч з .json.
+    const txtPath = outPath || donePath.replace(/\.json$/i, ".txt");
+    const safe = assertSafeWritePath(txtPath);
+    const baseName = path.basename(donePath, path.extname(donePath));
+    const content = d4BuildTxt(data, baseName);
+    await fs.mkdir(path.dirname(safe), { recursive: true });
+    await fs.writeFile(safe, content, "utf8");
+    const st = await fs.stat(safe);
+    return { ok: true, txtPath: safe, bytes: st.size };
+  } catch (e) { return { ok: false, error: String(e?.message ?? e) }; }
+});
+
+ipcMain.handle("dp2:d4-text-import-txt", async (_e, payload) => {
+  const donePath = String((payload && payload.donePath) || "").trim();
+  const txtPath  = String((payload && payload.txtPath)  || "").trim();
+  if (!donePath || !txtPath) return { ok: false, error: "donePath/txtPath missing" };
+  try {
+    const [doneRaw, txtRaw] = await Promise.all([
+      fs.readFile(donePath, "utf8"),
+      fs.readFile(txtPath, "utf8"),
+    ]);
+    const arr = JSON.parse(doneRaw);
+    if (!Array.isArray(arr)) return { ok: false, error: "Done JSON не масив" };
+    const blocks = d4ParseTxt(txtRaw);
+    const byName = new Map();
+    for (const e of arr) if (e?.objectName) byName.set(e.objectName, e);
+    let applied = 0, skipped = 0, missing = 0;
+    for (const b of blocks) {
+      const entry = byName.get(b.objectName);
+      if (!entry || !Array.isArray(entry.m_aString)) { missing++; continue; }
+      if (b.strIdx >= entry.m_aString.length) { missing++; continue; }
+      if (entry.m_aString[b.strIdx] === b.text) { skipped++; continue; }
+      entry.m_aString[b.strIdx] = b.text;
+      applied++;
+    }
+    if (applied > 0) {
+      const safe = assertSafeWritePath(donePath);
+      const bakPath = safe + ".bak";
+      try { await fs.access(bakPath); } catch { try { await fs.copyFile(safe, bakPath); } catch {} }
+      await fs.writeFile(safe, JSON.stringify(arr, null, 2), "utf8");
+    }
+    return { ok: true, applied, skipped, missing, blocks: blocks.length };
+  } catch (e) { return { ok: false, error: String(e?.message ?? e) }; }
+});
+
+ipcMain.handle("dp2:d4-text-pack", async () => {
+  const settings = await readSettings();
+  const d4Root = settings.d4Root;
+  if (!d4Root) return { ok: false, error: "d4Root не задано" };
+  const cooked = await d4ResolveCooked(d4Root);
+  if (!cooked.ok) return { ok: false, error: cooked.error };
+  const tools = await d4ResolveTools();
+  if (!tools.uelibDll) return { ok: false, error: "UELib.dll не знайдено" };
+  const pwshLookup = await findPwsh(settings);
+  if (!pwshLookup) return { ok: false, error: "PowerShell 7 не знайдено" };
+  const { doneDir, decompressedDir } = await d4TextDirs();
+  const importScript = resolveResource("scripts/d4-text-import.ps1");
+  const win = BrowserWindow.getAllWindows()[0];
+  function emit(line) {
+    try { win?.webContents.send("dp2:d4-text-pack-progress", line); } catch {}
+  }
+  const results = [];
+  for (const src of cooked.files) {
+    const baseName = src.name.replace(/\.upk$/i, "");
+    const jsonDone = path.join(doneDir, baseName + ".json");
+    const decompressedPath = path.join(decompressedDir, src.name);
+    try { await fs.access(jsonDone); }
+    catch { emit(`[SKIP] ${src.name}: no Done/${baseName}.json`); continue; }
+    try { await fs.access(decompressedPath); }
+    catch { emit(`[SKIP] ${src.name}: no decompressed source (run Extract first)`); continue; }
+    const outUpk = src.fullPath; // напряму у грі
+    // Backup ВИХІДНОГО .upk у грі (одноразово).
+    const bakPath = outUpk + ".bak";
+    try { await fs.access(bakPath); }
+    catch { try { await fs.copyFile(outUpk, bakPath); emit(`[BAK] ${src.name}.bak`); } catch (e) { emit(`[WARN] bak: ${e.message}`); } }
+    emit(`[STEP] pack ${src.name}…`);
+    const res = await new Promise((resolve) => {
+      const args = [
+        "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass",
+        "-File", importScript,
+        "-SrcUpk", decompressedPath,
+        "-JsonPath", jsonDone,
+        "-OutUpk", outUpk,
+        "-UelibDll", tools.uelibDll,
+      ];
+      const child = spawn(pwshLookup, args, { windowsHide: true });
+      let leftover = "", all = "";
+      const onData = (chunk) => {
+        all += chunk;
+        leftover += chunk;
+        const lines = leftover.split(/\r?\n/);
+        leftover = lines.pop() || "";
+        for (const ln of lines) {
+          if (!ln.trim()) continue;
+          emit(`  ${ln}`);
+        }
+      };
+      child.stdout.on("data", (d) => onData(d.toString()));
+      child.stderr.on("data", (d) => onData(d.toString()));
+      child.on("error", (err) => resolve({ ok: false, error: err.message }));
+      child.on("exit", (code) => {
+        if (code !== 0) {
+          const tail = all.split("\n").slice(-15).join("\n").trim();
+          resolve({ ok: false, error: tail || `exit ${code}` });
+          return;
+        }
+        resolve({ ok: true });
+      });
+    });
+    results.push({ name: src.name, ...res });
+    if (!res.ok) emit(`[ERR] ${src.name}: ${res.error}`);
+  }
+  const ok = results.every((r) => r.ok);
+  return { ok, results };
+});
+
+// ── D4 Fonts: розпакування, TTF mapping, preview ─────────────────
+// Pipeline:
+//   1. Розпакувати Ms01Utility_LOC_INT.upk (LZO) — лежить у Text/Decompressed
+//      (спільна тека з текстом — той самий decompress.exe).
+//   2. d4-fonts-extract.ps1 — UFont meta + Texture2D атласи у Fonts/Meta + Atlases/.
+//   3. d4-fonts-preview.py — BC3/G8 декод у Fonts/Previews/<name>.png.
+//   4. UI: TTF picker → ttf-mapping.json.
+//   5. (Phase 2) make_paired_fonts.py / make_single_font.py + repack_*.py.
+
+async function d4FontsDirs() {
+  const settings = await readSettings();
+  let toolsDir = settings.toolsDir;
+  if (!toolsDir) toolsDir = path.join(app.getPath("documents"), "SWERY-Localization-Tool");
+  const baseDir = path.join(toolsDir, "D4", "Fonts");
+  return {
+    baseDir,
+    metaDir:     path.join(baseDir, "Meta"),
+    atlasDir:    path.join(baseDir, "Atlases"),
+    previewDir:  path.join(baseDir, "Previews"),
+    generatedDir: path.join(baseDir, "Generated"),
+    mappingFile: path.join(baseDir, "ttf-mapping.json"),
+  };
+}
+
+// Дефолтний mapping (з recon: My.ttf для newcinema/talkfont, Consolas-Regular/Bold
+// для consola/_b). Інші — порожньо, користувач сам обирає.
+function d4DefaultTtfMapping() {
+  return {
+    "newcinema":    { ttfPath: "F:\\My.ttf", source: "recon" },
+    "newcinema_s":  { ttfPath: "F:\\My.ttf", source: "recon" },
+    "talkfont":     { ttfPath: "F:\\My.ttf", source: "recon" },
+    "shadowfont":   { ttfPath: "F:\\My.ttf", source: "recon" },
+    "consola":      { ttfPath: "F:\\Consolas-Regular.ttf", source: "recon" },
+    "consola_b":    { ttfPath: "F:\\Consolas-Bold.ttf",    source: "recon" },
+  };
+}
+
+async function d4ReadMapping() {
+  const { mappingFile } = await d4FontsDirs();
+  try {
+    const raw = await fs.readFile(mappingFile, "utf8");
+    const obj = JSON.parse(raw);
+    if (obj && typeof obj === "object") return obj;
+  } catch {}
+  return {};
+}
+
+async function d4WriteMapping(map) {
+  const { baseDir, mappingFile } = await d4FontsDirs();
+  await fs.mkdir(baseDir, { recursive: true });
+  await fs.writeFile(mappingFile, JSON.stringify(map, null, 2), "utf8");
+}
+
+// Шлях до uncompressed Ms01Utility (його робить text-extract pipeline).
+async function d4UtilityUncompressed() {
+  const { decompressedDir } = await d4TextDirs();
+  const p = path.join(decompressedDir, "Ms01Utility_LOC_INT.upk");
+  try { await fs.access(p); return p; } catch { return null; }
+}
+
+ipcMain.handle("dp2:d4-fonts-status", async () => {
+  const settings = await readSettings();
+  const d4Root = settings.d4Root || null;
+  const dirs = await d4FontsDirs();
+  const tools = await d4ResolveTools();
+  const utilityUncompressed = await d4UtilityUncompressed();
+  // Скан Meta/ + Previews/.
+  let metaFiles = [], previewFiles = [];
+  try { metaFiles = (await fs.readdir(dirs.metaDir)).filter((n) => n.endsWith(".json")); } catch {}
+  try { previewFiles = (await fs.readdir(dirs.previewDir)).filter((n) => n.endsWith(".png")); } catch {}
+  const stored = await d4ReadMapping();
+  const defaults = d4DefaultTtfMapping();
+  // Об'єднуємо: stored перекриває defaults.
+  const mapping = { ...defaults, ...stored };
+  return {
+    ok: true,
+    d4Root,
+    utilityCooked: d4Root ? path.join(d4Root, "Ms01Game", "CookedPCConsole", "Ms01Utility_LOC_INT.upk") : null,
+    utilityUncompressed,
+    dirs,
+    extracted: metaFiles.length > 0,
+    extractedCount: metaFiles.length,
+    previewCount: previewFiles.length,
+    mapping,
+    tools: {
+      decompressExe: tools.decompressExe,
+      uelibDll: tools.uelibDll,
+      ready: !!tools.decompressExe && !!tools.uelibDll,
+    },
+  };
+});
+
+ipcMain.handle("dp2:d4-fonts-extract", async () => {
+  const settings = await readSettings();
+  const d4Root = settings.d4Root;
+  if (!d4Root) return { ok: false, error: "d4Root не задано" };
+  const tools = await d4ResolveTools();
+  if (!tools.uelibDll) return { ok: false, error: "Eliot.UELib.dll не знайдено" };
+  if (!tools.decompressExe) return { ok: false, error: "decompress.exe не знайдено" };
+  const pwshLookup = await findPwsh(settings);
+  if (!pwshLookup) return { ok: false, error: "PowerShell 7 не знайдено" };
+  const utilityCooked = path.join(d4Root, "Ms01Game", "CookedPCConsole", "Ms01Utility_LOC_INT.upk");
+  try { await fs.access(utilityCooked); }
+  catch { return { ok: false, error: "Ms01Utility_LOC_INT.upk не знайдено у грі" }; }
+  const { decompressedDir } = await d4TextDirs();
+  await fs.mkdir(decompressedDir, { recursive: true });
+  const dirs = await d4FontsDirs();
+  for (const d of [dirs.baseDir, dirs.metaDir, dirs.atlasDir, dirs.previewDir]) {
+    await fs.mkdir(d, { recursive: true });
+  }
+  const win = BrowserWindow.getAllWindows()[0];
+  function emit(line) {
+    try { win?.webContents.send("dp2:d4-fonts-progress", line); } catch {}
+  }
+  // 1. Decompress (якщо ще нема).
+  const utilityUncompressed = path.join(decompressedDir, "Ms01Utility_LOC_INT.upk");
+  let needDec = true;
+  try { const st = await fs.stat(utilityUncompressed); if (st.size > 0) needDec = false; } catch {}
+  if (needDec) {
+    emit("[STEP] decompress Ms01Utility_LOC_INT.upk");
+    const dec = await new Promise((resolve) => {
+      const args = [`-out=${decompressedDir}`, utilityCooked];
+      const child = spawn(tools.decompressExe, args, { windowsHide: true });
+      let all = "";
+      child.stdout.on("data", (d) => { all += d.toString(); });
+      child.stderr.on("data", (d) => { all += d.toString(); });
+      child.on("error", (err) => resolve({ ok: false, error: err.message }));
+      child.on("exit", async () => {
+        try { const st = await fs.stat(utilityUncompressed); if (st.size > 0) return resolve({ ok: true }); } catch {}
+        resolve({ ok: false, error: "decompress: no output" });
+      });
+    });
+    if (!dec.ok) { emit("[ERR] decompress: " + dec.error); return { ok: false, error: dec.error }; }
+  } else {
+    emit("[SKIP] decompress (cached)");
+  }
+  // 2. Extract metadata (PowerShell).
+  emit("[STEP] dump UFont metadata + atlases…");
+  const extractScript = resolveResource("scripts/d4-fonts-extract.ps1");
+  const dumpUfont = resolveResource("scripts/d4-tools/dump-ufont.ps1");
+  const dumpTex = resolveResource("scripts/d4-tools/dump-texture2d.ps1");
+  const exp = await new Promise((resolve) => {
+    const args = [
+      "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass",
+      "-File", extractScript,
+      "-SrcUpk", utilityUncompressed,
+      "-OutDir", dirs.baseDir,
+      "-UelibDll", tools.uelibDll,
+      "-DumpUfontScript", dumpUfont,
+      "-DumpTextureScript", dumpTex,
+    ];
+    const child = spawn(pwshLookup, args, { windowsHide: true });
+    let leftover = "", all = "";
+    const onData = (chunk) => {
+      all += chunk;
+      leftover += chunk;
+      const lines = leftover.split(/\r?\n/);
+      leftover = lines.pop() || "";
+      for (const ln of lines) {
+        if (!ln.trim()) continue;
+        emit("  " + ln);
+      }
+    };
+    child.stdout.on("data", (d) => onData(d.toString()));
+    child.stderr.on("data", (d) => onData(d.toString()));
+    child.on("error", (err) => resolve({ ok: false, error: err.message }));
+    child.on("exit", (code) => {
+      if (code !== 0) {
+        const tail = all.split("\n").slice(-15).join("\n").trim();
+        resolve({ ok: false, error: tail || `exit ${code}` });
+        return;
+      }
+      let summary = null;
+      const m = all.match(/RESULT_JSON:\s*(.+)$/m);
+      if (m) { try { summary = JSON.parse(m[1]); } catch {} }
+      resolve({ ok: true, summary });
+    });
+  });
+  if (!exp.ok) { emit("[ERR] extract: " + exp.error); return { ok: false, error: exp.error }; }
+  // 3. Preview PNG (Python).
+  emit("[STEP] decode atlases → PNG previews…");
+  const previewScript = resolveResource("scripts/d4-fonts-preview.py");
+  const pythonExe = await new Promise((resolve) => {
+    const w = spawn("where.exe", ["python.exe"], { windowsHide: true });
+    let out = "";
+    w.stdout.on("data", (d) => { out += d.toString(); });
+    w.on("error", () => resolve(null));
+    w.on("exit", (code) => {
+      if (code === 0) {
+        const first = out.split(/\r?\n/).map((s) => s.trim()).find((s) => s);
+        resolve(first || null);
+      } else resolve(null);
+    });
+  });
+  if (!pythonExe) {
+    emit("[WARN] python.exe не знайдено — preview PNG не генерую (metadata вже готова)");
+    return { ok: true, warning: "python not found; metadata extracted; preview skipped" };
+  }
+  const prev = await new Promise((resolve) => {
+    const args = [previewScript, dirs.metaDir, dirs.atlasDir, dirs.previewDir];
+    const child = spawn(pythonExe, args, { windowsHide: true });
+    let leftover = "", all = "";
+    const onData = (chunk) => {
+      all += chunk;
+      leftover += chunk;
+      const lines = leftover.split(/\r?\n/);
+      leftover = lines.pop() || "";
+      for (const ln of lines) {
+        if (!ln.trim()) continue;
+        emit("  " + ln);
+      }
+    };
+    child.stdout.on("data", (d) => onData(d.toString()));
+    child.stderr.on("data", (d) => onData(d.toString()));
+    child.on("error", (err) => resolve({ ok: false, error: err.message }));
+    child.on("exit", (code) => {
+      if (code !== 0) {
+        const tail = all.split("\n").slice(-10).join("\n").trim();
+        resolve({ ok: false, error: tail || `python exit ${code}` });
+        return;
+      }
+      let summary = null;
+      const m = all.match(/RESULT_JSON:\s*(.+)$/m);
+      if (m) { try { summary = JSON.parse(m[1]); } catch {} }
+      resolve({ ok: true, summary });
+    });
+  });
+  if (!prev.ok) emit("[WARN] preview: " + prev.error);
+  emit("[DONE] fonts extract complete");
+  return { ok: true, metadata: exp.summary, previews: prev.summary };
+});
+
+// Конфігурація для генерації UA-шрифтів. Кожен шрифт — paired (main+shadow
+// разом) або single. Дефолти fontSize визначаються емпірично за оригіналом
+// (з recon). Для шрифтів без mapping — генерація пропускається.
+// format: "BC3" (DXT5) або "G8" (PF_G8 — raw grayscale). За замовч. BC3.
+// PF_G8 потрібен для: times_new_roman, observefont_eng, menufont, menufont_r
+// (recon встановив що ці шрифти в грі — uncompressed grayscale).
+// Розміри атласів — підкориговані за реальними значеннями orig (логи pack
+// показали справжні Texture2D dimensions). 508×512 для talkfont — нестандарт,
+// але саме такий розмір у грі. Pages count = кількість Texture2D refs у UFont.
+const D4_GENERATE_CONFIG = {
+  newcinema:   { type: "paired", shadow: "newcinema_s", size: 36, pageW: 512, pageH: 512, pages: 4 },
+  talkfont:    { type: "paired", shadow: "shadowfont", size: 22, pageW: 508, pageH: 512, pages: 1 },
+  dive:        { type: "paired", shadow: "dive_s", size: 16, pageW: 512, pageH: 512, pages: 3 },
+  dive_en:     { type: "paired", shadow: "dive_en_s", size: 16, pageW: 512, pageH: 512, pages: 2 },
+  observe_eng: { type: "paired", shadow: "observe_eng_s", size: 18, pageW: 512, pageH: 512, pages: 1 },
+  observefont: { type: "paired", shadow: "observefont_s", size: 20, pageW: 512, pageH: 512, pages: 2 },
+  menufont:    { type: "paired", shadow: "menufont_r", size: 22, pageW: 1024, pageH: 1024, pages: 1, format: "G8" },
+  customfont:  { type: "paired", shadow: "customfont_s", size: 18, pageW: 512, pageH: 512, pages: 2 },
+  consola:     { type: "single", size: 14, pageW: 512, pageH: 512 },
+  consola_b:   { type: "single", size: 14, pageW: 512, pageH: 512 },
+  observefont_eng: { type: "single", size: 18, pageW: 1024, pageH: 1024, format: "G8" },
+  ms_mincho:        { type: "single", size: 16, pageW: 512, pageH: 512 },
+  times_new_roman:  { type: "single", size: 14, pageW: 256, pageH: 256, format: "G8" },
+  times_new_roman_storytitle: { type: "single", size: 20, pageW: 512, pageH: 512 },
+};
+
+// Знаходить python (системний або з PATH). Якщо нема — повертає null.
+async function findPython() {
+  return await new Promise((resolve) => {
+    const w = spawn("where.exe", ["python.exe"], { windowsHide: true });
+    let out = "";
+    w.stdout.on("data", (d) => { out += d.toString(); });
+    w.on("error", () => resolve(null));
+    w.on("exit", (code) => {
+      if (code === 0) {
+        const first = out.split(/\r?\n/).map((s) => s.trim()).find((s) => s);
+        resolve(first || null);
+      } else resolve(null);
+    });
+  });
+}
+
+ipcMain.handle("dp2:d4-fonts-generate", async () => {
+  const pythonExe = await findPython();
+  if (!pythonExe) return { ok: false, error: "Python не знайдено у PATH" };
+  // Merge stored mapping з дефолтами (recon: My.ttf для newcinema/talkfont, Consolas для consola/_b).
+  const stored = await d4ReadMapping();
+  const mapping = { ...d4DefaultTtfMapping(), ...stored };
+  const dirs = await d4FontsDirs();
+  await fs.mkdir(dirs.generatedDir, { recursive: true });
+  // ADDITIVE mode: зберігаємо orig latin/іконки/кнопки, домальовуємо лише
+  // кириличні літери у вільні зони на atlas. Це критично для UI гри —
+  // спецсимволи (стрілки, кнопки контролера, тощо) лишаються.
+  const additiveScript = resolveResource("scripts/d4-fonts-additive.py");
+  const win = BrowserWindow.getAllWindows()[0];
+  function emit(line) {
+    try { win?.webContents.send("dp2:d4-fonts-progress", line); } catch {}
+  }
+  // Збираємо список задач — для кожного шрифту з TTF mapping.
+  const tasks = [];
+  for (const [name, cfg] of Object.entries(D4_GENERATE_CONFIG)) {
+    const ttf = mapping[name]?.ttfPath;
+    if (!ttf) continue;
+    tasks.push({ name, cfg, ttf });
+  }
+  if (tasks.length === 0) return { ok: false, error: "Жоден шрифт не має TTF mapping" };
+  emit(`[INFO] Additive generation queue: ${tasks.length} fonts`);
+  const results = [];
+  for (const task of tasks) {
+    const { name, cfg, ttf } = task;
+    emit(`[STEP] ${name}`);
+    try { await fs.access(ttf); }
+    catch { emit(`[ERR] ${name}: TTF не знайдено: ${ttf}`); results.push({ name, ok: false, error: "ttf not found" }); continue; }
+    // Перевіряємо що orig meta + atlases доступні.
+    const origMeta = path.join(dirs.metaDir, `${name}.json`);
+    try { await fs.access(origMeta); }
+    catch { emit(`[ERR] ${name}: orig meta missing — спочатку Розпакувати`); results.push({ name, ok: false, error: "no orig meta" }); continue; }
+    const origAtlasDir = path.join(dirs.atlasDir, name);
+    const outDir = path.join(dirs.generatedDir, name);
+    await fs.mkdir(outDir, { recursive: true });
+    // Будуємо config для additive скрипта.
+    const cfgObj = {
+      name,
+      type: cfg.type,
+      shadow: cfg.shadow || null,
+      ttf,
+      fontSize: cfg.size,
+      format: cfg.format || "BC3",
+      origMetaJson: origMeta,
+      origAtlasDir,
+      outDir,
+    };
+    if (cfg.type === "paired") {
+      cfgObj.origShadowMetaJson = path.join(dirs.metaDir, `${cfg.shadow}.json`);
+      cfgObj.origShadowAtlasDir = path.join(dirs.atlasDir, cfg.shadow);
+      try { await fs.access(cfgObj.origShadowMetaJson); }
+      catch { emit(`[ERR] ${name}: shadow meta missing`); results.push({ name, ok: false, error: "no shadow meta" }); continue; }
+    }
+    const cfgPath = path.join(outDir, "additive-config.json");
+    await fs.writeFile(cfgPath, JSON.stringify(cfgObj, null, 2), "utf8");
+    const r = await new Promise((resolve) => {
+      const child = spawn(pythonExe, [additiveScript, cfgPath], { windowsHide: true });
+      let all = "";
+      child.stdout.on("data", (d) => {
+        const s = d.toString(); all += s;
+        for (const ln of s.split(/\r?\n/)) if (ln.trim()) emit("  " + ln);
+      });
+      child.stderr.on("data", (d) => {
+        const s = d.toString(); all += s;
+        for (const ln of s.split(/\r?\n/)) if (ln.trim()) emit("  " + ln);
+      });
+      child.on("error", (err) => resolve({ ok: false, error: err.message }));
+      child.on("exit", (code) => {
+        if (code !== 0) {
+          const tail = all.split("\n").slice(-12).join(" ").trim();
+          resolve({ ok: false, error: tail || `exit ${code}` });
+          return;
+        }
+        resolve({ ok: true });
+      });
+    });
+    if (!r.ok) emit(`[ERR] ${name}: ${r.error}`);
+    else emit(`[DONE] ${name}`);
+    results.push({ name, ...r, outDir });
+  }
+  const ok = results.every((r) => r.ok);
+  emit(`[DONE] Generation finished: ${results.filter((r) => r.ok).length} / ${results.length}`);
+  return { ok, results };
+});
+
+// Pack згенерованих UA-шрифтів у Ms01Utility_LOC_INT.upk + копія у гру.
+// Pipeline:
+//   1. probe-exports.ps1 — дамп export-таблиці + names у JSON (якщо ще нема)
+//   2. Будуємо pack-config.json з усіх шрифтів, що мають Generated/<name>/atlas|main_page0
+//   3. d4-fonts-pack.py — заміна Texture2D mip0 + UFont body, output uncompressed .upk
+//   4. Копія результату у гру: <d4Root>/Ms01Game/CookedPCConsole/Ms01Utility_LOC_INT.upk (з .bak)
+ipcMain.handle("dp2:d4-fonts-pack", async () => {
+  const settings = await readSettings();
+  const d4Root = settings.d4Root;
+  if (!d4Root) return { ok: false, error: "d4Root не задано" };
+  const tools = await d4ResolveTools();
+  if (!tools.uelibDll) return { ok: false, error: "Eliot.UELib.dll не знайдено" };
+  const pwshLookup = await findPwsh(settings);
+  if (!pwshLookup) return { ok: false, error: "PowerShell 7 не знайдено" };
+  const pythonExe = await findPython();
+  if (!pythonExe) return { ok: false, error: "Python не знайдено у PATH" };
+  const utilityUncompressed = await d4UtilityUncompressed();
+  if (!utilityUncompressed) return { ok: false, error: "Uncompressed Ms01Utility немає — спочатку Розпакувати" };
+  const dirs = await d4FontsDirs();
+  await fs.mkdir(dirs.generatedDir, { recursive: true });
+  const toolsDir = dirs.baseDir;
+  const win = BrowserWindow.getAllWindows()[0];
+  function emit(line) {
+    try { win?.webContents.send("dp2:d4-fonts-progress", line); } catch {}
+  }
+  // 1. probe-exports → exports.json у Tools/
+  const exportsJson = path.join(toolsDir, "exports.json");
+  emit("[STEP] probe exports (UELib dump)…");
+  const probeScript = resolveResource("scripts/d4-tools/probe-exports.ps1");
+  const probe = await new Promise((resolve) => {
+    const args = [
+      "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass",
+      "-File", probeScript,
+      "-SrcUpk", utilityUncompressed,
+      "-OutJson", exportsJson,
+      "-UelibDll", tools.uelibDll,
+    ];
+    const child = spawn(pwshLookup, args, { windowsHide: true });
+    let all = "";
+    child.stdout.on("data", (d) => { all += d.toString(); });
+    child.stderr.on("data", (d) => { all += d.toString(); });
+    child.on("error", (err) => resolve({ ok: false, error: err.message }));
+    child.on("exit", (code) => {
+      if (code !== 0) {
+        const tail = all.split("\n").slice(-10).join("\n").trim();
+        resolve({ ok: false, error: tail || `probe exit ${code}` });
+      } else resolve({ ok: true });
+    });
+  });
+  if (!probe.ok) { emit(`[ERR] probe: ${probe.error}`); return { ok: false, error: probe.error }; }
+
+  // 2. Будуємо config: лише шрифти у яких є Generated meta.json.
+  const stored = await d4ReadMapping();
+  const mapping = { ...d4DefaultTtfMapping(), ...stored };
+  const fonts = [];
+  for (const [name, cfg] of Object.entries(D4_GENERATE_CONFIG)) {
+    if (!mapping[name]?.ttfPath) continue;
+    const genDir = path.join(dirs.generatedDir, name);
+    try { await fs.access(path.join(genDir, "meta.json")); } catch { continue; }
+    const origMeta = path.join(dirs.metaDir, `${name}.json`);
+    try { await fs.access(origMeta); } catch { emit(`[SKIP] ${name}: no original meta`); continue; }
+    if (cfg.type === "paired") {
+      const origShadow = path.join(dirs.metaDir, `${cfg.shadow}.json`);
+      try { await fs.access(origShadow); } catch { emit(`[SKIP] ${name}: no shadow meta`); continue; }
+      fonts.push({
+        name, type: "paired", shadow: cfg.shadow,
+        originalMetaJson: origMeta,
+        originalShadowMetaJson: origShadow,
+        generatedDir: genDir,
+      });
+    } else {
+      fonts.push({
+        name, type: "single",
+        originalMetaJson: origMeta,
+        generatedDir: genDir,
+      });
+    }
+  }
+  if (fonts.length === 0) return { ok: false, error: "Жоден шрифт ще не згенеровано (натисни «Згенерувати UA»)" };
+  // 3. Запускаємо pack.
+  const outUpk = path.join(toolsDir, "Ms01Utility_LOC_INT.packed.upk");
+  const configJson = path.join(toolsDir, "pack-config.json");
+  await fs.writeFile(configJson, JSON.stringify({
+    srcUpk: utilityUncompressed,
+    outUpk,
+    exportsJson,
+    fonts,
+  }, null, 2), "utf8");
+  emit(`[STEP] pack ${fonts.length} fonts…`);
+  const packScript = resolveResource("scripts/d4-fonts-pack.py");
+  const pack = await new Promise((resolve) => {
+    const child = spawn(pythonExe, [packScript, configJson], { windowsHide: true });
+    let all = "";
+    const onData = (chunk) => {
+      const s = chunk.toString();
+      all += s;
+      for (const ln of s.split(/\r?\n/)) if (ln.trim()) emit("  " + ln);
+    };
+    child.stdout.on("data", (d) => onData(d));
+    child.stderr.on("data", (d) => onData(d));
+    child.on("error", (err) => resolve({ ok: false, error: err.message }));
+    child.on("exit", (code) => {
+      if (code !== 0) {
+        const tail = all.split("\n").slice(-15).join("\n").trim();
+        resolve({ ok: false, error: tail || `pack exit ${code}` });
+        return;
+      }
+      let summary = null;
+      const m = all.match(/RESULT_JSON:\s*(.+)$/m);
+      if (m) { try { summary = JSON.parse(m[1]); } catch {} }
+      resolve({ ok: true, summary });
+    });
+  });
+  if (!pack.ok) { emit(`[ERR] pack: ${pack.error}`); return { ok: false, error: pack.error }; }
+  // 4. Копія у гру з .bak.
+  const gameUpk = path.join(d4Root, "Ms01Game", "CookedPCConsole", "Ms01Utility_LOC_INT.upk");
+  const bakPath = gameUpk + ".bak";
+  try { await fs.access(bakPath); }
+  catch { try { await fs.copyFile(gameUpk, bakPath); emit(`[BAK] ${path.basename(bakPath)}`); } catch (e) { emit(`[WARN] bak: ${e.message}`); } }
+  try {
+    await fs.copyFile(outUpk, gameUpk);
+    emit(`[DONE] copied to game: ${path.basename(gameUpk)}`);
+  } catch (e) {
+    return { ok: false, error: "copy to game failed: " + e.message };
+  }
+  return { ok: true, outUpk, gameUpk, fonts: pack.summary?.results ?? [] };
+});
+
+ipcMain.handle("dp2:d4-fonts-pick-ttf", async (_e, payload) => {
+  const fontName = String((payload && payload.fontName) || "").trim();
+  if (!fontName) return { ok: false, error: "fontName missing" };
+  const picked = await dialog.showOpenDialog({
+    title: `TTF для ${fontName}`,
+    properties: ["openFile"],
+    filters: [{ name: "TrueType / OpenType", extensions: ["ttf", "otf"] }],
+  });
+  if (picked.canceled || picked.filePaths.length === 0) return { ok: false, error: "canceled" };
+  const ttfPath = picked.filePaths[0];
+  const map = await d4ReadMapping();
+  map[fontName] = { ttfPath, source: "user" };
+  await d4WriteMapping(map);
+  return { ok: true, fontName, ttfPath };
+});
+
+ipcMain.handle("dp2:d4-fonts-clear-ttf", async (_e, fontName) => {
+  const name = String(fontName || "").trim();
+  if (!name) return { ok: false, error: "fontName missing" };
+  const map = await d4ReadMapping();
+  delete map[name];
+  await d4WriteMapping(map);
+  return { ok: true };
+});
+
+ipcMain.handle("dp2:d4-fonts-read-preview", async (_e, fontName) => {
+  const name = String(fontName || "").trim();
+  if (!name) return { ok: false, error: "fontName missing" };
+  const { previewDir } = await d4FontsDirs();
+  const p = path.join(previewDir, `${name}.png`);
+  try {
+    const buf = await fs.readFile(p);
+    return { ok: true, base64: buf.toString("base64") };
+  } catch { return { ok: false, error: "preview not found" }; }
+});
+
+// Згенерований preview — читає PNG з Generated/<name>/. Може бути:
+//  - single: atlas.png
+//  - paired main: main_page0.png (перша сторінка main атласу)
+//  - paired shadow: shadow_page0.png
+ipcMain.handle("dp2:d4-fonts-read-generated", async (_e, fontName) => {
+  const name = String(fontName || "").trim();
+  if (!name) return { ok: false, error: "fontName missing" };
+  const { generatedDir } = await d4FontsDirs();
+  // Визначаємо чи shadow-варіант.
+  const cfgShadow = Object.entries(D4_GENERATE_CONFIG).find(([_n, c]) => c.shadow === name);
+  let pngPath;
+  if (cfgShadow) {
+    // shadow_page0.png у теці main-шрифту.
+    pngPath = path.join(generatedDir, cfgShadow[0], "shadow_page0.png");
+  } else {
+    const cfg = D4_GENERATE_CONFIG[name];
+    if (!cfg) {
+      // невідомий шрифт — пробуємо обидва варіанти
+      const cand = [
+        path.join(generatedDir, name, "atlas.png"),
+        path.join(generatedDir, name, "main_page0.png"),
+      ];
+      for (const c of cand) { try { await fs.access(c); pngPath = c; break; } catch {} }
+    } else if (cfg.type === "single") {
+      pngPath = path.join(generatedDir, name, "atlas.png");
+    } else {
+      pngPath = path.join(generatedDir, name, "main_page0.png");
+    }
+  }
+  if (!pngPath) return { ok: false, error: "generated not found" };
+  try {
+    const buf = await fs.readFile(pngPath);
+    return { ok: true, base64: buf.toString("base64") };
+  } catch { return { ok: false, error: "generated not found" }; }
+});
 
 ipcMain.handle("dp2:steam-find-game", async (_event, folderName) => {
   if (typeof folderName !== "string" || !folderName.trim()) {

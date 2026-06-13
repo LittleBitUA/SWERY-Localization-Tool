@@ -296,6 +296,50 @@ contextBridge.exposeInMainWorld("dp2", {
     ipcRenderer.on("dp2:hbr-text-prep-progress", h);
     return () => ipcRenderer.removeListener("dp2:hbr-text-prep-progress", h);
   },
+  // D4 — Fonts
+  d4FontsStatus: () => ipcRenderer.invoke("dp2:d4-fonts-status"),
+  d4FontsExtract: () => ipcRenderer.invoke("dp2:d4-fonts-extract"),
+  d4FontsGenerate: () => ipcRenderer.invoke("dp2:d4-fonts-generate"),
+  d4FontsPack: () => ipcRenderer.invoke("dp2:d4-fonts-pack"),
+  d4FontsPickTtf: (payload) => ipcRenderer.invoke("dp2:d4-fonts-pick-ttf", payload),
+  d4FontsClearTtf: (fontName) => ipcRenderer.invoke("dp2:d4-fonts-clear-ttf", fontName),
+  d4FontsReadPreview: (fontName) => ipcRenderer.invoke("dp2:d4-fonts-read-preview", fontName),
+  d4FontsReadGenerated: (fontName) => ipcRenderer.invoke("dp2:d4-fonts-read-generated", fontName),
+  onD4FontsProgress: (cb) => {
+    const h = (_e, line) => cb(line);
+    ipcRenderer.on("dp2:d4-fonts-progress", h);
+    return () => ipcRenderer.removeListener("dp2:d4-fonts-progress", h);
+  },
+
+  // D4 (Dark Dreams Don't Die) — UE3 v888 text editor.
+  d4TextStatus: () => ipcRenderer.invoke("dp2:d4-text-status"),
+  d4TextExtract: () => ipcRenderer.invoke("dp2:d4-text-extract"),
+  d4TextList: () => ipcRenderer.invoke("dp2:d4-text-list"),
+  d4TextRead: (fullPath) => ipcRenderer.invoke("dp2:d4-text-read", fullPath),
+  d4TextWrite: (payload) => ipcRenderer.invoke("dp2:d4-text-write", payload),
+  d4TextPack: () => ipcRenderer.invoke("dp2:d4-text-pack"),
+  d4TextCorpusStats: () => ipcRenderer.invoke("dp2:d4-text-corpus-stats"),
+  d4TextCorpusStatsFull: () => ipcRenderer.invoke("dp2:d4-text-corpus-stats-full"),
+  d4TextSearchAll: (payload) => ipcRenderer.invoke("dp2:d4-text-search-all", payload),
+  d4TextBatchReplace: (payload) => ipcRenderer.invoke("dp2:d4-text-batch-replace", payload),
+  d4MetaRead: (donePath) => ipcRenderer.invoke("dp2:d4-meta-read", donePath),
+  d4MetaWrite: (payload) => ipcRenderer.invoke("dp2:d4-meta-write", payload),
+  d4GlossaryRead: () => ipcRenderer.invoke("dp2:d4-glossary-read"),
+  d4GlossaryWrite: (payload) => ipcRenderer.invoke("dp2:d4-glossary-write", payload),
+  d4TmBuild: () => ipcRenderer.invoke("dp2:d4-tm-build"),
+  d4TextExportTxt: (payload) => ipcRenderer.invoke("dp2:d4-text-export-txt", payload),
+  d4TextImportTxt: (payload) => ipcRenderer.invoke("dp2:d4-text-import-txt", payload),
+  onD4TextProgress: (cb) => {
+    const h = (_e, line) => cb(line);
+    ipcRenderer.on("dp2:d4-text-progress", h);
+    return () => ipcRenderer.removeListener("dp2:d4-text-progress", h);
+  },
+  onD4TextPackProgress: (cb) => {
+    const h = (_e, line) => cb(line);
+    ipcRenderer.on("dp2:d4-text-pack-progress", h);
+    return () => ipcRenderer.removeListener("dp2:d4-text-pack-progress", h);
+  },
+
   textPrepStatus: (payload) => ipcRenderer.invoke("dp2:text-prep-status", payload),
   textPrepExtract: (payload) => ipcRenderer.invoke("dp2:text-prep-extract", payload),
   textPrepCopyToDone: (payload) => ipcRenderer.invoke("dp2:text-prep-copy-to-done", payload),

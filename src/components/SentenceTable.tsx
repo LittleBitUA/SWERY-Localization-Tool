@@ -8,7 +8,7 @@ import type { FlatEntry } from "../types";
 import { MetricsBadge } from "./MetricsBadge";
 import { ColResizer } from "./ColResizer";
 import type { WrapMode } from "./WrapToggle";
-import { alert as showAlert } from "../lib/dialogs";
+import { alert as showAlert, confirm as showConfirm } from "../lib/dialogs";
 
 // Memo-рядок: уникає пере-рендеру для всіх ~18к-сусідів, коли змінюється
 // `activeIndex`/`selection`/`wrapCls`. Перевикористовується ТАК ДОВГО, ПОКИ
@@ -126,7 +126,19 @@ export function SentenceTable() {
   const undo = useStore((s) => s.undo);
 
   async function handleExportTxt() {
-    const r = exportTxt();
+    // Перед експортом — питаємо що саме хочемо отримати: переклад (поточний
+    // стан) чи оригінал (з .bak). Це особливо важливо коли користувач уже
+    // частково замінив текст і хоче дістати англ-еталон знову.
+    const wantOriginal = await showConfirm(
+      t("txt.exportChoice.title"),
+      t("txt.exportChoice.body"),
+      {
+        okLabel: t("txt.exportChoice.original"),
+        cancelLabel: t("txt.exportChoice.translation"),
+      }
+    );
+    const kind: "original" | "translation" = wantOriginal ? "original" : "translation";
+    const r = exportTxt(kind);
     if (!r) return;
     const dest = await window.dp2.pickSaveFile({
       title: t("txt.exportTitle"),

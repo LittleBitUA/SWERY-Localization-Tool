@@ -7,7 +7,7 @@ import bgImage from "./assets/dp-board.jpg";
 import "./theme.css";
 
 export type GameMode = "text" | "fonts" | "textures";
-export type GameId = "dp1" | "dp2" | "tgl" | "hbr" | "missing";
+export type GameId = "dp1" | "dp2" | "tgl" | "hbr" | "missing" | "d4";
 
 interface Props {
   onPickGame: (id: GameId, mode?: GameMode) => void;
@@ -79,6 +79,16 @@ const CASES: CaseDef[] = [
     format: "Unity · resources.assets (MSG.*)",
     noteKey: "home.v2.missing.note",
   },
+  {
+    id: "d4",
+    caseNo: "006",
+    subjectKey: "home.d4.title",
+    altnameKey: "home.d4.altname",
+    regionKey: "home.v2.d4.region",
+    platform: "PC · Steam",
+    format: "UE3 v888 · .upk (LZO)",
+    noteKey: "home.v2.d4.note",
+  },
 ];
 
 export function HomeV2({ onPickGame, onOpenSetup, onOpenFolder, onOpenRecent }: Props) {
@@ -93,6 +103,7 @@ export function HomeV2({ onPickGame, onOpenSetup, onOpenFolder, onOpenRecent }: 
     tgl: { hasPath: false, progress: null },
     hbr: { hasPath: false, progress: null },
     missing: { hasPath: false, progress: null },
+    d4: { hasPath: false, progress: null },
   });
   // Уніфіковані recents: DP1 eng.json, DP2 lastFolder + recentFolders[], TGL bin.
   const [recentItems, setRecentItems] = useState<Array<{ game: GameId; path: string }>>([]);
@@ -134,6 +145,7 @@ export function HomeV2({ onPickGame, onOpenSetup, onOpenFolder, onOpenRecent }: 
           tgl: { hasPath: !!settings.tglBinPath, progress: null },
           hbr: { hasPath: !!settings.hbrBundlePath, progress: null },
           missing: { hasPath: !!settings.missingRoot, progress: null },
+          d4: { hasPath: !!settings.d4Root, progress: null },
         });
         // Уніфікований список останніх: DP1 eng.json, DP2 lastFolder
         // (+ старий recentFolders[]), TGL bin. Dedup і обмеження 8.
@@ -212,6 +224,23 @@ export function HomeV2({ onPickGame, onOpenSetup, onOpenFolder, onOpenRecent }: 
             }));
           }).catch(() => {});
         }
+        // D4 text corpus stats — IPC рахує суму m_aString рядків (translated
+        // = Done відрізняється від Original). hasData=false якщо ще не
+        // витягнуто (тоді показуємо лише «hasPath» статус без прогресу).
+        const d4Api = window.dp2 as unknown as { d4TextCorpusStats?: () => Promise<{ ok?: boolean; total?: number; translated?: number; hasData?: boolean }> };
+        if (d4Api.d4TextCorpusStats) {
+          d4Api.d4TextCorpusStats().then((r) => {
+            if (!r || !r.ok || !r.hasData) return;
+            const total = r.total ?? 0;
+            const done = r.translated ?? 0;
+            if (total === 0) return;
+            setState((prev) => ({
+              ...prev,
+              d4: { hasPath: true, progress: { done, total } },
+            }));
+          }).catch(() => {});
+        }
+
         // MISSING corpus stats — швидкий шлях через main process (читає
         // Original + Done .dat і рахує translated за HAS_CYR predicate).
         const missingApi = window.dp2 as unknown as { missingCorpusStatsQuick?: () => Promise<{ ok?: boolean; total?: number; translated?: number; hasData?: boolean }> };
@@ -276,7 +305,7 @@ export function HomeV2({ onPickGame, onOpenSetup, onOpenFolder, onOpenRecent }: 
       <AppSettingsModal open={appSettingsOpen} onClose={() => setAppSettingsOpen(false)} />
 
       <div className="relative z-[1] min-h-full flex flex-col items-center justify-center px-6 py-14">
-        <div className="max-w-[1080px] w-full">
+        <div className="max-w-[1080px] 2xl:max-w-[1480px] w-full">
           {/* Header — Federal Bureau of Localization */}
           <header className="text-center mb-6">
             <span className="v2-bureau-mark">{t("home.v2.bureau")}</span>
@@ -285,7 +314,7 @@ export function HomeV2({ onPickGame, onOpenSetup, onOpenFolder, onOpenRecent }: 
           </header>
 
           {/* Картки-теки */}
-          <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-5 gap-x-5 gap-y-5 mb-8">
+          <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-6 gap-x-4 gap-y-5 mb-8">
             {CASES.map((c) => {
               const s = state[c.id];
               const pct = s.progress && s.progress.total > 0
@@ -310,7 +339,8 @@ export function HomeV2({ onPickGame, onOpenSetup, onOpenFolder, onOpenRecent }: 
               const isTgl = c.id === "tgl";
               const isHbr = c.id === "hbr";
               const isMissing = c.id === "missing";
-              const hasActions = isDp1 || isDp2 || isTgl || isHbr || isMissing;
+              const isD4 = c.id === "d4";
+              const hasActions = isDp1 || isDp2 || isTgl || isHbr || isMissing || isD4;
               return (
                 <div
                   key={c.id}
@@ -474,6 +504,32 @@ export function HomeV2({ onPickGame, onOpenSetup, onOpenFolder, onOpenRecent }: 
                     )}
                     {/* MISSING: Текст + Шрифти + Текстури */}
                     {isMissing && (
+                      <div className="v2-folder__actions">
+                        <button
+                          type="button"
+                          className="v2-folder__action"
+                          onClick={(e) => { e.stopPropagation(); onPickGame(c.id, "text"); }}
+                        >
+                          {t("home.v2.action.text")}
+                        </button>
+                        <button
+                          type="button"
+                          className="v2-folder__action"
+                          onClick={(e) => { e.stopPropagation(); onPickGame(c.id, "fonts"); }}
+                        >
+                          {t("home.v2.action.fonts")}
+                        </button>
+                        <button
+                          type="button"
+                          className="v2-folder__action"
+                          onClick={(e) => { e.stopPropagation(); onPickGame(c.id, "textures"); }}
+                        >
+                          {t("home.v2.action.textures")}
+                        </button>
+                      </div>
+                    )}
+                    {/* D4: Текст + Шрифти + Текстури */}
+                    {isD4 && (
                       <div className="v2-folder__actions">
                         <button
                           type="button"

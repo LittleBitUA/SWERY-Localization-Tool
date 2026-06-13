@@ -1448,6 +1448,138 @@ async function taskMissingCorpusStatsQuick(payload) {
   return { total, translated, files, hasData: files > 0 };
 }
 
+// ── D4 (Dark Dreams Don't Die) — heavy tasks ────────────────────────────
+// Корпус D4 — 14 JSON-файлів у Documents/SWERY-Localization-Tool/D4/Text/.
+// Найбільший файл — msg_en_cmn_SF.json (~13 MB). Парсинг + аґрегація у
+// worker-нитці, щоб не блокувати main + renderer.
+
+async function d4ReadFilePair(originalDir, doneDir, name) {
+  const oPath = path.join(originalDir, name);
+  const dPath = path.join(doneDir, name);
+  const [oRaw, dRaw] = await Promise.all([
+    fs.readFile(oPath, 'utf8').catch(() => '[]'),
+    fs.readFile(dPath, 'utf8').catch(() => '[]'),
+  ]);
+  let oArr = []; let dArr = [];
+  try { oArr = JSON.parse(oRaw); } catch {}
+  try { dArr = JSON.parse(dRaw); } catch {}
+  return { oArr: Array.isArray(oArr) ? oArr : [], dArr: Array.isArray(dArr) ? dArr : [] };
+}
+
+async function taskD4CorpusStatsFull({ originalDir, doneDir }) {
+  let names = [];
+  try { names = (await fs.readdir(originalDir)).filter((n) => n.endsWith('.json')).sort(); } catch {}
+  const files = [];
+  let totalEntries = 0, totalStrings = 0, totalTranslated = 0;
+  let enWords = 0, uaWords = 0, enChars = 0, uaChars = 0;
+  const W_RE = /\S+/g;
+  for (const name of names) {
+    const { oArr, dArr } = await d4ReadFilePair(originalDir, doneDir, name);
+    if (dArr.length === 0) continue;
+    const oByName = new Map();
+    for (const e of oArr) if (e && e.objectName) oByName.set(e.objectName, e);
+    let strings = 0, translated = 0, fEnW = 0, fUaW = 0, fEnC = 0, fUaC = 0;
+    for (const e of dArr) {
+      const arr = Array.isArray(e && e.m_aString) ? e.m_aString : [];
+      const orig = oByName.get(e && e.objectName);
+      const origArr = Array.isArray(orig && orig.m_aString) ? orig.m_aString : [];
+      strings += arr.length;
+      for (let i = 0; i < arr.length; i++) {
+        const v = arr[i] || ''; const ov = origArr[i] || '';
+        fUaC += [...v].length; fEnC += [...ov].length;
+        fUaW += (v.match(W_RE) || []).length;
+        fEnW += (ov.match(W_RE) || []).length;
+        if (typeof v === 'string' && v !== ov && v.trim() !== '') translated++;
+      }
+    }
+    totalEntries += dArr.length; totalStrings += strings; totalTranslated += translated;
+    enWords += fEnW; uaWords += fUaW; enChars += fEnC; uaChars += fUaC;
+    files.push({
+      name, entries: dArr.length, strings, translated,
+      percent: strings > 0 ? Math.round((translated / strings) * 100) : 0,
+      enWords: fEnW, uaWords: fUaW, enChars: fEnC, uaChars: fUaC,
+    });
+  }
+  return {
+    filesCount: files.length,
+    totalEntries, totalStrings, totalTranslated,
+    percent: totalStrings > 0 ? (totalTranslated / totalStrings) * 100 : 0,
+    enWords, uaWords, enChars, uaChars, files,
+  };
+}
+
+async function taskD4SearchAll({ doneDir, query, opts }) {
+  if (!query) return { hits: [], truncated: false };
+  let rx;
+  const flags = (opts && opts.caseSensitive) ? 'g' : 'gi';
+  if (opts && opts.regex) rx = new RegExp(query, flags);
+  else {
+    let q = query.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    if (opts && opts.wholeWord) q = '\\b' + q + '\\b';
+    rx = new RegExp(q, flags);
+  }
+  let names = [];
+  try { names = (await fs.readdir(doneDir)).filter((n) => n.endsWith('.json')); } catch {}
+  const hits = [];
+  const LIMIT = 500;
+  let truncated = false;
+  for (const name of names) {
+    if (hits.length >= LIMIT) { truncated = true; break; }
+    try {
+      const raw = await fs.readFile(path.join(doneDir, name), 'utf8');
+      const arr = JSON.parse(raw);
+      if (!Array.isArray(arr)) continue;
+      for (let mi = 0; mi < arr.length && hits.length < LIMIT; mi++) {
+        const m = arr[mi];
+        const fields = [
+          { field: 'm_aString', arr: m && m.m_aString },
+          { field: 'm_aWord', arr: m && m.m_aWord },
+          { field: 'm_aVoiceIdStr', arr: m && m.m_aVoiceIdStr },
+        ];
+        for (const f of fields) {
+          if (!Array.isArray(f.arr)) continue;
+          for (let si = 0; si < f.arr.length; si++) {
+            const text = f.arr[si] || '';
+            rx.lastIndex = 0;
+            if (rx.test(text)) {
+              hits.push({
+                file: name, msgIdx: mi, objectName: m.objectName,
+                fileName: m.fileName || null, field: f.field, strIdx: si, text,
+              });
+              if (hits.length >= LIMIT) break;
+            }
+          }
+        }
+      }
+    } catch {}
+  }
+  return { hits, truncated };
+}
+
+async function taskD4TmBuild({ originalDir, doneDir }) {
+  let names = [];
+  try { names = (await fs.readdir(originalDir)).filter((n) => n.endsWith('.json')); } catch {}
+  const pairs = [];
+  for (const name of names) {
+    const { oArr, dArr } = await d4ReadFilePair(originalDir, doneDir, name);
+    if (dArr.length === 0) continue;
+    const oByName = new Map();
+    for (const e of oArr) if (e && e.objectName) oByName.set(e.objectName, e);
+    for (const e of dArr) {
+      const arr = Array.isArray(e && e.m_aString) ? e.m_aString : [];
+      const orig = oByName.get(e && e.objectName);
+      const origArr = Array.isArray(orig && orig.m_aString) ? orig.m_aString : [];
+      for (let i = 0; i < arr.length; i++) {
+        const v = arr[i] || ''; const ov = origArr[i] || '';
+        if (v && ov && v !== ov && v.trim() !== '') {
+          pairs.push({ en: ov, ua: v, file: name, objectName: e.objectName });
+        }
+      }
+    }
+  }
+  return { pairs };
+}
+
 // ── Dispatcher ──────────────────────────────────────────────────────────
 parentPort.on('message', async (msg) => {
   const id = msg && msg.id;
@@ -1493,6 +1625,12 @@ parentPort.on('message', async (msg) => {
       result = await taskHbrCorpusStats(payload);
     } else if (type === 'missing-corpus-stats-quick') {
       result = await taskMissingCorpusStatsQuick(payload);
+    } else if (type === 'd4-corpus-stats-full') {
+      result = await taskD4CorpusStatsFull(payload);
+    } else if (type === 'd4-search-all') {
+      result = await taskD4SearchAll(payload);
+    } else if (type === 'd4-tm-build') {
+      result = await taskD4TmBuild(payload);
     } else {
       throw new Error('Unknown task type: ' + type);
     }

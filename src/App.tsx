@@ -23,6 +23,9 @@ import { MissingFontsEditor } from "./games/missing/MissingFontsEditor";
 import { MissingTexturesEditor } from "./games/missing/MissingTexturesEditor";
 import { HbrFontsEditor } from "./games/hbr/HbrFontsEditor";
 import { HbrTexturesEditor } from "./games/hbr/HbrTexturesEditor";
+import { D4Editor } from "./games/d4/D4Editor";
+import { D4FontsEditor } from "./games/d4/D4FontsEditor";
+import { D4TexturesEditor } from "./games/d4/D4TexturesEditor";
 import { ErrorBoundary } from "./components/ErrorBoundary";
 import { dp2TextRequiredEntries } from "./games/dp2/required-text-files";
 import { TglEditor } from "./games/tgl/TglEditor";
@@ -37,8 +40,8 @@ import { DialogHost } from "./lib/dialogs";
 import { UpdateBanner } from "./components/UpdateBanner";
 import { ToastProvider } from "./components/ToastProvider";
 
-type Stage = "loading" | "onboarding" | "home" | "prep-dp2" | "editor-dp2" | "editor-dp1" | "textures-dp1" | "fonts-dp1" | "editor-tgl" | "fonts-dp2" | "textures-dp2" | "fonts-tgl" | "editor-hbr" | "fonts-hbr" | "textures-hbr" | "editor-missing" | "fonts-missing" | "textures-missing";
-type ActiveGame = "dp1" | "dp2" | "tgl" | "hbr" | "missing" | null;
+type Stage = "loading" | "onboarding" | "home" | "prep-dp2" | "editor-dp2" | "editor-dp1" | "textures-dp1" | "fonts-dp1" | "editor-tgl" | "fonts-dp2" | "textures-dp2" | "fonts-tgl" | "editor-hbr" | "fonts-hbr" | "textures-hbr" | "editor-missing" | "fonts-missing" | "textures-missing" | "editor-d4" | "fonts-d4" | "textures-d4";
+type ActiveGame = "dp1" | "dp2" | "tgl" | "hbr" | "missing" | "d4" | null;
 
 export default function App() {
   const [findOpen, setFindOpen] = useState(false);
@@ -248,8 +251,14 @@ export default function App() {
 
   if (stage === "home") {
     const homeProps = {
-      onPickGame: (id: "dp1" | "dp2" | "tgl" | "hbr" | "missing", mode?: "text" | "fonts" | "textures") => {
+      onPickGame: (id: "dp1" | "dp2" | "tgl" | "hbr" | "missing" | "d4", mode?: "text" | "fonts" | "textures") => {
         setActiveGame(id);
+        if (id === "d4") {
+          if (mode === "fonts") setStage("fonts-d4");
+          else if (mode === "textures") setStage("textures-d4");
+          else setStage("editor-d4");
+          return;
+        }
         if (id === "missing") {
           if (mode === "fonts") setStage("fonts-missing");
           else if (mode === "textures") setStage("textures-missing");
@@ -292,8 +301,8 @@ export default function App() {
         setActiveGame("dp2");
         setStage("editor-dp2");
       },
-      onOpenRecent: async (game: "dp1" | "dp2" | "tgl" | "hbr" | "missing", path: string) => {
-        if (game === "hbr" || game === "missing") return;
+      onOpenRecent: async (game: "dp1" | "dp2" | "tgl" | "hbr" | "missing" | "d4", path: string) => {
+        if (game === "hbr" || game === "missing" || game === "d4") return;
         if (game === "dp1") {
           await window.dp2.saveSettings({ dp1EngPath: path });
           setActiveGame("dp1");
@@ -422,6 +431,63 @@ export default function App() {
         <div className="h-screen flex flex-col">
           <ErrorBoundary label="THE MISSING — textures">
             <MissingTexturesEditor
+              onHome={() => {
+                setActiveGame(null);
+                setStage("home");
+                window.dp2.setupStatus().then(setSetupStatus);
+              }}
+            />
+          </ErrorBoundary>
+        </div>
+        <DialogHost /><ToastProvider /><UpdateBanner />
+      </>
+    );
+  }
+
+  if (stage === "editor-d4") {
+    return (
+      <>
+        <div className="h-screen flex flex-col">
+          <ErrorBoundary label="D4 — text">
+            <D4Editor
+              onHome={() => {
+                setActiveGame(null);
+                setStage("home");
+                window.dp2.setupStatus().then(setSetupStatus);
+              }}
+            />
+          </ErrorBoundary>
+        </div>
+        <DialogHost /><ToastProvider /><UpdateBanner />
+      </>
+    );
+  }
+
+  if (stage === "fonts-d4") {
+    return (
+      <>
+        <div className="h-screen flex flex-col">
+          <ErrorBoundary label="D4 — fonts">
+            <D4FontsEditor
+              onHome={() => {
+                setActiveGame(null);
+                setStage("home");
+                window.dp2.setupStatus().then(setSetupStatus);
+              }}
+            />
+          </ErrorBoundary>
+        </div>
+        <DialogHost /><ToastProvider /><UpdateBanner />
+      </>
+    );
+  }
+
+  if (stage === "textures-d4") {
+    return (
+      <>
+        <div className="h-screen flex flex-col">
+          <ErrorBoundary label="D4 — textures">
+            <D4TexturesEditor
               onHome={() => {
                 setActiveGame(null);
                 setStage("home");
