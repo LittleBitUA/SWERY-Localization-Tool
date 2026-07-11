@@ -9,6 +9,7 @@
 //   • error      → останній saveFile упав (анти-вірус, lock, etc)
 
 import { useEffect, useState } from "react";
+import { useT } from "../lib/i18n";
 
 interface Props {
   /** Є незбережені правки у поточному файлі. */
@@ -22,6 +23,7 @@ interface Props {
 }
 
 export function SaveStatusBadge({ dirty, lastAutosaveAt, saveError, fileName }: Props) {
+  const t = useT();
   // Перебудовується раз на 15с, щоб "автозбережено 3 хв тому" оновлювалось.
   const [, force] = useState(0);
   useEffect(() => {
@@ -42,17 +44,17 @@ export function SaveStatusBadge({ dirty, lastAutosaveAt, saveError, fileName }: 
     : "var(--success)";
 
   const label =
-    state === "error" ? "помилка збереження"
-    : state === "dirty" ? "не збережено"
-    : state === "autosaved" ? "автозбережено"
-    : "збережено";
+    state === "error" ? t("components.saveStatus.error")
+    : state === "dirty" ? t("components.saveStatus.dirty")
+    : state === "autosaved" ? t("components.saveStatus.autosaved")
+    : t("components.saveStatus.saved");
 
   const tipParts: string[] = [];
   if (fileName) tipParts.push(fileName);
   tipParts.push(label);
   if (state === "autosaved" && lastAutosaveAt) {
     const ago = Math.max(0, Math.round((Date.now() - lastAutosaveAt) / 1000));
-    tipParts.push(ago < 60 ? `${ago}с тому` : `${Math.round(ago / 60)} хв тому`);
+    tipParts.push(ago < 60 ? t("components.saveStatus.ago", { ago }) : t("components.saveStatus.agoMin", { min: Math.round(ago / 60) }));
   }
   if (state === "error" && saveError) {
     tipParts.push(saveError);

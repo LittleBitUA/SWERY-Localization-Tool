@@ -4,6 +4,7 @@
 // header з offset/sizes + zlib-stream DDS/PNG payload.
 
 import { useCallback, useEffect, useState } from "react";
+import { useT, localizeBackendError } from "../../lib/i18n";
 import { LangToggle } from "../../components/LangToggle";
 import { EditorFooter } from "../../components/EditorFooter";
 import { showError, showOk, showToast } from "../../components/Toast";
@@ -25,6 +26,7 @@ interface Props {
 type Phase = "idle" | "extracting" | "packing";
 
 export function Dp1TexturesEditor({ onHome }: Props) {
+  const t = useT();
   const [items, setItems] = useState<XpcItem[]>([]);
   const [gameRoot, setGameRoot] = useState<string | null>(null);
   const [doneDir, setDoneDir] = useState<string | null>(null);
@@ -43,7 +45,7 @@ export function Dp1TexturesEditor({ onHome }: Props) {
     const r = await window.dp2.dp1TexturesList();
     setLoading(false);
     if (!r.ok) {
-      setError(r.error ?? "Не вдалося прочитати список");
+      setError(localizeBackendError(r.error) || t("dp1.textures.listReadFailed"));
       return;
     }
     setItems(r.items ?? []);
@@ -68,8 +70,8 @@ export function Dp1TexturesEditor({ onHome }: Props) {
     setProgress(null);
     try {
       const r = await window.dp2.dp1TexturesExtractAll();
-      if (!r.ok) showError(r.error || "?", "Extract failed");
-      else showOk(`Розпаковано ${r.extracted} з ${r.total}${r.failed ? `, помилок: ${r.failed}` : ""}`, "Extract");
+      if (!r.ok) showError(localizeBackendError(r.error) || "?", "Extract failed");
+      else showOk(t("dp1.textures.extractedResult", { extracted: r.extracted ?? 0, total: r.total ?? 0 }) + (r.failed ? t("dp1.textures.errorsSuffix", { failed: r.failed }) : ""), "Extract");
       await refresh();
     } finally {
       setPhase("idle");
@@ -83,8 +85,8 @@ export function Dp1TexturesEditor({ onHome }: Props) {
     setProgress(null);
     try {
       const r = await window.dp2.dp1TexturesPackAll();
-      if (!r.ok) showError(r.error || "?", "Pack failed");
-      else showOk(`Замінено ${r.replaced}, пропущено ${r.skipped}${r.failed ? `, помилок: ${r.failed}` : ""}`, "Pack");
+      if (!r.ok) showError(localizeBackendError(r.error) || "?", "Pack failed");
+      else showOk(t("dp1.textures.packedResult", { replaced: r.replaced ?? 0, skipped: r.skipped ?? 0 }) + (r.failed ? t("dp1.textures.errorsSuffix", { failed: r.failed }) : ""), "Pack");
       await refresh();
     } finally {
       setPhase("idle");
@@ -96,7 +98,7 @@ export function Dp1TexturesEditor({ onHome }: Props) {
     setActivePreview({ item: it, loading: true });
     const r = await window.dp2.dp1TextureReadPayload(it.relPath);
     if (!r.ok) {
-      setActivePreview({ item: it, error: r.error || "?" });
+      setActivePreview({ item: it, error: localizeBackendError(r.error) || "?" });
       return;
     }
     setActivePreview({ item: it, base64: r.base64, ext: r.ext, loading: false });
@@ -105,7 +107,7 @@ export function Dp1TexturesEditor({ onHome }: Props) {
   async function replaceOne(it: XpcItem) {
     // Простий flow: відкриваємо file picker, читаємо файл, передаємо у main.
     const f = await window.dp2.pickFile({
-      title: `Замінити ${it.internalName ?? it.relPath}`,
+      title: t("dp1.textures.replaceTitle", { name: it.internalName ?? it.relPath }),
       filters: [
         { name: "Texture", extensions: ["dds", "png", "jpg", "jpeg", "bin"] },
         { name: "All", extensions: ["*"] },
@@ -122,10 +124,8 @@ export function Dp1TexturesEditor({ onHome }: Props) {
     // ТОДО: додамо у preload `readFileBinary` для майбутнього. Поки що — TextEncoder helper
     // не підходить для DDS. ТУТ помилка: треба окремий бінарний read.
     showError(
-      "Single-file replace ще потребує бінарного readFile (TODO). " +
-      "Поки що: поклади файл у " + (doneDir ?? "Done/") + "/<rel-dir>/<safeName>" +
-      " і натисни 'Запакувати все'.",
-      "Replace one (тимчасово недоступно)",
+      t("dp1.textures.replaceTodoBody", { dir: doneDir ?? "Done/" }),
+      t("dp1.textures.replaceTodoTitle"),
     );
     void txt; void f;
   }
@@ -152,15 +152,15 @@ export function Dp1TexturesEditor({ onHome }: Props) {
   return (
     <div className="flex-1 flex flex-col min-h-0 h-full">
       <header className="h-12 px-4 border-b border-[var(--border-soft)] bg-[var(--bg)] flex items-center gap-3 shrink-0">
-        <button className="dp-btn dp-btn--ghost" onClick={onHome}>← На головну</button>
-        <span className="text-[13px] font-semibold text-[var(--text-strong)]">Deadly Premonition — Текстури</span>
+        <button className="dp-btn dp-btn--ghost" onClick={onHome}>← {t("dp1.textures.toHome")}</button>
+        <span className="text-[13px] font-semibold text-[var(--text-strong)]">{t("dp1.textures.title")}</span>
         <span className="text-[11px] text-[var(--text-faint)]">XPC2 archive · DDS / PNG</span>
         <div className="flex-1" />
         {originalDir && (
           <button
             className="dp-btn dp-btn--ghost shrink-0"
             onClick={() => window.dp2.openFolder(originalDir)}
-            title={`Відкрити теку розпакованих оригіналів: ${originalDir}`}
+            title={t("dp1.textures.openOriginalDir", { dir: originalDir })}
           >
             <svg className="w-3.5 h-3.5 mr-1 inline" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
               <path strokeLinecap="round" strokeLinejoin="round" d="M3 7h4l2 2h12v9a2 2 0 01-2 2H3V7z" />
@@ -172,7 +172,7 @@ export function Dp1TexturesEditor({ onHome }: Props) {
           <button
             className="dp-btn dp-btn--ghost shrink-0"
             onClick={() => window.dp2.openFolder(doneDir)}
-            title={`Відкрити теку для замінників: ${doneDir}`}
+            title={t("dp1.textures.openDoneDir", { dir: doneDir })}
           >
             <svg className="w-3.5 h-3.5 mr-1 inline" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
               <path strokeLinecap="round" strokeLinejoin="round" d="M3 7h4l2 2h12v9a2 2 0 01-2 2H3V7z" />
@@ -184,17 +184,17 @@ export function Dp1TexturesEditor({ onHome }: Props) {
           className="dp-btn"
           disabled={phase !== "idle" || loading}
           onClick={runExtractAll}
-          title="Розпакувати всі .xpc у Original/"
+          title={t("dp1.textures.extractAllTip")}
         >
-          {phase === "extracting" ? "Розпаковую…" : "Розпакувати все"}
+          {phase === "extracting" ? t("dp1.textures.extracting") : t("dp1.textures.extractAll")}
         </button>
         <button
           className="dp-btn dp-btn--success"
           disabled={phase !== "idle" || loading || stats.extracted === 0}
           onClick={runPackAll}
-          title="Запакувати всі замінені (з Done/) назад у гру"
+          title={t("dp1.textures.packAllTip")}
         >
-          {phase === "packing" ? "Пакую…" : "Запакувати все"}
+          {phase === "packing" ? t("dp1.textures.packing") : t("dp1.textures.packAll")}
         </button>
         <LangToggle compact />
       </header>
@@ -222,16 +222,16 @@ export function Dp1TexturesEditor({ onHome }: Props) {
       <div className="px-3 py-2 border-b border-[var(--border-soft)] bg-[var(--bg)] flex items-center gap-2 shrink-0">
         <input
           className="dp-input flex-1 max-w-[440px]"
-          placeholder="Пошук по шляху або internal name…"
+          placeholder={t("dp1.textures.searchPlaceholder")}
           value={search}
           onChange={(e) => setSearch(e.target.value)}
         />
         <div className="flex gap-1 text-[11px]">
           {([
-            ["all", "Усі"],
-            ["extracted", "Розпаковані"],
-            ["replaced", "Замінені"],
-            ["todo", "Не замінені"],
+            ["all", t("dp1.textures.filterAll")],
+            ["extracted", t("dp1.textures.filterExtracted")],
+            ["replaced", t("dp1.textures.filterReplaced")],
+            ["todo", t("dp1.textures.filterTodo")],
           ] as Array<[typeof filter, string]>).map(([k, lab]) => (
             <button
               key={k}
@@ -246,14 +246,13 @@ export function Dp1TexturesEditor({ onHome }: Props) {
 
       <div className="flex-1 overflow-auto">
         {loading && (
-          <p className="py-10 text-center text-[12.5px] text-[var(--text-muted)]">Сканую гру на .xpc файли…</p>
+          <p className="py-10 text-center text-[12.5px] text-[var(--text-muted)]">{t("dp1.textures.scanning")}</p>
         )}
         {!loading && items.length === 0 && !error && (
           <div className="px-6 py-10 text-center text-[12.5px] text-[var(--text-muted)] max-w-[600px] mx-auto">
-            <p>У теці гри не знайдено жодного <span className="font-mono">.xpc</span> файлу.</p>
+            <p>{t("dp1.textures.noXpcBefore")}<span className="font-mono">.xpc</span>{t("dp1.textures.noXpcAfter")}</p>
             <p className="mt-2 text-[var(--text-faint)]">
-              Налаштуй шлях до гри (<span className="font-mono">dp1Root</span>) в App Settings —
-              це корінь Steam-теки Deadly Premonition (Director's Cut).
+              {t("dp1.textures.configureBefore")}<span className="font-mono">dp1Root</span>{t("dp1.textures.configureAfter")}
             </p>
           </div>
         )}
@@ -261,11 +260,11 @@ export function Dp1TexturesEditor({ onHome }: Props) {
           <table className="w-full text-[12px] table-fixed">
             <thead className="sticky top-0 z-10 bg-[var(--bg-surface)] text-[10px] uppercase tracking-wider text-[var(--text-faint)] border-b border-[var(--border-soft)]">
               <tr>
-                <th className="text-left px-2 py-1.5 w-1/2">Шлях у грі</th>
+                <th className="text-left px-2 py-1.5 w-1/2">{t("dp1.textures.colPath")}</th>
                 <th className="text-left px-2 py-1.5 w-[200px]">Internal name</th>
                 <th className="text-right px-2 py-1.5 w-[80px]">Size</th>
-                <th className="text-center px-2 py-1.5 w-[100px]">Стан</th>
-                <th className="text-right px-2 py-1.5 w-[140px]">Дії</th>
+                <th className="text-center px-2 py-1.5 w-[100px]">{t("dp1.textures.colState")}</th>
+                <th className="text-right px-2 py-1.5 w-[140px]">{t("dp1.textures.colActions")}</th>
               </tr>
             </thead>
             <tbody>
@@ -286,7 +285,7 @@ export function Dp1TexturesEditor({ onHome }: Props) {
                   </td>
                   <td className="px-2 py-1 text-center text-[10.5px]">
                     {it.replaced
-                      ? <span className="text-[var(--success)]">● замінено</span>
+                      ? <span className="text-[var(--success)]">● {t("dp1.textures.stateReplaced")}</span>
                       : it.extracted
                         ? <span className="text-[var(--accent)]">● extracted</span>
                         : <span className="text-[var(--text-faint)]">○</span>}
@@ -296,7 +295,7 @@ export function Dp1TexturesEditor({ onHome }: Props) {
                       className="dp-btn dp-btn--ghost !py-0.5 !px-1.5 text-[10px]"
                       onClick={() => openPreview(it)}
                       disabled={phase !== "idle"}
-                      title="Переглянути payload (DDS/PNG)"
+                      title={t("dp1.textures.previewTip")}
                     >
                       👁
                     </button>
@@ -304,7 +303,7 @@ export function Dp1TexturesEditor({ onHome }: Props) {
                       className="dp-btn dp-btn--ghost !py-0.5 !px-1.5 text-[10px]"
                       onClick={() => replaceOne(it)}
                       disabled={phase !== "idle"}
-                      title="Замінити з файлу"
+                      title={t("dp1.textures.replaceOneTip")}
                     >
                       ⇪
                     </button>
@@ -319,10 +318,10 @@ export function Dp1TexturesEditor({ onHome }: Props) {
       <EditorFooter
         fileName={gameRoot ?? undefined}
         stats={[
-          { label: "Усього .xpc", value: stats.total, tone: "default" },
-          { label: "Розпаковано", value: stats.extracted, tone: "accent" },
-          { label: "Замінено", value: stats.replaced, tone: "success" },
-          { label: "Видно", value: filtered.length, tone: "muted" },
+          { label: t("dp1.textures.footerTotal"), value: stats.total, tone: "default" },
+          { label: t("dp1.textures.footerExtracted"), value: stats.extracted, tone: "accent" },
+          { label: t("dp1.textures.footerReplaced"), value: stats.replaced, tone: "success" },
+          { label: t("dp1.textures.footerShown"), value: filtered.length, tone: "muted" },
         ]}
       />
 
@@ -349,7 +348,7 @@ export function Dp1TexturesEditor({ onHome }: Props) {
               <button className="dp-btn dp-btn--ghost" onClick={() => setActivePreview(null)} title="Esc">✕</button>
             </div>
             <div className="flex-1 overflow-auto p-4 bg-[var(--bg)]">
-              {activePreview.loading && <p className="text-center text-[12px] text-[var(--text-muted)]">Розпаковую…</p>}
+              {activePreview.loading && <p className="text-center text-[12px] text-[var(--text-muted)]">{t("dp1.textures.unpacking")}</p>}
               {activePreview.error && <p className="text-center text-[12px] text-[var(--danger)]">{activePreview.error}</p>}
               {activePreview.base64 && activePreview.ext === ".png" && (
                 <img
@@ -368,8 +367,8 @@ export function Dp1TexturesEditor({ onHome }: Props) {
               )}
               {activePreview.base64 && activePreview.ext === ".dds" && (
                 <div className="text-center text-[12px] text-[var(--text-muted)] py-8">
-                  <p className="mb-2">DDS-payload розпаковано — preview у браузері не рендериться напряму.</p>
-                  <p className="text-[var(--text-faint)]">Файл доступний у:</p>
+                  <p className="mb-2">{t("dp1.textures.ddsNoPreview")}</p>
+                  <p className="text-[var(--text-faint)]">{t("dp1.textures.fileAvailableAt")}</p>
                   <p className="font-mono text-[11px] text-[var(--accent)] mt-1 break-all">
                     {originalDir}/{activePreview.item.relPath.replace(/\.xpc$/i, "")}
                   </p>

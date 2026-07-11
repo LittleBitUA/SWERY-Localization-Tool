@@ -7,6 +7,7 @@
 // закриває. Тіло — flat list з categories через `# kind` хедери.
 
 import { useEffect, useMemo, useRef, useState } from "react";
+import { useT } from "../lib/i18n";
 
 export interface CommandItem {
   id: string;
@@ -60,6 +61,7 @@ function fuzzyScore(haystack: string, needle: string): number | null {
 }
 
 export function CommandPalette({ open, onClose, items }: Props) {
+  const t = useT();
   const [q, setQ] = useState("");
   const [sel, setSel] = useState(0);
   const inputRef = useRef<HTMLInputElement | null>(null);
@@ -140,7 +142,7 @@ export function CommandPalette({ open, onClose, items }: Props) {
           <input
             ref={inputRef}
             className="flex-1 bg-transparent outline-none text-[14px] text-[var(--text-strong)] placeholder:text-[var(--text-faint)]"
-            placeholder="Введи команду, ім'я файлу або enum #…"
+            placeholder={t("components.commandPalette.placeholder")}
             value={q}
             onChange={(e) => setQ(e.target.value)}
           />
@@ -149,7 +151,7 @@ export function CommandPalette({ open, onClose, items }: Props) {
         <div ref={listRef} className="flex-1 overflow-y-auto py-1.5">
           {filtered.length === 0 && (
             <div className="px-4 py-6 text-center text-[12px] text-[var(--text-faint)]">
-              Нічого не знайдено для «{q}»
+              {t("components.commandPalette.noResults", { q })}
             </div>
           )}
           {filtered.map(({ it }, i) => {
@@ -193,9 +195,9 @@ export function CommandPalette({ open, onClose, items }: Props) {
           })}
         </div>
         <div className="px-4 py-2 border-t border-[var(--border-soft)] text-[10.5px] text-[var(--text-faint)] flex items-center gap-3">
-          <span><kbd className="font-mono">↑↓</kbd> навігація</span>
-          <span><kbd className="font-mono">Enter</kbd> виконати</span>
-          <span className="ml-auto">{filtered.length} результатів</span>
+          <span><kbd className="font-mono">↑↓</kbd> {t("components.commandPalette.navigate")}</span>
+          <span><kbd className="font-mono">Enter</kbd> {t("components.commandPalette.execute")}</span>
+          <span className="ml-auto">{t("components.commandPalette.results", { count: filtered.length })}</span>
         </div>
       </div>
     </div>

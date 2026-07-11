@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { useT } from "../../lib/i18n";
+import { useT, localizeBackendError } from "../../lib/i18n";
 import dp1Hero from "../../ui-v2/assets/dp1-hero.jpg";
 import { Dp1TextEditor } from "./Dp1TextEditor";
 
@@ -84,7 +84,7 @@ export function Dp1Editor({ onHome }: Props) {
       if (!initial.exePath) {
         setPhase("downloading");
         const dl = await window.dp2.dp1DownloadTool();
-        if (!dl.ok) { setError(dl.error ?? "download failed"); setPhase("init"); return; }
+        if (!dl.ok) { setError(localizeBackendError(dl.error) || "download failed"); setPhase("init"); return; }
         const after = await refreshStatus();
         if (after.doneExists) { setMode("editor"); return; }
       }
@@ -122,7 +122,7 @@ export function Dp1Editor({ onHome }: Props) {
           await runExtract(picked);
           return;
         }
-        setError(r.error ?? "extract failed");
+        setError(localizeBackendError(r.error) || "extract failed");
         return;
       }
       setRecordCount(r.recordCount ?? null);
@@ -157,7 +157,7 @@ export function Dp1Editor({ onHome }: Props) {
   if (mode === "checking") {
     return (
       <div className="flex-1 flex items-center justify-center bg-[var(--bg)] text-[var(--text-muted)] text-[13px]">
-        Перевірка стану DP1…
+        {t("dp1.setup.checkingState")}
       </div>
     );
   }
@@ -194,9 +194,9 @@ export function Dp1Editor({ onHome }: Props) {
         <div className="w-full max-w-[520px] relative" style={{ zIndex: 1 }}>
           <header className="mb-6 text-center">
             <p className="text-[11px] uppercase tracking-[0.2em] text-[var(--text-faint)] mb-1">{t("dp1.brand")}</p>
-            <h2 className="text-[20px] font-bold text-[var(--text-strong)] mb-1">Готуємо переклад</h2>
+            <h2 className="text-[20px] font-bold text-[var(--text-strong)] mb-1">{t("dp1.setup.preparingTranslation")}</h2>
             <p className="text-[12.5px] text-[var(--text-muted)] leading-relaxed mb-1">
-              Перший запуск — потрібно завантажити інструмент та витягнути текст із гри. Кілька секунд і відкриється редактор.
+              {t("dp1.setup.firstRunIntro")}
             </p>
             <p className="text-[11px] italic text-[var(--text-faint)]">{t("dp1.byline")}</p>
           </header>
@@ -214,18 +214,18 @@ export function Dp1Editor({ onHome }: Props) {
             else if (installed && !haveJson) stage = "pick";
 
             const title =
-              stage === "download" ? "Завантаження DPMsgTool by MrIkso"
-              : stage === "extract" ? "Розпакування mes_all.mes у JSON"
-              : stage === "pick" ? "Вибери mes_all.mes вручну"
-              : "Готовий розпочати?";
+              stage === "download" ? t("dp1.setup.stage.downloadTitle")
+              : stage === "extract" ? t("dp1.setup.stage.extractTitle")
+              : stage === "pick" ? t("dp1.setup.stage.pickTitle")
+              : t("dp1.setup.stage.startTitle");
             const desc =
               stage === "download"
-                ? "Скачуємо CLI, який читає та запаковує .mes-діалоги Deadly Premonition. Покладемо у Documents\\SWERY-Localization-Tool\\DP1\\Text\\Tool\\."
+                ? t("dp1.setup.stage.downloadDesc")
               : stage === "extract"
-                ? "Беремо mes_all.mes з теки гри, запускаємо DPMsgTool і отримуємо JSON-дамп для редактора."
+                ? t("dp1.setup.stage.extractDesc")
               : stage === "pick"
-                ? "Не вдалося автоматично знайти mes_all.mes у грі. Вкажи файл вручну — далі він сам конвертується."
-                : "Натисни Старт — інструмент завантажиться, текст витягнеться, і відкриється редактор.";
+                ? t("dp1.setup.stage.pickDesc")
+                : t("dp1.setup.stage.startDesc");
 
             return (
               <section className="p-4 rounded-md border border-[var(--border-soft)] bg-[var(--bg-surface)]">
@@ -255,7 +255,7 @@ export function Dp1Editor({ onHome }: Props) {
                     <div className="flex flex-col gap-2">
                       <div className="flex items-center justify-between gap-3">
                         <span className="text-[11.5px] text-[var(--text-muted)] truncate">
-                          {toolProgress?.i18nKey ? t(toolProgress.i18nKey, toolProgress.i18nParams) : "Завантаження…"}
+                          {toolProgress?.i18nKey ? t(toolProgress.i18nKey, toolProgress.i18nParams) : t("dp1.setup.loading")}
                         </span>
                         {toolProgress?.total ? (
                           <span className="text-[11px] tabular-nums text-[var(--text-muted)] shrink-0">
@@ -291,7 +291,7 @@ export function Dp1Editor({ onHome }: Props) {
                         {t("dp1.setup.step2.pickBtn")}
                       </button>
                       <button className="dp-btn dp-btn--ghost" onClick={() => runExtract()}>
-                        Спробувати ще раз
+                        {t("dp1.setup.tryAgain")}
                       </button>
                     </div>
                   )}
@@ -299,7 +299,7 @@ export function Dp1Editor({ onHome }: Props) {
                   {/* Start (cold start, нема ні download ні extract) */}
                   {stage === "start" && (
                     <button className="dp-btn dp-btn--primary" onClick={runFlow}>
-                      Розпочати
+                      {t("dp1.setup.start")}
                     </button>
                   )}
                 </div>

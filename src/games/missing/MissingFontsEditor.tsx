@@ -12,7 +12,7 @@
 // смужкою; модалки extract/pack у HBR-стилі (hero + checklist + log).
 
 import { useEffect, useMemo, useState } from "react";
-import { useT } from "../../lib/i18n";
+import { useT, localizeBackendError } from "../../lib/i18n";
 import { alert as dpAlert, confirm as dpConfirm } from "../../lib/dialogs";
 
 interface Props { onHome: () => void; }
@@ -102,7 +102,7 @@ export function MissingFontsEditor({ onHome }: Props) {
     const s = await W.missingFontsStatus();
     if (!s.ok || !s.assetsOk) {
       setPhase("error");
-      setErrMsg(s.error || `resources.assets не знайдено: ${s.assetsPath || "missingRoot не задано"}`);
+      setErrMsg(localizeBackendError(s.error) || t("missing.fonts.err.assetsNotFound", { path: s.assetsPath || t("missing.fonts.err.rootNotSet") }));
       return;
     }
     if ((s.originalCount ?? 0) === 0) { setPhase("needs-export"); return; }
@@ -126,7 +126,7 @@ export function MissingFontsEditor({ onHome }: Props) {
   async function runExport() {
     setPhase("exporting"); setExportLog([]);
     const r = await W.missingFontsExport();
-    if (!r.ok) { setPhase("error"); setErrMsg(r.error || "export fail"); return; }
+    if (!r.ok) { setPhase("error"); setErrMsg(localizeBackendError(r.error) || "export fail"); return; }
     await refreshStatus();
     const fresh = await W.missingFontsList();
     const sample = (fresh.items || [])[0];
@@ -142,7 +142,7 @@ export function MissingFontsEditor({ onHome }: Props) {
     const r = await W.missingFontsPickReplace({ item: it });
     if (r.ok) await refreshItems();
     else if (r.error && r.error !== "cancelled") {
-      await dpAlert(t("missing.fonts.pickErr"), r.error, { tone: "danger" });
+      await dpAlert(t("missing.fonts.pickErr"), localizeBackendError(r.error), { tone: "danger" });
     }
   }
 
@@ -176,7 +176,7 @@ export function MissingFontsEditor({ onHome }: Props) {
     setPacking(true); setPackLog([]);
     try {
       const r = await W.missingFontsPack();
-      if (!r.ok) { await dpAlert(t("missing.fonts.packErrTitle"), r.error || "?", { tone: "danger" }); return; }
+      if (!r.ok) { await dpAlert(t("missing.fonts.packErrTitle"), localizeBackendError(r.error) || "?", { tone: "danger" }); return; }
       const applied = r.summary?.applied ?? 0;
       const failedArr = r.summary?.failed ?? [];
       const changed = r.summary?.changedAssets ?? [];

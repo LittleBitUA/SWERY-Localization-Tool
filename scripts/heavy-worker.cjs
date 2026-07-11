@@ -1580,6 +1580,171 @@ async function taskD4TmBuild({ originalDir, doneDir }) {
   return { pairs };
 }
 
+// Швидка статистика для головного екрану (HomeV2) — без word/char підрахунку.
+// Дзеркалить inline-логіку dp2:d4-text-corpus-stats, але у worker-потоці.
+async function taskD4CorpusStatsQuick({ originalDir, doneDir }) {
+  let names = [];
+  try { names = (await fs.readdir(originalDir)).filter((n) => n.endsWith('.json')); } catch {}
+  let total = 0, translated = 0, files = 0;
+  for (const name of names) {
+    const { oArr, dArr } = await d4ReadFilePair(originalDir, doneDir, name);
+    if (dArr.length === 0) continue;
+    files++;
+    const oByName = new Map();
+    for (const e of oArr) if (e && e.objectName) oByName.set(e.objectName, e);
+    for (const e of dArr) {
+      const arr = Array.isArray(e && e.m_aString) ? e.m_aString : [];
+      const origArr = oByName.get(e && e.objectName) && Array.isArray(oByName.get(e.objectName).m_aString)
+        ? oByName.get(e.objectName).m_aString : [];
+      total += arr.length;
+      for (let i = 0; i < arr.length; i++) {
+        const v = arr[i], ov = origArr[i] || '';
+        if (typeof v === 'string' && v !== ov && v.trim() !== '') translated++;
+      }
+    }
+  }
+  return { files, total, translated, percent: total > 0 ? (translated / total) * 100 : 0, hasData: names.length > 0 };
+}
+
+// Список файлів D4 з прогресом (для D4Editor). Дзеркалить dp2:d4-text-list —
+// важкий JSON.parse + підрахунок translated переноситься у worker.
+async function taskD4TextList({ originalDir, doneDir }) {
+  let names = [];
+  try { names = (await fs.readdir(originalDir)).filter((n) => n.endsWith('.json')).sort(); } catch {}
+  const items = [];
+  for (const name of names) {
+    const origPath = path.join(originalDir, name);
+    const donePath = path.join(doneDir, name);
+    let origSize = 0, doneSize = 0, doneMtime = 0;
+    try { const st = await fs.stat(origPath); origSize = st.size; } catch {}
+    try { const st = await fs.stat(donePath); doneSize = st.size; doneMtime = st.mtimeMs; } catch {}
+    let entries = 0, strings = 0, translated = 0;
+    const { oArr, dArr } = await d4ReadFilePair(originalDir, doneDir, name);
+    entries = dArr.length;
+    const origByName = new Map();
+    for (const e of oArr) if (e && e.objectName) origByName.set(e.objectName, e);
+    for (const e of dArr) {
+      const s = Array.isArray(e && e.m_aString) ? e.m_aString : [];
+      strings += s.length;
+      const orig = origByName.get(e && e.objectName);
+      const origStr = Array.isArray(orig && orig.m_aString) ? orig.m_aString : [];
+      for (let i = 0; i < s.length; i++) {
+        const v = s[i]; const ov = origStr[i] || '';
+        if (typeof v === 'string' && v !== ov && v.trim() !== '') translated++;
+      }
+    }
+    items.push({ name, origPath, donePath, origSize, doneSize, doneMtime, entries, strings, translated });
+  }
+  return { items };
+}
+
+// Batch-replace для D4 — regex по m_aString усіх Done-файлів + запис із .bak.
+// Дзеркалить dp2:d4-text-batch-replace у worker-потоці (regex+re-serialize важкі).
+async function taskD4BatchReplace({ doneDir, query, replacement, opts }) {
+  const o = opts || {};
+  const dryRun = !!o.dryRun;
+  let rx;
+  const flags = o.caseSensitive ? 'g' : 'gi';
+  if (o.regex) rx = new RegExp(query, flags);
+  else {
+    let q = query.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    if (o.wholeWord) q = '\\b' + q + '\\b';
+    rx = new RegExp(q, flags);
+  }
+  let names = [];
+  try { names = (await fs.readdir(doneDir)).filter((n) => n.endsWith('.json')); } catch {}
+  const results = [];
+  let totalReplaced = 0;
+  for (const name of names) {
+    const donePath = path.join(doneDir, name);
+    try {
+      const raw = await fs.readFile(donePath, 'utf8');
+      const arr = JSON.parse(raw);
+      if (!Array.isArray(arr)) continue;
+      let count = 0;
+      for (const m of arr) {
+        if (Array.isArray(m && m.m_aString)) {
+          for (let i = 0; i < m.m_aString.length; i++) {
+            const v = m.m_aString[i] || '';
+            const next = v.replace(rx, () => { count++; return replacement; });
+            if (next !== v) m.m_aString[i] = next;
+          }
+        }
+      }
+      if (count > 0) {
+        totalReplaced += count;
+        if (!dryRun) {
+          const bak = donePath + '.bak';
+          try { await fs.access(bak); } catch { try { await fs.copyFile(donePath, bak); } catch {} }
+          await fs.writeFile(donePath, JSON.stringify(arr, null, 2), 'utf8');
+        }
+        results.push({ name, replaced: count });
+      }
+    } catch {}
+  }
+  return { dryRun, totalReplaced, files: results };
+}
+
+// HBR pre-pack lint плейсхолдерів — читання+parse усіх пар + regex-екстракція
+// тегів + diff. Дзеркалить inline dp2:hbr-text-lint-placeholders у worker.
+async function taskHbrLintPlaceholders({ originalDir, doneDir }) {
+  let entries;
+  try { entries = await fs.readdir(originalDir); }
+  catch { return { error: 'no extracted text' }; }
+  const PATS = [
+    /\{[A-Za-z0-9_]+\}/g,
+    /\$\{[^}]+\}/g,
+    /<\/?[A-Za-z][^>]*>/g,
+    /\[[^\]]+\.json\]/g,
+    /\\n/g, /\\r\\n/g,
+  ];
+  function extractTags(s) {
+    if (!s) return [];
+    const out = [];
+    for (const re of PATS) { const m = s.match(re); if (m) out.push(...m); }
+    return out.sort();
+  }
+  function diff(o, c) {
+    const oC = new Map(); const cC = new Map();
+    for (const x of o) oC.set(x, (oC.get(x) || 0) + 1);
+    for (const x of c) cC.set(x, (cC.get(x) || 0) + 1);
+    const missing = []; const extra = [];
+    for (const [k, v] of oC) { const d = v - (cC.get(k) || 0); for (let i = 0; i < d; i++) missing.push(k); }
+    for (const [k, v] of cC) { const d = v - (oC.get(k) || 0); for (let i = 0; i < d; i++) extra.push(k); }
+    return { missing, extra };
+  }
+  const violations = [];
+  let scannedFiles = 0; let scannedRows = 0;
+  for (const fname of entries) {
+    if (!fname.endsWith('.json')) continue;
+    let origRaw; let doneRaw;
+    try { origRaw = await fs.readFile(path.join(originalDir, fname), 'utf8'); } catch { continue; }
+    try { doneRaw = await fs.readFile(path.join(doneDir, fname), 'utf8'); } catch { continue; }
+    try {
+      const orig = JSON.parse(origRaw);
+      const done = JSON.parse(doneRaw);
+      const oList = (orig && orig._List && orig._List.Array) || [];
+      const dList = (done && done._List && done._List.Array) || [];
+      scannedFiles++;
+      for (let i = 0; i < dList.length; i++) {
+        const textId = (dList[i] && dList[i]._TextId) || ('#' + i);
+        const dTexts = (dList[i] && dList[i]._Texts && dList[i]._Texts.Array) || [];
+        const oTexts = (oList[i] && oList[i]._Texts && oList[i]._Texts.Array) || [];
+        for (let j = 0; j < dTexts.length; j++) {
+          scannedRows++;
+          const d = (dTexts[j] && dTexts[j]._Text) || '';
+          const o = (oTexts[j] && oTexts[j]._Text) || '';
+          if (!d || d === o) continue;
+          const { missing, extra } = diff(extractTags(o), extractTags(d));
+          if (missing.length === 0 && extra.length === 0) continue;
+          violations.push({ file: fname, textId, variantIdx: j, missing, extra, original: o, current: d });
+        }
+      }
+    } catch {}
+  }
+  return { scannedFiles, scannedRows, violations };
+}
+
 // ── Dispatcher ──────────────────────────────────────────────────────────
 parentPort.on('message', async (msg) => {
   const id = msg && msg.id;
@@ -1631,6 +1796,14 @@ parentPort.on('message', async (msg) => {
       result = await taskD4SearchAll(payload);
     } else if (type === 'd4-tm-build') {
       result = await taskD4TmBuild(payload);
+    } else if (type === 'd4-corpus-stats-quick') {
+      result = await taskD4CorpusStatsQuick(payload);
+    } else if (type === 'd4-text-list') {
+      result = await taskD4TextList(payload);
+    } else if (type === 'd4-batch-replace') {
+      result = await taskD4BatchReplace(payload);
+    } else if (type === 'hbr-lint-placeholders') {
+      result = await taskHbrLintPlaceholders(payload);
     } else {
       throw new Error('Unknown task type: ' + type);
     }

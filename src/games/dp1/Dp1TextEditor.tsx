@@ -1,7 +1,7 @@
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Editor, { type OnMount } from "@monaco-editor/react";
 import type { editor as MonacoEditor } from "monaco-editor";
-import { useT } from "../../lib/i18n";
+import { useT, localizeBackendError } from "../../lib/i18n";
 import { useDp1Store } from "./store";
 import { dp1ComputeFsl, dp1MarkerIssues } from "./parser";
 import { useLocalStorage } from "../../lib/useLocalStorage";
@@ -72,6 +72,7 @@ const Dp1TableRow = memo(function Dp1TableRow(props: {
   onSelect: (index: number) => void;
 }) {
   const { index, translated, hasIssues, origText, doneText, id1, id2, cols, onSelect } = props;
+  const t = useT();
   const wrapCls = "line-clamp-2 whitespace-pre-wrap break-words";
   return (
     <tr
@@ -96,11 +97,11 @@ const Dp1TableRow = memo(function Dp1TableRow(props: {
       </td>
       <td style={{ width: cols.status }} className="px-1 py-1.5 text-center align-top">
         {hasIssues ? (
-          <span className="text-[var(--danger)] text-[13px]" title="Маркери порушено">⚠</span>
+          <span className="text-[var(--danger)] text-[13px]" title={t("dp1.text.markersViolated")}>⚠</span>
         ) : translated ? (
-          <span className="text-[var(--success)] text-[13px]" title="Перекладено">✓</span>
+          <span className="text-[var(--success)] text-[13px]" title={t("dp1.text.rowTranslated")}>✓</span>
         ) : (
-          <span className="text-[var(--text-faint)] text-[13px]" title="Не перекладено">○</span>
+          <span className="text-[var(--text-faint)] text-[13px]" title={t("dp1.text.rowUntranslated")}>○</span>
         )}
       </td>
     </tr>
@@ -392,20 +393,20 @@ export function Dp1TextEditor({ onHome }: Props) {
   async function handleSave() {
     flushPending();
     const r = await saveAll();
-    if (!r.ok) await showAlert("Помилка збереження", r.error ?? "");
+    if (!r.ok) await showAlert(t("dp1.text.saveErrorTitle"), localizeBackendError(r.error) || "");
   }
 
   async function handlePack() {
     flushPending();
     if (dirty) {
       const sr = await saveAll();
-      if (!sr.ok) { await showAlert("Помилка збереження", sr.error ?? ""); return; }
+      if (!sr.ok) { await showAlert(t("dp1.text.saveErrorTitle"), localizeBackendError(sr.error) || ""); return; }
     }
     const lr = await window.dp2.dp1TextLintMarkers();
     if (lr.ok && lr.violations && lr.violations.length > 0) {
       const proceed = await showConfirm(
-        `Знайдено ${lr.violations.length} рядків з порушеннями маркерів`,
-        "Можна продовжити пакування, але .mes може зламатись у грі. Все одно паковати?\n\n(Натисни «Ні» — відкриється детальний перегляд порушень.)",
+        t("dp1.text.markerViolationsFound", { count: lr.violations.length }),
+        t("dp1.text.packAnywayBody"),
         { tone: "warning" }
       );
       if (!proceed) { setLintOpen(true); return; }
@@ -414,11 +415,11 @@ export function Dp1TextEditor({ onHome }: Props) {
     try {
       const r = await window.dp2.dp1Pack();
       if (!r.ok) {
-        await showAlert("Помилка пакування", r.error ?? "");
+        await showAlert(t("dp1.text.packErrorTitle"), localizeBackendError(r.error) || "");
       } else if (r.warning) {
-        await showAlert("Готово, але…", `${r.warning}\n\nПроміжний файл:\n${r.intermediatePath ?? ""}`, { tone: "warning" });
+        await showAlert(t("dp1.text.doneButTitle"), t("dp1.text.packWarningBody", { warning: r.warning, path: r.intermediatePath ?? "" }), { tone: "warning" });
       } else {
-        await showAlert("Готово!", `mes_all.mes записано:\n${r.outputPath ?? ""}${r.bakPath ? "\n\nКопію попередньої версії збережено як .bak." : ""}`, { tone: "success" });
+        await showAlert(t("dp1.text.doneTitle"), t("dp1.text.packedBody", { path: r.outputPath ?? "" }) + (r.bakPath ? "\n\n" + t("dp1.text.bakSaved") : ""), { tone: "success" });
       }
     } finally { setPacking(false); }
   }
@@ -429,14 +430,14 @@ export function Dp1TextEditor({ onHome }: Props) {
     setExporting(true);
     try {
       const dest = await window.dp2.pickSaveFile({
-        title: "Експорт combined.txt",
+        title: t("dp1.text.exportTitle"),
         defaultPath: "mes_all-combined.txt",
         filters: [{ name: "Text", extensions: ["txt"] }],
       });
       if (!dest) return;
       const r = await window.dp2.dp1TextExportCombined({ path: dest });
-      if (!r.ok) await showAlert("Помилка експорту", r.error ?? "");
-      else await showAlert("Експорт виконано", `Записано ${r.bytes ?? 0} байт у:\n${r.path}`, { tone: "success" });
+      if (!r.ok) await showAlert(t("dp1.text.exportErrorTitle"), localizeBackendError(r.error) || "");
+      else await showAlert(t("dp1.text.exportDoneTitle"), t("dp1.text.exportedBody", { bytes: r.bytes ?? 0, path: r.path ?? "" }), { tone: "success" });
     } finally { setExporting(false); }
   }
 
@@ -444,15 +445,15 @@ export function Dp1TextEditor({ onHome }: Props) {
     setImporting(true);
     try {
       const src = await window.dp2.pickFile({
-        title: "Імпорт combined.txt",
+        title: t("dp1.text.importTitle"),
         filters: [{ name: "Text", extensions: ["txt"] }],
       });
       if (!src) return;
       const r = await window.dp2.dp1TextImportCombined({ path: src });
-      if (!r.ok) { await showAlert("Помилка імпорту", r.error ?? ""); return; }
-      let msg = `Застосовано: ${r.applied ?? 0}\nПропущено: ${r.skipped ?? 0}`;
-      if (r.fakeDiffs && r.fakeDiffs.length > 0) msg += `\n\n⚠ ${r.fakeDiffs.length} блоків мали EN, що не збігається з Original — їх пропущено. Перевір файл.`;
-      await showAlert("Імпорт виконано", msg, { tone: r.fakeDiffs?.length ? "warning" : "success" });
+      if (!r.ok) { await showAlert(t("dp1.text.importErrorTitle"), localizeBackendError(r.error) || ""); return; }
+      let msg = t("dp1.text.importResult", { applied: r.applied ?? 0, skipped: r.skipped ?? 0 });
+      if (r.fakeDiffs && r.fakeDiffs.length > 0) msg += "\n\n" + t("dp1.text.importFakeDiffs", { count: r.fakeDiffs.length });
+      await showAlert(t("dp1.text.importDoneTitle"), msg, { tone: r.fakeDiffs?.length ? "warning" : "success" });
       await init();
     } finally { setImporting(false); }
   }
@@ -461,10 +462,10 @@ export function Dp1TextEditor({ onHome }: Props) {
   if (error) {
     return (
       <div className="flex-1 flex flex-col items-center justify-center bg-[var(--bg)] gap-3 p-8">
-        <p className="text-[14px] text-[var(--danger)] font-semibold">Не вдалося завантажити</p>
+        <p className="text-[14px] text-[var(--danger)] font-semibold">{t("dp1.text.loadFailed")}</p>
         <p className="text-[12px] text-[var(--text-muted)] max-w-[500px] text-center font-mono whitespace-pre-wrap">{error}</p>
-        <button className="dp-btn dp-btn--primary" onClick={() => init()}>Спробувати знову</button>
-        <button className="dp-btn dp-btn--ghost" onClick={onHome}>На головну</button>
+        <button className="dp-btn dp-btn--primary" onClick={() => init()}>{t("dp1.text.tryAgain")}</button>
+        <button className="dp-btn dp-btn--ghost" onClick={onHome}>{t("dp1.text.toHome")}</button>
       </div>
     );
   }
@@ -509,15 +510,15 @@ export function Dp1TextEditor({ onHome }: Props) {
         <div className="flex-1 flex items-center justify-center bg-[var(--bg)] p-8">
           <div className="w-full max-w-[480px] flex flex-col gap-5">
             <div className="text-center">
-              <h2 className="text-[18px] font-bold text-[var(--text-strong)] mb-1">Підготовка редактора…</h2>
-              <p className="text-[12px] text-[var(--text-muted)]">17 тисяч діалогів — це не миттєво. Зачекай пару секунд.</p>
+              <h2 className="text-[18px] font-bold text-[var(--text-strong)] mb-1">{t("dp1.text.preparingEditor")}</h2>
+              <p className="text-[12px] text-[var(--text-muted)]">{t("dp1.text.preparingHint")}</p>
             </div>
             <div className="dp-card p-5 flex flex-col gap-4">
-              <Step n={1} state={stageStore} title="Завантаження mes_all.json" desc="Читаємо Original + Done з диску у пам'ять." />
-              <Step n={2} state={stageWorker} title="Підготовка індексів" desc="Worker-потік рахує статус кожного рядка (перекладений / маркери)." />
-              <Step n={3} state={stageRows} title="Збір таблиці" desc="Формуємо фільтрований список — далі редактор відкриється." />
+              <Step n={1} state={stageStore} title={t("dp1.text.step1Title")} desc={t("dp1.text.step1Desc")} />
+              <Step n={2} state={stageWorker} title={t("dp1.text.step2Title")} desc={t("dp1.text.step2Desc")} />
+              <Step n={3} state={stageRows} title={t("dp1.text.step3Title")} desc={t("dp1.text.step3Desc")} />
             </div>
-            <p className="text-center text-[10px] text-[var(--text-faint)]">Завантаження виконується у фоновому потоці — UI не блокується.</p>
+            <p className="text-center text-[10px] text-[var(--text-faint)]">{t("dp1.text.bgLoadNote")}</p>
           </div>
         </div>
       </div>
@@ -526,10 +527,10 @@ export function Dp1TextEditor({ onHome }: Props) {
 
   const percent = counts.total ? Math.round((counts.translated / counts.total) * 100) : 0;
   const filterPills: { id: Dp1Filter; label: string; count: number }[] = [
-    { id: "all", label: "Усі", count: counts.total },
-    { id: "untranslated", label: "Не перекладені", count: counts.untranslated },
-    { id: "translated", label: "Перекладені", count: counts.translated },
-    { id: "issues", label: "Маркери ⚠", count: counts.withIssues },
+    { id: "all", label: t("dp1.text.filterAll"), count: counts.total },
+    { id: "untranslated", label: t("dp1.text.filterUntranslated"), count: counts.untranslated },
+    { id: "translated", label: t("dp1.text.filterTranslated"), count: counts.translated },
+    { id: "issues", label: t("dp1.text.filterIssues"), count: counts.withIssues },
   ];
 
   return (
@@ -545,7 +546,7 @@ export function Dp1TextEditor({ onHome }: Props) {
         <span className="text-[11px] text-[var(--text-faint)] hidden md:inline truncate">· Director's Cut · MES</span>
         <span
           className="text-[9px] uppercase tracking-wider text-[var(--accent)] font-mono px-1.5 py-0.5 rounded border border-[var(--accent)]/40 bg-[var(--accent)]/5"
-          title="DP1 editor build marker — оновлюється при кожному вході у редактор"
+          title={t("dp1.text.buildMarkerTip")}
         >
           DP1-PERF-{DP1_PERF_VERSION} · {mountTs}
         </span>
@@ -554,37 +555,37 @@ export function Dp1TextEditor({ onHome }: Props) {
           <span className={`ml-1 font-semibold ${percent === 100 ? "text-[var(--success)]" : ""}`}>· {percent}%</span>
         </span>
         <div className="flex-1 min-w-0" />
-        <button className="dp-btn dp-btn--ghost shrink-0" onClick={handleExportCombined} disabled={exporting} title="Експорт combined.txt">↥ Експорт</button>
-        <button className="dp-btn dp-btn--ghost shrink-0" onClick={handleImportCombined} disabled={importing} title="Імпорт combined.txt">↧ Імпорт</button>
-        <button className="dp-btn dp-btn--ghost shrink-0" onClick={() => setLintOpen(true)} title="Перевірка цілісності маркерів">⚠ Lint</button>
+        <button className="dp-btn dp-btn--ghost shrink-0" onClick={handleExportCombined} disabled={exporting} title={t("dp1.text.exportTitle")}>↥ {t("dp1.text.export")}</button>
+        <button className="dp-btn dp-btn--ghost shrink-0" onClick={handleImportCombined} disabled={importing} title={t("dp1.text.importTitle")}>↧ {t("dp1.text.import")}</button>
+        <button className="dp-btn dp-btn--ghost shrink-0" onClick={() => setLintOpen(true)} title={t("dp1.text.lintTip")}>⚠ Lint</button>
         <button className="dp-btn dp-btn--ghost shrink-0" onClick={() => setStatsOpen(true)} title={t("stats.btn")}>{t("stats.btnShort")}</button>
         <button
           className="dp-btn dp-btn--ghost shrink-0"
           onClick={() => setGlyphMapOpen(true)}
-          title="Мапа підміни гліфів для пакування (Я→Ó, ї→ï тощо)"
+          title={t("dp1.text.glyphMapTip")}
         >
           <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
             <path strokeLinecap="round" strokeLinejoin="round" d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z" />
             <path strokeLinecap="round" strokeLinejoin="round" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
           </svg>
         </button>
-        <button className="dp-btn shrink-0" disabled={!dirty || saving} onClick={handleSave} title="Ctrl+S">{saving ? "…" : dirty ? "Зберегти" : "Збережено"}</button>
-        <button className="dp-btn dp-btn--success shrink-0" disabled={packing} onClick={handlePack} title="Запакувати у .mes і покласти в гру">{packing ? "…" : "Запакувати у гру"}</button>
+        <button className="dp-btn shrink-0" disabled={!dirty || saving} onClick={handleSave} title="Ctrl+S">{saving ? "…" : dirty ? t("dp1.text.save") : t("dp1.text.saved")}</button>
+        <button className="dp-btn dp-btn--success shrink-0" disabled={packing} onClick={handlePack} title={t("dp1.text.packTip")}>{packing ? "…" : t("dp1.text.pack")}</button>
         <LangToggle compact />
       </header>
 
       <div className="flex-1 flex min-h-0">
         {/* LEFT — File info */}
         <div style={{ width: fileListW }} className="h-full bg-[var(--bg-surface)] border-r border-[var(--border-soft)] flex flex-col overflow-y-auto">
-          <div className="px-3 py-2 border-b border-[var(--border-soft)] text-[10px] uppercase tracking-wider text-[var(--text-muted)] font-semibold">Файл проєкту</div>
+          <div className="px-3 py-2 border-b border-[var(--border-soft)] text-[10px] uppercase tracking-wider text-[var(--text-muted)] font-semibold">{t("dp1.text.projectFile")}</div>
           <div className="p-3">
             <div className="dp-card p-3 flex flex-col gap-2">
               <div className="flex items-center gap-2">
                 <span className="text-[14px]">📄</span>
                 <span className="font-mono text-[12px] text-[var(--text-strong)]">mes_all.json</span>
               </div>
-              <div className="text-[11px] text-[var(--text-muted)]">Записів: <span className="tabular-nums text-[var(--text-strong)]">{counts.total.toLocaleString("uk-UA")}</span></div>
-              <div className="text-[11px] text-[var(--text-muted)]">Перекладено: <span className="tabular-nums text-[var(--success)]">{counts.translated.toLocaleString("uk-UA")}</span></div>
+              <div className="text-[11px] text-[var(--text-muted)]">{t("dp1.text.records")}: <span className="tabular-nums text-[var(--text-strong)]">{counts.total.toLocaleString("uk-UA")}</span></div>
+              <div className="text-[11px] text-[var(--text-muted)]">{t("dp1.text.translatedLabel")}: <span className="tabular-nums text-[var(--success)]">{counts.translated.toLocaleString("uk-UA")}</span></div>
               <div className="h-1.5 bg-[var(--bg)] rounded overflow-hidden border border-[var(--border-soft)]">
                 <div className="h-full bg-[var(--success)]" style={{ width: `${percent}%` }} />
               </div>
@@ -592,13 +593,13 @@ export function Dp1TextEditor({ onHome }: Props) {
             </div>
             {meta && (
               <div className="mt-3 text-[10.5px] text-[var(--text-faint)] space-y-1">
-                {meta.extractedAt && <div>Видобуто: <span className="text-[var(--text-muted)]">{new Date(meta.extractedAt).toLocaleString()}</span></div>}
-                {meta.lastSavedAt && <div>Останнє збереження: <span className="text-[var(--text-muted)]">{new Date(meta.lastSavedAt).toLocaleString()}</span></div>}
-                {meta.sourceMes && <div className="truncate" title={meta.sourceMes}>Джерело: <span className="font-mono text-[var(--text-muted)]">{meta.sourceMes.split(/[\\/]/).pop()}</span></div>}
+                {meta.extractedAt && <div>{t("dp1.text.extractedAt")}: <span className="text-[var(--text-muted)]">{new Date(meta.extractedAt).toLocaleString()}</span></div>}
+                {meta.lastSavedAt && <div>{t("dp1.text.lastSaved")}: <span className="text-[var(--text-muted)]">{new Date(meta.lastSavedAt).toLocaleString()}</span></div>}
+                {meta.sourceMes && <div className="truncate" title={meta.sourceMes}>{t("dp1.text.sourceLabel")}: <span className="font-mono text-[var(--text-muted)]">{meta.sourceMes.split(/[\\/]/).pop()}</span></div>}
               </div>
             )}
             <div className="mt-3 flex flex-col gap-1.5">
-              <button className="dp-btn dp-btn--ghost text-[11px] w-full" onClick={() => init()}>↻ Перезавантажити з диску</button>
+              <button className="dp-btn dp-btn--ghost text-[11px] w-full" onClick={() => init()}>↻ {t("dp1.text.reloadFromDisk")}</button>
             </div>
           </div>
         </div>
@@ -610,7 +611,7 @@ export function Dp1TextEditor({ onHome }: Props) {
             <input
               type="text"
               className="dp-input flex-1 min-w-[180px]"
-              placeholder="Пошук за ID / оригіналом / перекладом…"
+              placeholder={t("dp1.text.searchPlaceholder")}
               value={searchDraft}
               onChange={(e) => setSearchDraft(e.target.value)}
             />
@@ -631,7 +632,7 @@ export function Dp1TextEditor({ onHome }: Props) {
               ))}
             </div>
             <span className="text-[10.5px] text-[var(--text-faint)] tabular-nums ml-auto">
-              Показано: {rows.length.toLocaleString("uk-UA")}
+              {t("dp1.text.shown")}: {rows.length.toLocaleString("uk-UA")}
             </span>
           </div>
 
@@ -641,8 +642,8 @@ export function Dp1TextEditor({ onHome }: Props) {
                 <tr>
                   <th style={{ width: cols.num }} className="px-2 py-1.5 text-left text-[10px] uppercase tracking-wider text-[var(--text-faint)] font-semibold">№</th>
                   <th style={{ width: cols.id }} className="px-2 py-1.5 text-left text-[10px] uppercase tracking-wider text-[var(--text-faint)] font-semibold">Id1/Id2</th>
-                  <th style={{ width: cols.original }} className="px-2 py-1.5 text-left text-[10px] uppercase tracking-wider text-[var(--text-faint)] font-semibold">Оригінал</th>
-                  <th style={{ width: cols.ua }} className="px-2 py-1.5 text-left text-[10px] uppercase tracking-wider text-[var(--text-faint)] font-semibold">Переклад</th>
+                  <th style={{ width: cols.original }} className="px-2 py-1.5 text-left text-[10px] uppercase tracking-wider text-[var(--text-faint)] font-semibold">{t("dp1.text.colOriginal")}</th>
+                  <th style={{ width: cols.ua }} className="px-2 py-1.5 text-left text-[10px] uppercase tracking-wider text-[var(--text-faint)] font-semibold">{t("dp1.text.colTranslation")}</th>
                   <th style={{ width: cols.status }} className="px-1 py-1.5 text-center text-[10px] uppercase tracking-wider text-[var(--text-faint)] font-semibold">·</th>
                 </tr>
               </thead>
@@ -653,7 +654,7 @@ export function Dp1TextEditor({ onHome }: Props) {
                 {rows.length === 0 && (
                   <tr>
                     <td colSpan={5} className="px-3 py-10 text-center text-[12px] text-[var(--text-faint)]">
-                      Нічого не знайдено за цим запитом.
+                      {t("dp1.text.nothingFound")}
                     </td>
                   </tr>
                 )}
@@ -663,18 +664,18 @@ export function Dp1TextEditor({ onHome }: Props) {
           <EditorFooter
             fileName="mes_all.json"
             stats={[
-              { label: "Видно", value: rows.length, tone: "default" },
-              { label: "Усього", value: counts.total, tone: "default" },
+              { label: t("dp1.text.footerShown"), value: rows.length, tone: "default" },
+              { label: t("dp1.text.footerTotal"), value: counts.total, tone: "default" },
               {
-                label: "Перекладено",
+                label: t("dp1.text.footerTranslated"),
                 value: `${counts.translated} (${percent}%)`,
                 tone: "success",
               },
               ...(counts.withIssues > 0
-                ? [{ label: "З маркерами", value: counts.withIssues, tone: "warning" as const }]
+                ? [{ label: t("dp1.text.footerWithMarkers"), value: counts.withIssues, tone: "warning" as const }]
                 : []),
               ...(selectedIndex !== null
-                ? [{ label: "Позиція", value: `${selectedIndex + 1}/${counts.total}`, tone: "accent" as const }]
+                ? [{ label: t("dp1.text.footerPosition"), value: `${selectedIndex + 1}/${counts.total}`, tone: "accent" as const }]
                 : []),
             ]}
           />
@@ -737,6 +738,7 @@ function Dp1MonacoPane(props: {
   onChange: (text: string) => void;
 }) {
   const { row, tagDiff, onChange } = props;
+  const t = useT();
   const [monacoFontSize] = useMonacoFontSize();
   const editorRef = useRef<MonacoEditor.IStandaloneCodeEditor | null>(null);
   const lastRowIndexRef = useRef<number | null>(null);
@@ -804,7 +806,7 @@ function Dp1MonacoPane(props: {
   if (!row) {
     return (
       <div className="flex-1 flex items-center justify-center text-[12px] text-[var(--text-faint)]">
-        Обери рядок ліворуч.
+        {t("dp1.text.selectRowLeft")}
       </div>
     );
   }
@@ -812,29 +814,29 @@ function Dp1MonacoPane(props: {
   return (
     <>
       <div className="px-3 py-2 border-b border-[var(--border-soft)] flex items-baseline gap-3 flex-wrap">
-        <span className="text-[12px] font-semibold text-[var(--text-strong)]">Запис #{row.index}</span>
+        <span className="text-[12px] font-semibold text-[var(--text-strong)]">{t("dp1.text.record")} #{row.index}</span>
         <span className="text-[11px] font-mono text-[var(--text-muted)]">Id1/Id2: <span className="text-[var(--text)]">{row.original.Id1}/{row.original.Id2}</span></span>
         <span className="text-[11px] font-mono text-[var(--text-faint)]">flags {row.original.Flag1}/{row.original.Flag2}</span>
-        <span className="text-[11px] text-[var(--text-faint)] ml-auto" title="Перерахується при save">
+        <span className="text-[11px] text-[var(--text-faint)] ml-auto" title={t("dp1.text.fslTip")}>
           FSL: <span className={`tabular-nums ${fslDiff ? "text-[var(--warning)]" : "text-[var(--text-muted)]"}`}>{fslPreview}</span>
           <span className="text-[var(--text-faint)]">{` · orig ${fslOrig}`}</span>
         </span>
       </div>
 
       <div className="px-3 py-2 border-b border-[var(--border-soft)] bg-[var(--bg)]">
-        <div className="text-[10px] uppercase tracking-wider text-[var(--text-muted)] mb-1">EN — оригінал</div>
+        <div className="text-[10px] uppercase tracking-wider text-[var(--text-muted)] mb-1">{t("dp1.text.enOriginal")}</div>
         <p className="text-[12.5px] text-[var(--text-muted)] whitespace-pre-wrap leading-snug break-words max-h-[160px] overflow-y-auto font-mono">{row.original.Text}</p>
       </div>
 
       {tokens.length > 0 && (
         <div className="px-3 py-2 border-b border-[var(--border-soft)] flex items-center gap-1 flex-wrap">
-          <span className="text-[10px] uppercase tracking-wider text-[var(--text-faint)] mr-1">Вставити:</span>
+          <span className="text-[10px] uppercase tracking-wider text-[var(--text-faint)] mr-1">{t("dp1.text.insertLabel")}</span>
           {tokens.map((tok) => (
             <button
               key={tok}
               className="px-1.5 py-0.5 text-[10.5px] font-mono rounded border border-[var(--border-soft)] bg-[var(--bg)] text-[var(--accent)] hover:bg-[var(--accent)]/10 hover:border-[var(--accent)]/40"
               onClick={() => insertToken(tok)}
-              title={`Вставити ${tok} у позицію курсора`}
+              title={t("dp1.text.insertTokenTip", { tok })}
             >
               {tok}
             </button>
@@ -844,8 +846,8 @@ function Dp1MonacoPane(props: {
 
       {(tagDiff.missing.length > 0 || tagDiff.extra.length > 0) && (
         <div className="px-3 py-1.5 border-b border-[var(--border-soft)] bg-[var(--danger)]/8 text-[10.5px] flex flex-wrap gap-2">
-          {tagDiff.missing.length > 0 && <span className="text-[var(--danger)]">✗ Не вистачає: <span className="font-mono">{tagDiff.missing.join(", ")}</span></span>}
-          {tagDiff.extra.length > 0 && <span className="text-[var(--warning)]">+ Зайве: <span className="font-mono">{tagDiff.extra.join(", ")}</span></span>}
+          {tagDiff.missing.length > 0 && <span className="text-[var(--danger)]">✗ {t("dp1.text.tagMissing")}: <span className="font-mono">{tagDiff.missing.join(", ")}</span></span>}
+          {tagDiff.extra.length > 0 && <span className="text-[var(--warning)]">+ {t("dp1.text.tagExtra")}: <span className="font-mono">{tagDiff.extra.join(", ")}</span></span>}
         </div>
       )}
 
@@ -883,7 +885,7 @@ function Dp1MonacoPane(props: {
           <MonacoFontSizeControl />
         </span>
         <span className="tabular-nums">
-          {(row.done.Text ?? "").length} симв. · EN {(row.original.Text ?? "").length} симв.
+          {t("dp1.text.charCount", { ua: (row.done.Text ?? "").length, en: (row.original.Text ?? "").length })}
         </span>
       </div>
     </>

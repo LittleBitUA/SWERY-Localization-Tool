@@ -42,3 +42,7 @@ __flatten_tmp__/
 # Game-side dumps (data, не код)
 TEXT/
 DPMsgTool/
+
+# stray extraction scratch
+$dec/
+$decDir/

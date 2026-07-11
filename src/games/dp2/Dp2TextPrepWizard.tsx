@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { useT } from "../../lib/i18n";
+import { useT, localizeBackendError } from "../../lib/i18n";
 import { alert as showAlert } from "../../lib/dialogs";
 import { DP2_TEXT_FILES, dp2TextRequiredEntries } from "./required-text-files";
 
@@ -136,7 +136,7 @@ export function Dp2TextPrepWizard({ assetsPath, onAssetsPathPicked, onDone, onCa
           entries: REQUIRED_ENTRIES,
         });
         if (!r.ok) {
-          setErrorMsg(r.error || t("dp2.prep.err.extractFail"));
+          setErrorMsg(localizeBackendError(r.error) || t("dp2.prep.err.extractFail"));
           setPhase("error");
           return;
         }
@@ -164,7 +164,7 @@ export function Dp2TextPrepWizard({ assetsPath, onAssetsPathPicked, onDone, onCa
           overwrite: false,
         });
         if (!r.ok) {
-          setErrorMsg(r.error || t("dp2.prep.err.mirrorFail"));
+          setErrorMsg(localizeBackendError(r.error) || t("dp2.prep.err.mirrorFail"));
           setPhase("error");
           return;
         }

@@ -2,6 +2,8 @@
 // число "12345 / 50000" на mini-bar з градієнтом + % + raw counts. Колір
 // шкали відбиває стан: 0% — danger, 100% — success, проміжно — warning→accent.
 
+import { useT } from "../lib/i18n";
+
 interface Props {
   translated: number;
   total: number;
@@ -12,6 +14,7 @@ interface Props {
 }
 
 export function HeaderProgress({ translated, total, width = 110, title }: Props) {
+  const t = useT();
   const pct = total > 0 ? Math.min(100, (translated / total) * 100) : 0;
   // 2 знаки — щоб збігалося з «Огляд готовності» (89.37 % замість округленого
   // 89.4 %, інакше користувач бачить розходження і думає що є баг).
@@ -26,7 +29,7 @@ export function HeaderProgress({ translated, total, width = 110, title }: Props)
   return (
     <div
       className="flex items-center gap-2 text-[10.5px] tabular-nums text-[var(--text-muted)] select-none"
-      title={title ?? `Перекладено ${translated.toLocaleString("uk-UA")} з ${total.toLocaleString("uk-UA")} рядків (${pctTxt}%)`}
+      title={title ?? t("components.headerProgress.tooltip", { translated: translated.toLocaleString("uk-UA"), total: total.toLocaleString("uk-UA"), pct: pctTxt })}
     >
       <span className="font-mono">{translated.toLocaleString("uk-UA")}/{total.toLocaleString("uk-UA")}</span>
       <div className="relative" style={{ width }}>

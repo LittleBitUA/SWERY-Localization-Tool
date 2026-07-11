@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { useT } from "../../lib/i18n";
+import { useT, localizeBackendError } from "../../lib/i18n";
 import { confirm as showConfirm } from "../../lib/dialogs";
 import { DP2_TEXTURES, type TextureEntry } from "./textures-list";
 import { Dp2TextureBusyModal, type BusyKind, type BusyTarget } from "./Dp2TextureBusyModal";
@@ -143,7 +143,7 @@ export function Dp2TexturesEditor({ onHome }: Dp2TexturesEditorProps) {
         pathIds: [tx.pathId],
       });
       if (!res.success) {
-        setModalError(res.error ?? "?");
+        setModalError(localizeBackendError(res.error) || "?");
         setModalDone(true);
         return;
       }
@@ -180,7 +180,7 @@ export function Dp2TexturesEditor({ onHome }: Dp2TexturesEditorProps) {
       for (const [assetsFile, pathIds] of byFile) {
         const res = await window.dp2.texturesExport({ assetsFile, pathIds });
         if (!res.success) {
-          setModalError(res.error ?? "?");
+          setModalError(localizeBackendError(res.error) || "?");
           setModalDone(true);
           return;
         }
@@ -238,7 +238,7 @@ export function Dp2TexturesEditor({ onHome }: Dp2TexturesEditorProps) {
         assetsFile: tx.assetsFile,
       });
       if (!res.success) {
-        setModalError(res.error ?? "?");
+        setModalError(localizeBackendError(res.error) || "?");
         setModalDone(true);
         return;
       }

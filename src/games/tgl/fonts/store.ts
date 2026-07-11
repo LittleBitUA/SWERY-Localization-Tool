@@ -3,7 +3,7 @@
 // (in-place), у store сидить лиш `dirty` прапорець + revision-tick.
 
 import { create } from "zustand";
-import { t } from "../../../lib/i18n";
+import { t, localizeBackendError } from "../../../lib/i18n";
 import {
   cloneGlyphAttributes,
   normalizeCyrillic,
@@ -169,7 +169,7 @@ export const useTglFontsStore = create<State>((set, get) => ({
     set({ loading: true, error: null });
     try {
       const r: any = await window.dp2.tglFontsList();
-      if (r.error) set({ error: r.error });
+      if (r.error) set({ error: localizeBackendError(r.error) });
       set({ items: r.items ?? [], baseFolder: r.baseFolder ?? null, loading: false, lastDebug: r.debug ?? null });
     } catch (e: any) {
       set({ loading: false, error: String(e?.message ?? e) });

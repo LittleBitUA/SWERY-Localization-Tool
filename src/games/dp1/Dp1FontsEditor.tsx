@@ -15,6 +15,7 @@
 //   • Glyphmap propose-banner після draw — "Додати Ї → Q?" з кнопкою Apply.
 
 import { useCallback, useEffect, useRef, useState } from "react";
+import { useT, localizeBackendError } from "../../lib/i18n";
 import { LangToggle } from "../../components/LangToggle";
 import { showError, showOk, showWarn } from "../../components/Toast";
 
@@ -54,6 +55,7 @@ interface Rect { x: number; y: number; w: number; h: number }
 type Tool = "select" | "move";
 
 export function Dp1FontsEditor({ onHome }: Props) {
+  const t = useT();
   const [dimensions, setDimensions] = useState<{ w: number; h: number } | null>(null);
   const [source, setSource] = useState<"done" | "original" | null>(null);
   const [dirty, setDirty] = useState(false);
@@ -102,7 +104,7 @@ export function Dp1FontsEditor({ onHome }: Props) {
     setSelection(null);
     const r = await window.dp2.dp1FontsReadRgba();
     setBusy(false);
-    if (!r.ok || !r.rgbaBase64) { setError(r.error ?? "Не вдалося завантажити DDS"); return; }
+    if (!r.ok || !r.rgbaBase64) { setError(localizeBackendError(r.error) || t("dp1.fonts.ddsLoadFailed")); return; }
     const bin = atob(r.rgbaBase64);
     const arr = new Uint8ClampedArray(bin.length);
     for (let i = 0; i < bin.length; i++) arr[i] = bin.charCodeAt(i);
@@ -126,7 +128,7 @@ export function Dp1FontsEditor({ onHome }: Props) {
   useEffect(() => {
     (async () => {
       const r = await window.dp2.dp1FontsEnsureTypeface();
-      if (!r.ok || !r.path) { setError(r.error ?? "Не вдалося завантажити шрифт DP1"); return; }
+      if (!r.ok || !r.path) { setError(localizeBackendError(r.error) || t("dp1.fonts.fontLoadFailed")); return; }
       setTypefacePath(r.path);
       setTypefaceDownload((s) => ({ ...s, visible: false }));
       void ensureDp1FontLoaded(r.path);
@@ -355,14 +357,14 @@ export function Dp1FontsEditor({ onHome }: Props) {
 
   // ── Action handlers ────────────────────────────────────────────
   function actErase() {
-    if (!selection) { showWarn("Спершу виділи прямокутник"); return; }
+    if (!selection) { showWarn(t("dp1.fonts.selectRectFirst")); return; }
     pushUndo();
     eraseRect(selection);
     paintCanvasRect(selection);
     setDirty(true);
   }
   function actOpenDraw() {
-    if (!selection) { showWarn("Спершу виділи прямокутник на атласі"); return; }
+    if (!selection) { showWarn(t("dp1.fonts.selectRectOnAtlasFirst")); return; }
     setDrawOpen(true);
   }
   async function actDraw(letter: string, fontSize: number, offsetX = 0, offsetY = 0) {
@@ -417,15 +419,15 @@ export function Dp1FontsEditor({ onHome }: Props) {
     const b64 = uint8ToBase64(rgbaRef.current);
     const r = await window.dp2.dp1FontsSaveRgba({ width: dimensions.w, height: dimensions.h, rgbaBase64: b64 });
     setBusy(false);
-    if (!r.ok) showError(r.error ?? "save fail", "Не вдалося зберегти DDS");
-    else { showOk(`Збережено у Done/FONTWIDE.DDS (${((r.size ?? 0) / 1024).toFixed(1)} KB)`, "FONTWIDE.DDS"); setDirty(false); setSource("done"); }
+    if (!r.ok) showError(localizeBackendError(r.error) || "save fail", t("dp1.fonts.ddsSaveFailed"));
+    else { showOk(t("dp1.fonts.savedToDone", { size: ((r.size ?? 0) / 1024).toFixed(1) }), "FONTWIDE.DDS"); setDirty(false); setSource("done"); }
   }
 
   return (
     <div className="flex-1 flex flex-col min-h-0 h-full">
       <header className="h-12 px-4 border-b border-[var(--border-soft)] bg-[var(--bg)] flex items-center gap-2 shrink-0">
-        <button className="dp-btn dp-btn--ghost" onClick={onHome}>← На головну</button>
-        <span className="text-[13px] font-semibold text-[var(--text-strong)]">DP1 — Шрифти</span>
+        <button className="dp-btn dp-btn--ghost" onClick={onHome}>← {t("dp1.fonts.toHome")}</button>
+        <span className="text-[13px] font-semibold text-[var(--text-strong)]">{t("dp1.fonts.title")}</span>
         {dimensions && (
           <span className="text-[10.5px] text-[var(--text-faint)] font-mono">
             {dimensions.w}×{dimensions.h} · {source === "done" ? "Done" : "Original"}{dirty && " · ●"}
@@ -435,16 +437,16 @@ export function Dp1FontsEditor({ onHome }: Props) {
         <button
           className={`dp-btn ${tool === "select" ? "dp-btn--primary" : "dp-btn--ghost"}`}
           onClick={() => setTool("select")}
-          title="Виділити прямокутник (drag)"
+          title={t("dp1.fonts.selectTip")}
         >▭ Select</button>
         <button
           className={`dp-btn ${tool === "move" ? "dp-btn--primary" : "dp-btn--ghost"}`}
           onClick={() => setTool("move")}
           disabled={!selection}
-          title="Перемістити виділений блок (drag всередині виділення)"
+          title={t("dp1.fonts.moveTip")}
         >↔ Move</button>
-        <button className="dp-btn" onClick={actErase} disabled={!selection} title="Залити виділене чорним">🗑 Стерти</button>
-        <button className="dp-btn" onClick={actOpenDraw} disabled={!selection || !typefacePath} title="Намалювати літеру у виділення">+ Літера</button>
+        <button className="dp-btn" onClick={actErase} disabled={!selection} title={t("dp1.fonts.eraseTip")}>🗑 {t("dp1.fonts.erase")}</button>
+        <button className="dp-btn" onClick={actOpenDraw} disabled={!selection || !typefacePath} title={t("dp1.fonts.drawTip")}>+ {t("dp1.fonts.letter")}</button>
         <span className="mx-1 h-5 w-px bg-[var(--border-soft)]" />
         <label className="flex items-center gap-1 text-[10.5px] text-[var(--text-muted)] cursor-pointer">
           <input type="checkbox" checked={showGrid} onChange={(e) => setShowGrid(e.target.checked)} />
@@ -455,7 +457,7 @@ export function Dp1FontsEditor({ onHome }: Props) {
           className="dp-input !w-[64px] !text-[11px] !py-0.5"
           value={gridSize}
           onChange={(e) => setGridSize(Math.max(4, parseInt(e.target.value) || DEFAULT_GRID))}
-          title="Розмір клітинки grid (px). Shift вимикає snap."
+          title={t("dp1.fonts.gridSizeTip")}
         />
         <span className="mx-1 h-5 w-px bg-[var(--border-soft)]" />
         <label className="flex items-center gap-1 text-[10.5px] text-[var(--text-muted)]">
@@ -469,11 +471,11 @@ export function Dp1FontsEditor({ onHome }: Props) {
         <button
           className="dp-btn dp-btn--ghost"
           onClick={undo}
-          title="Скасувати (Ctrl+Z)"
+          title={t("dp1.fonts.undoTip")}
         >↶</button>
-        <button className="dp-btn dp-btn--ghost" disabled={busy} onClick={() => { void reload(); }} title="Reload з диска">↻</button>
+        <button className="dp-btn dp-btn--ghost" disabled={busy} onClick={() => { void reload(); }} title={t("dp1.fonts.reloadTip")}>↻</button>
         <button className="dp-btn dp-btn--success" disabled={!dirty || busy} onClick={handleSave}>
-          {busy ? "…" : "Зберегти у Done/"}
+          {busy ? "…" : t("dp1.fonts.saveToDone")}
         </button>
         <LangToggle compact />
       </header>
@@ -488,8 +490,8 @@ export function Dp1FontsEditor({ onHome }: Props) {
           onApply={async (latinKey) => {
             const map = { ...mapProposal.existingMap, [mapProposal.letter]: latinKey };
             const r = await window.dp2.dp1GlyphMapWrite({ map });
-            if (!r.ok) showError(r.error || "?", "GlyphMap save failed");
-            else showOk(`Додано ${mapProposal.letter} → ${latinKey} у glyphmap`, "GlyphMap");
+            if (!r.ok) showError(localizeBackendError(r.error) || "?", "GlyphMap save failed");
+            else showOk(t("dp1.fonts.glyphMapAdded", { letter: mapProposal.letter, key: latinKey }), "GlyphMap");
             setMapProposal(null);
           }}
           onDismiss={() => setMapProposal(null)}
@@ -497,7 +499,7 @@ export function Dp1FontsEditor({ onHome }: Props) {
       )}
 
       <div className="flex-1 overflow-auto bg-[var(--bg)] flex items-start justify-center p-4">
-        {!dimensions && !error && !typefaceDownload.visible && <p className="text-[12.5px] text-[var(--text-muted)] py-10">Декодую DDS…</p>}
+        {!dimensions && !error && !typefaceDownload.visible && <p className="text-[12.5px] text-[var(--text-muted)] py-10">{t("dp1.fonts.decodingDds")}</p>}
         {dimensions && (
           <div
             ref={wrapperRef}
@@ -588,6 +590,7 @@ function GlyphmapProposalBanner({
   onApply: (latinKey: string) => void;
   onDismiss: () => void;
 }) {
+  const t = useT();
   // `val` — ВІЗУАЛЬНИЙ символ (де у атласі намальовано літеру). У словник
   // пишемо offsetForward(val), бо гра при рендері робить -2.
   const [val, setVal] = useState(suggestedKey ?? "");
@@ -597,10 +600,10 @@ function GlyphmapProposalBanner({
     <div className="px-4 py-2 border-b border-[var(--accent)]/40 bg-[var(--accent)]/8 text-[12px] flex items-center gap-3 flex-wrap">
       <span className="font-mono text-[var(--accent)]">GlyphMap</span>
       <span className="text-[var(--text)]">
-        Додати <span className="font-mono text-[14px]">{letter}</span> →
+        {t("dp1.fonts.addPrefix")} <span className="font-mono text-[14px]">{letter}</span> →
       </span>
       <label className="flex items-center gap-1 text-[10.5px] text-[var(--text-muted)]">
-        візуальна клітинка
+        {t("dp1.fonts.visualCell")}
         <input
           className="dp-input !w-[60px] !text-[14px] text-center font-mono"
           maxLength={1}
@@ -611,19 +614,19 @@ function GlyphmapProposalBanner({
         />
       </label>
       <span className="text-[10.5px] text-[var(--text-faint)] font-mono">
-        у словник:&nbsp;
+        {t("dp1.fonts.toDict")}&nbsp;
         <span className="text-[var(--accent)]">{stored || "?"}</span>
         {val && (
           <span className="ml-1 text-[var(--text-faint)]">
-            ({val.charCodeAt(0) >= 0xA0 ? `${val.charCodeAt(0)} −2 = ${stored.charCodeAt(0)}` : "без offset (ASCII)"})
+            ({val.charCodeAt(0) >= 0xA0 ? `${val.charCodeAt(0)} −2 = ${stored.charCodeAt(0)}` : t("dp1.fonts.noOffsetAscii")})
           </span>
         )}
       </span>
       {collision && (
-        <span className="text-[10.5px] text-[var(--warning,#d97706)]">⚠ {collision[0]} вже мапиться сюди</span>
+        <span className="text-[10.5px] text-[var(--warning,#d97706)]">⚠ {t("dp1.fonts.alreadyMapped", { key: collision[0] })}</span>
       )}
       <button className="dp-btn dp-btn--primary" disabled={!val} onClick={() => onApply(stored)}>Apply</button>
-      <button className="dp-btn dp-btn--ghost" onClick={onDismiss}>Пропустити</button>
+      <button className="dp-btn dp-btn--ghost" onClick={onDismiss}>{t("dp1.fonts.skip")}</button>
     </div>
   );
 }
@@ -631,13 +634,14 @@ function GlyphmapProposalBanner({
 // ── Typeface download modal ─────────────────────────────────────────
 
 function TypefaceDownloadModal({ data }: { data: { phase: string; percent: number; downloaded: number; total: number; error?: string } }) {
+  const t = useT();
   const fmt = (n: number) => n < 1024 ? `${n} B` : n < 1024 * 1024 ? `${(n / 1024).toFixed(1)} KB` : `${(n / 1024 / 1024).toFixed(2)} MB`;
   return (
     <div className="fixed inset-0 z-50 bg-black/70 flex items-center justify-center p-6">
       <div className="dp-card max-w-md w-full p-5" style={{ background: "var(--bg-surface)" }}>
-        <p className="text-[11px] uppercase tracking-wider text-[var(--text-faint)] mb-1">DP1 Fonts · перший запуск</p>
-        <h2 className="text-[15px] font-semibold text-[var(--text-strong)] mb-3">Завантаження Cinema Calligraphy</h2>
-        <p className="text-[12px] text-[var(--text-muted)] mb-4">Це оригінальний шрифт DP1 субтитрів. Качається раз і кешується у <span className="font-mono text-[var(--accent)]">Documents/SWERY-Localization-Tool/DP1/Fonts/</span>.</p>
+        <p className="text-[11px] uppercase tracking-wider text-[var(--text-faint)] mb-1">{t("dp1.fonts.firstRun")}</p>
+        <h2 className="text-[15px] font-semibold text-[var(--text-strong)] mb-3">{t("dp1.fonts.downloadingCinema")}</h2>
+        <p className="text-[12px] text-[var(--text-muted)] mb-4">{t("dp1.fonts.cinemaDesc")} <span className="font-mono text-[var(--accent)]">Documents/SWERY-Localization-Tool/DP1/Fonts/</span>.</p>
         {data.phase === "error" ? (
           <p className="text-[12px] text-[var(--danger)] break-words">{data.error}</p>
         ) : (
@@ -646,7 +650,7 @@ function TypefaceDownloadModal({ data }: { data: { phase: string; percent: numbe
               <div className="h-full bg-[var(--accent)] transition-[width] duration-150" style={{ width: `${Math.max(2, data.percent)}%` }} />
             </div>
             <div className="flex items-center justify-between text-[10.5px] tabular-nums text-[var(--text-muted)]">
-              <span>{data.phase === "start" ? "Підключаюся до Dropbox…" : fmt(data.downloaded) + " / " + (data.total ? fmt(data.total) : "?")}</span>
+              <span>{data.phase === "start" ? t("dp1.fonts.connectingDropbox") : fmt(data.downloaded) + " / " + (data.total ? fmt(data.total) : "?")}</span>
               <span>{data.percent.toFixed(0)}%</span>
             </div>
           </>
@@ -663,6 +667,7 @@ function DrawLetterModal({ rect, defaultSize, fontReady, onClose, onSubmit }: {
   onClose: () => void;
   onSubmit: (letter: string, size: number, offsetX: number, offsetY: number) => void;
 }) {
+  const t = useT();
   const [letter, setLetter] = useState("");
   const [size, setSize] = useState(defaultSize);
   // Зсув центру літери всередині клітинки (px). Дозволяє підкорегувати
@@ -696,12 +701,12 @@ function DrawLetterModal({ rect, defaultSize, fontReady, onClose, onSubmit }: {
       onMouseDown={(e) => { if (e.target === e.currentTarget) onClose(); }}
     >
       <div className="dp-card max-w-md w-full p-5" style={{ background: "var(--bg-surface)" }} onMouseDown={(e) => e.stopPropagation()}>
-        <h2 className="text-[15px] font-semibold text-[var(--text-strong)] mb-1">Намалювати літеру</h2>
-        <p className="text-[11px] text-[var(--text-faint)] font-mono mb-4">У клітинку {rect.x},{rect.y} ({rect.w}×{rect.h}px)</p>
+        <h2 className="text-[15px] font-semibold text-[var(--text-strong)] mb-1">{t("dp1.fonts.drawLetterTitle")}</h2>
+        <p className="text-[11px] text-[var(--text-faint)] font-mono mb-4">{t("dp1.fonts.intoCell", { x: rect.x, y: rect.y, w: rect.w, h: rect.h })}</p>
 
         <div className="space-y-3">
           <div>
-            <label className="block text-[10.5px] uppercase tracking-wider text-[var(--text-faint)] mb-1">Літера</label>
+            <label className="block text-[10.5px] uppercase tracking-wider text-[var(--text-faint)] mb-1">{t("dp1.fonts.letterField")}</label>
             <input
               className="dp-input !text-[24px] text-center font-mono"
               maxLength={1}
@@ -711,7 +716,7 @@ function DrawLetterModal({ rect, defaultSize, fontReady, onClose, onSubmit }: {
             />
           </div>
           <div>
-            <label className="block text-[10.5px] uppercase tracking-wider text-[var(--text-faint)] mb-1">Розмір (pt)</label>
+            <label className="block text-[10.5px] uppercase tracking-wider text-[var(--text-faint)] mb-1">{t("dp1.fonts.sizePt")}</label>
             <input
               type="number" step={0.5} min={6} max={200}
               className="dp-input"
@@ -722,7 +727,7 @@ function DrawLetterModal({ rect, defaultSize, fontReady, onClose, onSubmit }: {
           <div className="grid grid-cols-2 gap-3">
             <div>
               <label className="block text-[10.5px] uppercase tracking-wider text-[var(--text-faint)] mb-1 flex items-center justify-between">
-                <span>Зсув X (px)</span>
+                <span>{t("dp1.fonts.offsetX")}</span>
                 <span className="tabular-nums text-[var(--text)]">{offsetX > 0 ? `+${offsetX}` : offsetX}</span>
               </label>
               <input
@@ -731,12 +736,12 @@ function DrawLetterModal({ rect, defaultSize, fontReady, onClose, onSubmit }: {
                 onChange={(e) => setOffsetX(parseInt(e.target.value, 10) || 0)}
                 onDoubleClick={() => setOffsetX(0)}
                 className="w-full accent-[var(--accent)]"
-                title="Подвійний клік — скинути до 0"
+                title={t("dp1.fonts.resetTip")}
               />
             </div>
             <div>
               <label className="block text-[10.5px] uppercase tracking-wider text-[var(--text-faint)] mb-1 flex items-center justify-between">
-                <span>Зсув Y (px)</span>
+                <span>{t("dp1.fonts.offsetY")}</span>
                 <span className="tabular-nums text-[var(--text)]">{offsetY > 0 ? `+${offsetY}` : offsetY}</span>
               </label>
               <input
@@ -745,12 +750,12 @@ function DrawLetterModal({ rect, defaultSize, fontReady, onClose, onSubmit }: {
                 onChange={(e) => setOffsetY(parseInt(e.target.value, 10) || 0)}
                 onDoubleClick={() => setOffsetY(0)}
                 className="w-full accent-[var(--accent)]"
-                title="Подвійний клік — скинути до 0"
+                title={t("dp1.fonts.resetTip")}
               />
             </div>
           </div>
           <div>
-            <p className="text-[10.5px] uppercase tracking-wider text-[var(--text-faint)] mb-1">Превʼю</p>
+            <p className="text-[10.5px] uppercase tracking-wider text-[var(--text-faint)] mb-1">{t("dp1.fonts.preview")}</p>
             <canvas
               ref={previewRef}
               style={{
@@ -765,13 +770,13 @@ function DrawLetterModal({ rect, defaultSize, fontReady, onClose, onSubmit }: {
         </div>
 
         <div className="flex items-center justify-end gap-2 mt-5 pt-3 border-t border-[var(--border-soft)]">
-          <button className="dp-btn dp-btn--ghost" onClick={onClose}>Скасувати</button>
+          <button className="dp-btn dp-btn--ghost" onClick={onClose}>{t("dp1.fonts.cancel")}</button>
           <button
             className="dp-btn dp-btn--primary"
             disabled={!letter || !fontReady}
             onClick={() => onSubmit(letter, size, offsetX, offsetY)}
           >
-            Намалювати
+            {t("dp1.fonts.draw")}
           </button>
         </div>
       </div>

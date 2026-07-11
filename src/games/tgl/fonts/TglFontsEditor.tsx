@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { useT, t } from "../../../lib/i18n";
+import { useT, t, localizeBackendError } from "../../../lib/i18n";
 import { alert as showAlert, confirm as showConfirm } from "../../../lib/dialogs";
 import { useTglFontsStore } from "./store";
 import { useTglStore } from "../store";
@@ -149,7 +149,7 @@ export function TglFontsEditor({ onHome }: Props) {
   async function doSave() {
     const r = await saveJson();
     if (r.ok) await showAlert(t("tglFonts.saved"), t("tglFonts.savedBody"), { tone: "success" });
-    else await showAlert(t("tglFonts.saveErr"), r.error ?? "?", { tone: "danger" });
+    else await showAlert(t("tglFonts.saveErr"), localizeBackendError(r.error) || "?", { tone: "danger" });
   }
 
   async function doImportMetrics() {
@@ -291,7 +291,7 @@ export function TglFontsEditor({ onHome }: Props) {
                         Object.assign(res, await window.dp2.tglFontsExtract({ cabPath }));
                       }
                       if (!res.ok) {
-                        await showAlert(t("tglFonts.extract.errTitle"), res.error ?? "?", { tone: "danger" });
+                        await showAlert(t("tglFonts.extract.errTitle"), localizeBackendError(res.error) || "?", { tone: "danger" });
                         return;
                       }
                       // PowerShell ConvertTo-Json для 1 елемента вертає object,
@@ -336,7 +336,7 @@ export function TglFontsEditor({ onHome }: Props) {
       {busy && (
         <div className="absolute inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm">
           <div className="rounded-lg border border-[var(--border-soft)] bg-[var(--bg-surface)] px-6 py-5 min-w-[420px] max-w-[680px] shadow-2xl">
-            <p className="text-[13px] font-semibold text-[var(--text-strong)] mb-2">⏳ Працюю…</p>
+            <p className="text-[13px] font-semibold text-[var(--text-strong)] mb-2">{t("tglFonts.working")}</p>
             <p className="text-[12px] font-mono text-[var(--text-muted)] whitespace-pre-wrap break-all leading-relaxed">{busy}</p>
           </div>
         </div>
@@ -382,7 +382,7 @@ export function TglFontsEditor({ onHome }: Props) {
           onClick={async () => {
             const r = await saveAtlas();
             if (r.ok) await showAlert(t("tglFonts.saveAtlas.doneTitle"), t("tglFonts.saveAtlas.doneBody"), { tone: "success" });
-            else await showAlert(t("tglFonts.saveAtlas.errTitle"), r.error ?? "?", { tone: "danger" });
+            else await showAlert(t("tglFonts.saveAtlas.errTitle"), localizeBackendError(r.error) || "?", { tone: "danger" });
           }}
           disabled={!atlasBase64}
           title={t("tglFonts.saveAtlas.hint")}
@@ -402,13 +402,13 @@ export function TglFontsEditor({ onHome }: Props) {
             if (dirty) {
               const r1 = await saveJson();
               if (!r1.ok) {
-                await showAlert(t("tglFonts.saveErr"), r1.error ?? "?", { tone: "danger" });
+                await showAlert(t("tglFonts.saveErr"), localizeBackendError(r1.error) || "?", { tone: "danger" });
                 return;
               }
             }
             const r2 = await saveAtlas();
             if (!r2.ok) {
-              await showAlert(t("tglFonts.saveAtlas.errTitle"), r2.error ?? "?", { tone: "danger" });
+              await showAlert(t("tglFonts.saveAtlas.errTitle"), localizeBackendError(r2.error) || "?", { tone: "danger" });
               return;
             }
             // 2) cabPath: беремо збережений, інакше pickFile.
@@ -444,7 +444,7 @@ export function TglFontsEditor({ onHome }: Props) {
               if (typeof unsub === "function") unsub();
             }
             if (!res.ok) {
-              await showAlert(t("tglFonts.packToCab.errTitle"), res.error ?? "?", { tone: "danger" });
+              await showAlert(t("tglFonts.packToCab.errTitle"), localizeBackendError(res.error) || "?", { tone: "danger" });
               return;
             }
             await showAlert(
@@ -859,7 +859,7 @@ function AtlasView({ base64, width, height, glyphs, zoom, activeCp, onPickGlyph,
   }
 
   if (!base64) {
-    return <div className="p-6 text-center text-[12px] text-[var(--text-faint)]">атлас не завантажено</div>;
+    return <div className="p-6 text-center text-[12px] text-[var(--text-faint)]">{t("tglFonts.atlasNotLoaded")}</div>;
   }
   return (
     <div

@@ -1,4 +1,5 @@
 import { Component, type ReactNode } from "react";
+import { t } from "../lib/i18n";
 
 interface Props {
   children: ReactNode;
@@ -50,13 +51,13 @@ export class ErrorBoundary extends Component<Props, State> {
                 className="dp-btn dp-btn--primary"
                 onClick={() => this.setState({ error: null, info: undefined })}
               >
-                Спробувати ще раз
+                {t("components.errorBoundary.retry")}
               </button>
               <button
                 className="dp-btn"
                 onClick={() => window.location.reload()}
               >
-                Перезавантажити вікно
+                {t("components.errorBoundary.reload")}
               </button>
             </div>
           </div>

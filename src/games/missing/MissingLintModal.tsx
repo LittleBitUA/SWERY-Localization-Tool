@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { useT } from "../../lib/i18n";
 import { parseMissingMsg } from "./parser";
 
 interface FileItem {
@@ -43,7 +44,7 @@ function isPlaceholderText(s: string) {
 //   2. placeholder-translated: NO_TEXT_en/V_*_001 змінено (а не повинно)
 //   3. tag-mismatch: <color>/<scale>/<ruby> теги не збігаються з оригіналом
 //   4. bad-escape: непарні \" або інші підозрілі escape (рідко)
-async function runLint(files: FileItem[]): Promise<Violation[]> {
+async function runLint(files: FileItem[], t: (key: string, params?: Record<string, string | number>) => string): Promise<Violation[]> {
   const W = window.dp2 as unknown as { missingTextRead: (p: string) => Promise<{ ok: boolean; base64?: string }> };
   const out: Violation[] = [];
   for (const f of files) {
@@ -62,7 +63,7 @@ async function runLint(files: FileItem[]): Promise<Violation[]> {
       const isPh = isPlaceholderText(o);
 
       if (isPh && d !== o) {
-        out.push({ file: f.name, idx: i, msgEnum: enumN, kind: "placeholder-translated", original: o, current: d, detail: "Плейсхолдер не повинен мати перекладу" });
+        out.push({ file: f.name, idx: i, msgEnum: enumN, kind: "placeholder-translated", original: o, current: d, detail: t("missing.lint.detail.placeholder") });
         continue;
       }
       if (!isPh && o && (!d || !d.trim())) {
@@ -89,6 +90,7 @@ async function runLint(files: FileItem[]): Promise<Violation[]> {
 }
 
 export function MissingLintModal({ open, onClose, files, onGoTo }: Props) {
+  const t = useT();
   const [items, setItems] = useState<Violation[]>([]);
   const [loading, setLoading] = useState(false);
   const [scanned, setScanned] = useState(0);
@@ -96,7 +98,7 @@ export function MissingLintModal({ open, onClose, files, onGoTo }: Props) {
   async function load() {
     setLoading(true); setScanned(0);
     try {
-      const r = await runLint(files);
+      const r = await runLint(files, t);
       setItems(r);
       setScanned(files.length);
     } finally { setLoading(false); }
@@ -111,10 +113,10 @@ export function MissingLintModal({ open, onClose, files, onGoTo }: Props) {
   }, [open, onClose]);
 
   if (!open) return null;
-  const kindLabel = (k: Violation["kind"]) => k === "empty" ? "Порожньо"
-    : k === "placeholder-translated" ? "Плейсхолдер змінено"
-    : k === "tag-mismatch" ? "Теги не збігаються"
-    : "Escape \\\"";
+  const kindLabel = (k: Violation["kind"]) => k === "empty" ? t("missing.lint.kind.empty")
+    : k === "placeholder-translated" ? t("missing.lint.kind.placeholder")
+    : k === "tag-mismatch" ? t("missing.lint.kind.tagMismatch")
+    : t("missing.lint.kind.badEscape");
   const kindColor = (k: Violation["kind"]) => k === "empty" ? "var(--danger)"
     : k === "placeholder-translated" ? "var(--warning,#d97706)"
     : k === "tag-mismatch" ? "var(--danger)"
@@ -125,13 +127,13 @@ export function MissingLintModal({ open, onClose, files, onGoTo }: Props) {
       <div className="dp-card w-full max-w-4xl flex flex-col" style={{ maxHeight: "85vh" }} onClick={(e) => e.stopPropagation()}>
         <div className="flex items-center justify-between gap-3 px-5 py-3 border-b border-[var(--border-soft)]">
           <div className="min-w-0 flex-1">
-            <h2 className="text-[15px] font-semibold text-[var(--text-strong)]">Перевірка цілісності перекладу</h2>
+            <h2 className="text-[15px] font-semibold text-[var(--text-strong)]">{t("missing.lint.title")}</h2>
             <p className="text-[12px] text-[var(--text-muted)] mt-0.5">
-              Знайдено {items.length} проблем · перевірено {scanned} файлів
+              {t("missing.lint.summary", { problems: String(items.length), files: String(scanned) })}
             </p>
           </div>
           <div className="flex items-center gap-2 shrink-0">
-            <button onClick={load} className="dp-btn" disabled={loading}>{loading ? "…" : "Оновити"}</button>
+            <button onClick={load} className="dp-btn" disabled={loading}>{loading ? "…" : t("missing.lint.refresh")}</button>
             <button onClick={onClose} className="dp-btn dp-btn--ghost !w-7 !p-0">
               <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
                 <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
@@ -141,9 +143,9 @@ export function MissingLintModal({ open, onClose, files, onGoTo }: Props) {
         </div>
 
         <div className="flex-1 overflow-auto p-5">
-          {loading && <p className="py-10 text-center text-[13px] text-[var(--text-muted)]">Перевірка…</p>}
+          {loading && <p className="py-10 text-center text-[13px] text-[var(--text-muted)]">{t("missing.lint.checking")}</p>}
           {!loading && items.length === 0 && (
-            <p className="py-10 text-center text-[13px] text-[var(--success)]">Усе чисто.</p>
+            <p className="py-10 text-center text-[13px] text-[var(--success)]">{t("missing.lint.clean")}</p>
           )}
           {!loading && items.length > 0 && (
             <div className="space-y-2">
@@ -159,7 +161,7 @@ export function MissingLintModal({ open, onClose, files, onGoTo }: Props) {
                         {v.msgEnum >= 0 && <span className="font-mono text-[var(--text-muted)]">enum {v.msgEnum}</span>}
                       </div>
                       {f && (
-                        <button className="dp-btn dp-btn--ghost text-[11px]" onClick={() => onGoTo(f, v.idx)}>Перейти →</button>
+                        <button className="dp-btn dp-btn--ghost text-[11px]" onClick={() => onGoTo(f, v.idx)}>{t("missing.lint.goto")} →</button>
                       )}
                     </div>
                     {v.detail && <p className="text-[10.5px] font-mono text-[var(--text-faint)] mb-1">{v.detail}</p>}

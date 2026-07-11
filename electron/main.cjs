@@ -91,6 +91,12 @@ async function readSettings() {
     // Авто-резолв конкретних шляхів з кореневих тек ігор. Користувач у
     // onboarding step 3 вказує корінь Steam-теки гри — звідти обчислюємо
     // assetsPath / tglBinPath, якщо вони ще не задані явно.
+    // Спершу перевіряємо валідність збереженого assetsPath: якщо гру
+    // перенесли в іншу теку, старий шлях більше не існує — скидаємо його,
+    // щоб нижче він перерезолвився з (можливо оновленого) dp2Root.
+    if (obj.assetsPath) {
+      try { await fs.access(obj.assetsPath); } catch { obj.assetsPath = undefined; }
+    }
     if (!obj.assetsPath && obj.dp2Root) {
       const cand1 = path.join(obj.dp2Root, "DeadlyPremonition2_Data", "sharedassets0.assets");
       const cand2 = path.join(obj.dp2Root, "sharedassets0.assets");
@@ -579,6 +585,25 @@ ipcMain.handle("dp2:setup-status", async () => {
       lastFolder: raw.lastFolder ? fsSync.existsSync(raw.lastFolder) : false,
     },
   };
+});
+
+// Завершення онбордингу: ставимо setupCompleted=true server-side (цей ключ
+// НЕ у RENDERER_ALLOWED_KEYS навмисно, тож renderer не може виставити його
+// через save-settings). Приймаємо game roots — валідуємо як шляхи, зберігаємо
+// разом з прапором атомарно. Без цього handler'а користувач, що вже має
+// встановлені інструменти й повторно зайшов у налаштування, натискав
+// «Завершити», але прапор не зберігався → застрягав в онбордингу назавжди.
+ipcMain.handle("dp2:setup-finish", async (_e, payload) => {
+  const p = payload || {};
+  const raw = await readSettings();
+  const next = { ...raw, setupCompleted: true };
+  for (const key of ["dp1Root", "dp2Root", "tglRoot", "hbrRoot", "missingRoot", "d4Root"]) {
+    const v = p[key];
+    if (typeof v === "string" && v.trim()) next[key] = v.trim();
+  }
+  if (typeof p.toolsDir === "string" && p.toolsDir.trim()) next.toolsDir = p.toolsDir.trim();
+  await writeSettings(next);
+  return { ok: true };
 });
 
 ipcMain.handle("dp2:setup-reset", async (_e, payload) => {
@@ -1762,75 +1787,19 @@ ipcMain.handle("dp2:hbr-pack-into-game", async () => {
 // і знайти рядки, де набір плейсхолдерів `{n}/${var}/<tag>/[ctl]/\n` у current
 // (Done) НЕ збігається з Original. Це не блокує pack, але дає попередження
 // користувачу — щоб не запакувати білд із бракуючими/зайвими маркерами.
+// Той самий набір, що в parser.ts (PLACEHOLDER_RES). Квадратні дужки
+// `[Continue]`, `[Dodge]` тощо у HBR — це template-references (перекладаються),
+// тому НЕ лічаться як placeholders; виняток — `[...json]` (шлях, лишається).
+// Важкий скан (parse усіх пар + regex + diff) виконує worker.
 ipcMain.handle("dp2:hbr-text-lint-placeholders", async () => {
-  const { originalDir, doneDir } = await hbrTextDirs();
-  let entries; try { entries = await fs.readdir(originalDir); }
-  catch { return { ok: false, error: "no extracted text" }; }
-  // Той самий набір, що в parser.ts (PLACEHOLDER_RES). Квадратні дужки
-  // `[Continue]`, `[Dodge]`, `[Shockwave]` тощо у HBR — це template-references
-  // (гра підставляє з інших translation-entries), які МОЖНА і ТРЕБА
-  // перекладати на українські відповідники. Тому ми НЕ лічимо звичайні
-  // [Word] як placeholders — інакше lint червонить 21+ валідних рядків.
-  // Виняток — [...] з суфіксом `.json` (посилання на bundle-файл): такі
-  // мають лишатися байт-у-байт і у перекладі, бо це шлях.
-  const PATS = [
-    /\{[A-Za-z0-9_]+\}/g,
-    /\$\{[^}]+\}/g,
-    /<\/?[A-Za-z][^>]*>/g,
-    /\[[^\]]+\.json\]/g,
-    /\\n/g, /\\r\\n/g,
-  ];
-  function extractTags(s) {
-    if (!s) return [];
-    const out = [];
-    for (const re of PATS) { const m = s.match(re); if (m) out.push(...m); }
-    return out.sort();
+  try {
+    const { originalDir, doneDir } = await hbrTextDirs();
+    const r = await callHeavy("hbr-lint-placeholders", { originalDir, doneDir });
+    if (r && r.error) return { ok: false, error: r.error };
+    return { ok: true, ...r };
+  } catch (e) {
+    return { ok: false, error: String(e?.message ?? e) };
   }
-  function diff(o, c) {
-    const oC = new Map(); const cC = new Map();
-    for (const x of o) oC.set(x, (oC.get(x) ?? 0) + 1);
-    for (const x of c) cC.set(x, (cC.get(x) ?? 0) + 1);
-    const missing = []; const extra = [];
-    for (const [k, v] of oC) { const d = v - (cC.get(k) ?? 0); for (let i = 0; i < d; i++) missing.push(k); }
-    for (const [k, v] of cC) { const d = v - (oC.get(k) ?? 0); for (let i = 0; i < d; i++) extra.push(k); }
-    return { missing, extra };
-  }
-  const violations = [];
-  let scannedFiles = 0; let scannedRows = 0;
-  for (const fname of entries) {
-    if (!fname.endsWith(".json")) continue;
-    const origPath = path.join(originalDir, fname);
-    const donePath = path.join(doneDir, fname);
-    let origRaw; let doneRaw;
-    try { origRaw = await fs.readFile(origPath, "utf8"); } catch { continue; }
-    try { doneRaw = await fs.readFile(donePath, "utf8"); } catch { continue; }
-    try {
-      const orig = JSON.parse(origRaw);
-      const done = JSON.parse(doneRaw);
-      const oList = (orig && orig._List && orig._List.Array) || [];
-      const dList = (done && done._List && done._List.Array) || [];
-      scannedFiles++;
-      for (let i = 0; i < dList.length; i++) {
-        const textId = (dList[i] && dList[i]._TextId) || `#${i}`;
-        const dTexts = (dList[i] && dList[i]._Texts && dList[i]._Texts.Array) || [];
-        const oTexts = (oList[i] && oList[i]._Texts && oList[i]._Texts.Array) || [];
-        for (let j = 0; j < dTexts.length; j++) {
-          scannedRows++;
-          const d = (dTexts[j] && dTexts[j]._Text) || "";
-          const o = (oTexts[j] && oTexts[j]._Text) || "";
-          if (!d || d === o) continue; // not translated → skip lint
-          const { missing, extra } = diff(extractTags(o), extractTags(d));
-          if (missing.length === 0 && extra.length === 0) continue;
-          violations.push({
-            file: fname, textId, variantIdx: j,
-            missing, extra,
-            original: o, current: d,
-          });
-        }
-      }
-    } catch {}
-  }
-  return { ok: true, scannedFiles, scannedRows, violations };
 });
 
 // Прибрати DLC-сліди з HBR/Text: видаляє Done/Original .json (а також .bak),
@@ -6610,54 +6579,15 @@ ipcMain.handle("dp2:d4-text-extract", async () => {
 });
 
 ipcMain.handle("dp2:d4-text-list", async () => {
-  const { originalDir, doneDir } = await d4TextDirs();
-  let names = [];
-  try { names = (await fs.readdir(originalDir)).filter((n) => n.endsWith(".json")).sort(); } catch {}
-  const items = [];
-  for (const name of names) {
-    const origPath = path.join(originalDir, name);
-    const donePath = path.join(doneDir, name);
-    let origSize = 0, doneSize = 0, doneMtime = 0;
-    try { const st = await fs.stat(origPath); origSize = st.size; } catch {}
-    try { const st = await fs.stat(donePath); doneSize = st.size; doneMtime = st.mtimeMs; } catch {}
-    // «Перекладено» = m_aString рядок у Done відрізняється від відповідного
-    // у Original (реальна правка користувача). Це точніше, ніж шукати
-    // кирилицю — у DLC-пакетах гри є власні юнікод-рядки (імена в credits
-    // тощо), які давали хибно-позитивний "переклад" без жодної дії юзера.
-    let entries = 0, strings = 0, translated = 0;
-    try {
-      const [origRaw, doneRaw] = await Promise.all([
-        fs.readFile(origPath, "utf8").catch(() => "[]"),
-        fs.readFile(donePath, "utf8").catch(() => "[]"),
-      ]);
-      const origArr = JSON.parse(origRaw);
-      const doneArr = JSON.parse(doneRaw);
-      if (Array.isArray(doneArr)) {
-        entries = doneArr.length;
-        const origByName = new Map();
-        if (Array.isArray(origArr)) {
-          for (const e of origArr) if (e?.objectName) origByName.set(e.objectName, e);
-        }
-        for (const e of doneArr) {
-          const s = Array.isArray(e?.m_aString) ? e.m_aString : [];
-          strings += s.length;
-          const orig = origByName.get(e?.objectName);
-          const origStr = Array.isArray(orig?.m_aString) ? orig.m_aString : [];
-          for (let i = 0; i < s.length; i++) {
-            const v = s[i];
-            const ov = origStr[i] ?? "";
-            if (typeof v === "string" && v !== ov && v.trim() !== "") translated++;
-          }
-        }
-      }
-    } catch {}
-    items.push({
-      name, origPath, donePath,
-      origSize, doneSize, doneMtime,
-      entries, strings, translated,
-    });
+  // «Перекладено» = m_aString у Done відрізняється від Original (реальна правка).
+  // Важкий JSON.parse+підрахунок винесено у worker (блокував відкриття редактора).
+  try {
+    const { originalDir, doneDir } = await d4TextDirs();
+    const r = await callHeavy("d4-text-list", { originalDir, doneDir });
+    return { ok: true, items: r.items };
+  } catch (e) {
+    return { ok: false, error: String(e?.message ?? e), items: [] };
   }
-  return { ok: true, items };
 });
 
 ipcMain.handle("dp2:d4-text-read", async (_e, fullPath) => {
@@ -6718,52 +6648,20 @@ ipcMain.handle("dp2:d4-text-batch-replace", async (_e, payload) => {
   const query = String((payload && payload.query) || "");
   const replacement = String((payload && payload.replacement) ?? "");
   const opts = (payload && payload.opts) || {};
-  const dryRun = !!opts.dryRun;
   if (!query) return { ok: false, error: "query missing" };
-  let rx;
+  // Валідуємо regex тут (щоб дати зрозумілу помилку), важку роботу (читання+
+  // regex по всьому корпусу + re-serialize + запис) виносимо у worker.
   try {
     const flags = opts.caseSensitive ? "g" : "gi";
-    if (opts.regex) rx = new RegExp(query, flags);
-    else {
-      let q = query.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-      if (opts.wholeWord) q = `\\b${q}\\b`;
-      rx = new RegExp(q, flags);
-    }
+    if (opts.regex) new RegExp(query, flags);
   } catch (e) { return { ok: false, error: "bad-regex: " + e.message }; }
-  const { doneDir } = await d4TextDirs();
-  let names = [];
-  try { names = (await fs.readdir(doneDir)).filter((n) => n.endsWith(".json")); } catch {}
-  const results = [];
-  let totalReplaced = 0;
-  for (const name of names) {
-    const donePath = path.join(doneDir, name);
-    try {
-      const raw = await fs.readFile(donePath, "utf8");
-      const arr = JSON.parse(raw);
-      if (!Array.isArray(arr)) continue;
-      let count = 0;
-      for (const m of arr) {
-        if (Array.isArray(m?.m_aString)) {
-          for (let i = 0; i < m.m_aString.length; i++) {
-            const v = m.m_aString[i] ?? "";
-            const next = v.replace(rx, (m0) => { count++; return replacement; });
-            if (next !== v) m.m_aString[i] = next;
-          }
-        }
-      }
-      if (count > 0) {
-        totalReplaced += count;
-        if (!dryRun) {
-          const safe = assertSafeWritePath(donePath);
-          const bak = safe + ".bak";
-          try { await fs.access(bak); } catch { try { await fs.copyFile(safe, bak); } catch {} }
-          await fs.writeFile(safe, JSON.stringify(arr, null, 2), "utf8");
-        }
-        results.push({ name, replaced: count });
-      }
-    } catch {}
+  try {
+    const { doneDir } = await d4TextDirs();
+    const r = await callHeavy("d4-batch-replace", { doneDir, query, replacement, opts });
+    return { ok: true, ...r };
+  } catch (e) {
+    return { ok: false, error: String(e?.message ?? e) };
   }
-  return { ok: true, dryRun, totalReplaced, files: results };
 });
 
 // Per-entry meta: статус (draft/review/approved) + закладка + нотатка.
@@ -6834,35 +6732,10 @@ ipcMain.handle("dp2:d4-tm-build", async () => {
 ipcMain.handle("dp2:d4-text-corpus-stats", async () => {
   try {
     const { originalDir, doneDir } = await d4TextDirs();
-    let names = [];
-    try { names = (await fs.readdir(originalDir)).filter((n) => n.endsWith(".json")); } catch {}
-    let total = 0, translated = 0, files = 0;
-    for (const name of names) {
-      const origPath = path.join(originalDir, name);
-      const donePath = path.join(doneDir, name);
-      try {
-        const [origRaw, doneRaw] = await Promise.all([
-          fs.readFile(origPath, "utf8").catch(() => "[]"),
-          fs.readFile(donePath, "utf8").catch(() => "[]"),
-        ]);
-        const origArr = JSON.parse(origRaw);
-        const doneArr = JSON.parse(doneRaw);
-        if (!Array.isArray(doneArr)) continue;
-        files++;
-        const origByName = new Map();
-        if (Array.isArray(origArr)) for (const e of origArr) if (e?.objectName) origByName.set(e.objectName, e);
-        for (const e of doneArr) {
-          const arr = Array.isArray(e?.m_aString) ? e.m_aString : [];
-          const origArrStr = origByName.get(e?.objectName)?.m_aString ?? [];
-          total += arr.length;
-          for (let i = 0; i < arr.length; i++) {
-            const v = arr[i], ov = origArrStr[i] ?? "";
-            if (typeof v === "string" && v !== ov && v.trim() !== "") translated++;
-          }
-        }
-      } catch {}
-    }
-    return { ok: true, files, total, translated, percent: total > 0 ? (translated / total) * 100 : 0, hasData: names.length > 0 };
+    // Важкий JSON.parse усіх пар винесено у worker — інакше блокує перший
+    // paint головного екрану (HomeV2 монтує це на старті).
+    const r = await callHeavy("d4-corpus-stats-quick", { originalDir, doneDir });
+    return { ok: true, ...r };
   } catch (e) {
     return { ok: false, error: String(e?.message ?? e) };
   }

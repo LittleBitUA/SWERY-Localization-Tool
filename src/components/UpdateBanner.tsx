@@ -7,7 +7,7 @@
 // swap-batch → restart), як у DP1 Launcher.
 
 import { useEffect, useState } from "react";
-import { useT } from "../lib/i18n";
+import { useT, localizeBackendError } from "../lib/i18n";
 
 interface UpdateInfo {
   current: string;
@@ -177,7 +177,7 @@ export function UpdateBanner() {
             onClick={async () => {
               setProgress({ type: "locating" });
               const r = await window.dp2.applyUpdate();
-              if (!r.ok) setProgress({ type: "error", error: r.error });
+              if (!r.ok) setProgress({ type: "error", error: localizeBackendError(r.error) });
             }}
             title={t("update.applyHint")}
           >

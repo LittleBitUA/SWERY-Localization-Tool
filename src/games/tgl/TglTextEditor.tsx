@@ -8,7 +8,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import Editor, { type OnMount } from "@monaco-editor/react";
-import { useT } from "../../lib/i18n";
+import { useT, localizeBackendError } from "../../lib/i18n";
 import { alert as showAlert, confirm as showConfirm } from "../../lib/dialogs";
 
 interface Props {
@@ -82,7 +82,7 @@ export function TglTextEditor({ binPath, onBack, onAfterPack }: Props) {
     setLoading(true); setError(null);
     window.dp2.tglTextPrep({ binPath }).then((r) => {
       if (cancelled) return;
-      if (!r.ok) { setError(r.error ?? "prep fail"); setLoading(false); return; }
+      if (!r.ok) { setError(localizeBackendError(r.error) || "prep fail"); setLoading(false); return; }
       setOriginal(r.originalContent ?? "");
       setTranslation(r.translationContent ?? "");
       setBinName(r.binName ?? "");
@@ -116,7 +116,7 @@ export function TglTextEditor({ binPath, onBack, onAfterPack }: Props) {
     try {
       const r = await window.dp2.tglTextWrite({ binPath, content: translation });
       if (!r.ok) {
-        await showAlert(t("tgl.text.saveErrTitle"), r.error ?? "?", { tone: "danger" });
+        await showAlert(t("tgl.text.saveErrTitle"), localizeBackendError(r.error) || "?", { tone: "danger" });
         return;
       }
       setDirty(false);
@@ -165,7 +165,7 @@ export function TglTextEditor({ binPath, onBack, onAfterPack }: Props) {
       if (!ok) return;
       const sr = await window.dp2.tglTextWrite({ binPath, content: translation });
       if (!sr.ok) {
-        await showAlert(t("tgl.text.saveErrTitle"), sr.error ?? "?", { tone: "danger" });
+        await showAlert(t("tgl.text.saveErrTitle"), localizeBackendError(sr.error) || "?", { tone: "danger" });
         return;
       }
       setDirty(false);
@@ -177,7 +177,7 @@ export function TglTextEditor({ binPath, onBack, onAfterPack }: Props) {
       const ua = translation.split(/\r?\n/);
       const r = await window.dp2.tglPack({ binPath, ua });
       if (r.error) {
-        await showAlert(t("tgl.pack.errorTitle"), r.error, { tone: "danger" });
+        await showAlert(t("tgl.pack.errorTitle"), localizeBackendError(r.error), { tone: "danger" });
         return;
       }
       onAfterPack?.();

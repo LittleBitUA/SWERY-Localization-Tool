@@ -8,7 +8,7 @@ import type { FlatEntry } from "../types";
 import { MetricsBadge } from "./MetricsBadge";
 import { ColResizer } from "./ColResizer";
 import type { WrapMode } from "./WrapToggle";
-import { alert as showAlert, confirm as showConfirm } from "../lib/dialogs";
+import { alert as showAlert, choose as showChoose } from "../lib/dialogs";
 
 // Memo-рядок: уникає пере-рендеру для всіх ~18к-сусідів, коли змінюється
 // `activeIndex`/`selection`/`wrapCls`. Перевикористовується ТАК ДОВГО, ПОКИ
@@ -126,18 +126,20 @@ export function SentenceTable() {
   const undo = useStore((s) => s.undo);
 
   async function handleExportTxt() {
-    // Перед експортом — питаємо що саме хочемо отримати: переклад (поточний
-    // стан) чи оригінал (з .bak). Це особливо важливо коли користувач уже
-    // частково замінив текст і хоче дістати англ-еталон знову.
-    const wantOriginal = await showConfirm(
+    // 3-кнопкова модалка: «Оригінал» / «Переклад» / «Скасувати». При кліку-поза
+    // чи Esc — повертається null (відмова), і ми просто виходимо без жодних
+    // подальших дій. Раніше confirm з 2 опцій трактував dismiss як "переклад",
+    // що було неочікувано.
+    const picked = await showChoose(
       t("txt.exportChoice.title"),
       t("txt.exportChoice.body"),
-      {
-        okLabel: t("txt.exportChoice.original"),
-        cancelLabel: t("txt.exportChoice.translation"),
-      }
+      [
+        { key: "original", label: t("txt.exportChoice.original") },
+        { key: "translation", label: t("txt.exportChoice.translation"), tone: "success" },
+      ]
     );
-    const kind: "original" | "translation" = wantOriginal ? "original" : "translation";
+    if (picked === null) return;  // dismiss → нічого не робимо
+    const kind = picked as "original" | "translation";
     const r = exportTxt(kind);
     if (!r) return;
     const dest = await window.dp2.pickSaveFile({
@@ -209,17 +211,28 @@ export function SentenceTable() {
   // інакше memo-рядки втрачають вигоду через зміну identity функцій.
   const selectionRef = useRef(selection);
   const activeIndexRef = useRef(activeIndex);
+  const filteredRef = useRef(filtered);
   useEffect(() => { selectionRef.current = selection; }, [selection]);
   useEffect(() => { activeIndexRef.current = activeIndex; }, [activeIndex]);
+  useEffect(() => { filteredRef.current = filtered; }, [filtered]);
 
   const handleRowClick = useCallback((i: number, e: React.MouseEvent) => {
     const cur = selectionRef.current;
     const act = activeIndexRef.current;
     if (e.shiftKey && act !== null) {
-      const a = Math.min(act, i);
-      const b = Math.max(act, i);
+      // Діапазон рахуємо за ПОЗИЦІЯМИ у видимому (відфільтрованому) списку, а не
+      // за сирими entry-індексами — інакше shift захопить приховані фільтром рядки.
+      const vis = filteredRef.current;
+      const pa = vis.findIndex((r) => r.i === act);
+      const pb = vis.findIndex((r) => r.i === i);
       const next = new Set(cur);
-      for (let k = a; k <= b; k++) next.add(k);
+      if (pa >= 0 && pb >= 0) {
+        const lo = Math.min(pa, pb);
+        const hi = Math.max(pa, pb);
+        for (let k = lo; k <= hi; k++) next.add(vis[k].i);
+      } else {
+        next.add(i); // fallback: якщо якийсь кінець не видно — беремо лише клікнутий
+      }
       setSelection(next);
       setActive(i);
       return;
@@ -291,6 +304,12 @@ export function SentenceTable() {
       if (ctrl && !e.shiftKey && !e.altKey && e.key.toLowerCase() === "z") {
         e.preventDefault();
         undo();
+        return;
+      }
+      // Esc — зняти виділення (multi-select). Тільки коли вибрано 2+ рядки.
+      if (e.key === "Escape" && selection.size >= 2) {
+        e.preventDefault();
+        setSelection(new Set());
         return;
       }
     };
@@ -418,6 +437,55 @@ export function SentenceTable() {
           <span className="hidden 2xl:inline">{t("txt.import")}</span>
         </button>
       </div>
+
+      {/* Bulk action bar — видимо коли вибрано 2+ рядки. Дає очевидні кнопки
+          для затвердити / ревью / чернетка / зняти, бо без цього user мусив
+          би знати шорткат Alt+3 або відкривати ПКМ-меню. */}
+      {selection.size >= 2 && (
+        <div className="h-9 px-3 flex items-center gap-2 border-b border-[var(--border-soft)] bg-[var(--accent-soft)]">
+          <span className="text-[11.5px] font-semibold text-[var(--text-strong)] tabular-nums">
+            {t("table.bulk.selected", { n: selection.size })}
+          </span>
+          <span className="w-px h-5 bg-[var(--border-soft)] mx-1" />
+          <button
+            className="dp-btn dp-btn--ghost !text-[11px] !py-0.5 flex items-center gap-1.5"
+            onClick={() => { bulkSetStatus(Array.from(selection), "approved"); setSelection(new Set()); }}
+            title={t("table.bulk.approveHint")}
+          >
+            <span className="inline-block w-2 h-2 rounded-full" style={{ background: "var(--success)" }} />
+            {t("table.bulk.approve")}
+          </button>
+          <button
+            className="dp-btn dp-btn--ghost !text-[11px] !py-0.5 flex items-center gap-1.5"
+            onClick={() => { bulkSetStatus(Array.from(selection), "review"); setSelection(new Set()); }}
+          >
+            <span className="inline-block w-2 h-2 rounded-full" style={{ background: "var(--warning)" }} />
+            {t("table.bulk.review")}
+          </button>
+          <button
+            className="dp-btn dp-btn--ghost !text-[11px] !py-0.5 flex items-center gap-1.5"
+            onClick={() => { bulkSetStatus(Array.from(selection), "draft"); setSelection(new Set()); }}
+          >
+            <span className="inline-block w-2 h-2 rounded-full" style={{ background: "var(--accent)" }} />
+            {t("table.bulk.draft")}
+          </button>
+          <button
+            className="dp-btn dp-btn--ghost !text-[11px] !py-0.5"
+            onClick={() => { bulkSetStatus(Array.from(selection), undefined); setSelection(new Set()); }}
+            title={t("table.bulk.clearHint")}
+          >
+            {t("table.bulk.clear")}
+          </button>
+          <div className="flex-1" />
+          <button
+            className="dp-btn dp-btn--ghost !text-[11px] !py-0.5"
+            onClick={() => setSelection(new Set())}
+            title={t("table.bulk.deselectHint")}
+          >
+            {t("table.bulk.deselect")}
+          </button>
+        </div>
+      )}
 
       {/* Grid */}
       <div className="flex-1 overflow-auto">

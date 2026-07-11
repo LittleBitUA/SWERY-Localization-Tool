@@ -8,7 +8,7 @@ import { CorpusStatsModal } from "./CorpusStatsModal";
 import { Dp2OthersModal } from "../games/dp2/Dp2OthersModal";
 import { GlossaryConsistencyModal } from "./GlossaryConsistencyModal";
 import { NameConsistencyModal } from "./NameConsistencyModal";
-import { useT } from "../lib/i18n";
+import { useT, localizeBackendError } from "../lib/i18n";
 import { confirm as showConfirm, alert as showAlert } from "../lib/dialogs";
 import { showToast, dismissToast } from "./Toast";
 import { SaveStatusBadge } from "./SaveStatusBadge";
@@ -151,7 +151,7 @@ export function Header({
     setLastLogPath(res.logPath);
     setBuildState("idle");
     if (!res.success) {
-      showToast(res.error || t("build.toast.buildFailed"), {
+      showToast(localizeBackendError(res.error) || t("build.toast.buildFailed"), {
         tone: "error", title: t("build.toast.buildFailedTitle"), durationMs: 12000,
       });
       return;
@@ -164,9 +164,10 @@ export function Header({
       if (others.skipped) {
         // тихо — нічого не було пакувати
       } else if (!others.ok) {
-        extraMsg = `\n⚠️ UILabel-пакування зафейлилось: ${others.error ?? "?"}${others.logPath ? `\nЛог: ${others.logPath}` : ""}`;
+        extraMsg = t("components.header.uiLabelFailed", { err: localizeBackendError(others.error) || "?" })
+          + (others.logPath ? t("components.header.uiLabelLog", { path: others.logPath }) : "");
       } else if (others.summary?.imported) {
-        extraMsg = `\n+ UILabel: ${others.summary.imported} рядків у sharedassets1.assets`;
+        extraMsg = t("components.header.uiLabelImported", { n: others.summary.imported });
       }
     }
     showToast(t("build.toast.done", { path: res.outputPath ?? "" }) + extraMsg, {
@@ -222,10 +223,10 @@ export function Header({
         <button
           className="dp-btn dp-btn--ghost shrink-0"
           onClick={() => setOthersOpen(true)}
-          title="Переклад інших рядків — додатковий staging-корпус (DP2/Others)"
+          title={t("components.header.othersTooltip")}
           disabled={!folder}
         >
-          📥 <span className="hidden 2xl:inline ml-1">Інші рядки</span>
+          📥 <span className="hidden 2xl:inline ml-1">{t("components.header.others")}</span>
         </button>
 
         <button

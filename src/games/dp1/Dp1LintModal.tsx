@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { useT, localizeBackendError } from "../../lib/i18n";
 
 interface Violation {
   index: number;
@@ -19,6 +20,7 @@ interface Props {
 // Перевіряє відповідність набору `{…}` маркерів у Done vs Original. Викликається
 // з Dp1TextEditor як перед-pack lint і як standalone-перегляд через кнопку.
 export function Dp1LintModal({ open, onClose, onGoTo }: Props) {
+  const t = useT();
   const [loading, setLoading] = useState(false);
   const [scanned, setScanned] = useState(0);
   const [items, setItems] = useState<Violation[]>([]);
@@ -28,7 +30,7 @@ export function Dp1LintModal({ open, onClose, onGoTo }: Props) {
     setLoading(true); setError(null);
     try {
       const r = await window.dp2.dp1TextLintMarkers();
-      if (!r.ok) { setError(r.error ?? "lint failed"); return; }
+      if (!r.ok) { setError(localizeBackendError(r.error) || "lint failed"); return; }
       setScanned(r.scannedRows ?? 0);
       setItems(r.violations ?? []);
     } finally {
@@ -60,15 +62,15 @@ export function Dp1LintModal({ open, onClose, onGoTo }: Props) {
         <div className="flex items-center justify-between gap-3 px-5 py-3 border-b border-[var(--border-soft)]">
           <div className="min-w-0 flex-1">
             <h2 className="text-[15px] font-semibold text-[var(--text-strong)]">
-              Перевірка цілісності маркерів
+              {t("dp1.lint.title")}
             </h2>
             <p className="text-[12px] text-[var(--text-muted)] mt-0.5">
-              Знайдено {items.length} рядків з порушеннями (з {scanned.toLocaleString("uk-UA")} перевірених)
+              {t("dp1.lint.foundViolations", { count: items.length, scanned: scanned.toLocaleString("uk-UA") })}
             </p>
           </div>
           <div className="flex items-center gap-2 shrink-0">
             <button onClick={load} className="dp-btn" disabled={loading}>
-              {loading ? "…" : "Оновити"}
+              {loading ? "…" : t("dp1.lint.refresh")}
             </button>
             <button onClick={onClose} className="dp-btn dp-btn--ghost !w-7 !p-0">
               <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
@@ -80,14 +82,14 @@ export function Dp1LintModal({ open, onClose, onGoTo }: Props) {
 
         <div className="flex-1 overflow-auto p-5">
           {loading && (
-            <p className="py-10 text-center text-[13px] text-[var(--text-muted)]">Перевірка…</p>
+            <p className="py-10 text-center text-[13px] text-[var(--text-muted)]">{t("dp1.lint.checking")}</p>
           )}
           {error && !loading && (
             <p className="py-10 text-center text-[13px] text-[var(--danger)]">{error}</p>
           )}
           {!loading && !error && items.length === 0 && (
             <p className="py-10 text-center text-[13px] text-[var(--success)]">
-              Усе чисто — маркери збігаються з оригіналом.
+              {t("dp1.lint.allClean")}
             </p>
           )}
           {!loading && items.length > 0 && (
@@ -106,7 +108,7 @@ export function Dp1LintModal({ open, onClose, onGoTo }: Props) {
                       className="dp-btn dp-btn--ghost text-[11px]"
                       onClick={() => onGoTo(v.index)}
                     >
-                      Перейти →
+                      {t("dp1.lint.goTo")} →
                     </button>
                   </div>
                   <div className="flex items-center gap-3 mb-2 text-[11px] flex-wrap">

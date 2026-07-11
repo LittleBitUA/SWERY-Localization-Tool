@@ -170,6 +170,11 @@ declare global {
       setupStatus: () => Promise<SetupStatus>;
       setupRun: (payload: SetupRunPayload) => Promise<SetupRunResult>;
       setupReset: () => Promise<{ ok: boolean }>;
+      setupFinish: (payload: {
+        dp1Root?: string; dp2Root?: string; tglRoot?: string;
+        hbrRoot?: string; missingRoot?: string; d4Root?: string;
+        toolsDir?: string;
+      }) => Promise<{ ok: boolean }>;
       onSetupProgress: (cb: (p: SetupProgress) => void) => () => void;
 
       // DP1 setup: download DPMsgTool (by MrIkso) into

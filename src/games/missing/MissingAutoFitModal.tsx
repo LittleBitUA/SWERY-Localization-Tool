@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
+import { useT } from "../../lib/i18n";
 import { parseMissingMsg } from "./parser";
 import type { MissingHeightInfo } from "./heightinfo";
 
@@ -92,6 +93,7 @@ function b64ToBytes(b64: string): Uint8Array {
 const PLACEHOLDER_RE = /^[A-Z_0-9]+_en$|^V_[A-Z]{2}_\d{3}$/;
 
 export function MissingAutoFitModal({ open, onClose, files, heightInfo, referenceHeightInfo, heightInfoIdx, targetLang, onApply }: Props) {
+  const t = useT();
   const [loading, setLoading] = useState(false);
   const [cache, setCache] = useState<CacheRow[]>([]);
   // Defaults підняті: 1.08 давало 8% запасу, для UA з кирилицею (~10% ширша
@@ -266,11 +268,9 @@ export function MissingAutoFitModal({ open, onClose, files, heightInfo, referenc
       <div className="dp-card w-full max-w-5xl flex flex-col" style={{ maxHeight: "90vh" }} onMouseDown={(e) => e.stopPropagation()}>
         <div className="flex items-center justify-between gap-3 px-5 py-3 border-b border-[var(--border-soft)]">
           <div className="min-w-0 flex-1">
-            <h2 className="text-[15px] font-semibold text-[var(--text-strong)]">Auto-fit box-sizes — превʼю</h2>
+            <h2 className="text-[15px] font-semibold text-[var(--text-strong)]">{t("missing.autofit.title")}</h2>
             <p className="text-[12px] text-[var(--text-muted)] mt-0.5">
-              Цільовий слот <span className="font-mono text-[var(--accent)]">L{targetLang}</span>.
-              Знайдено <span className="tabular-nums text-[var(--text)]">{stats.total}</span> рядків з перекладом ·
-              підлаштується <span className="tabular-nums text-[var(--success)]">{stats.willChange}</span>.
+              {t("missing.autofit.subtitle.p1")}<span className="font-mono text-[var(--accent)]">L{targetLang}</span>{t("missing.autofit.subtitle.p2")}<span className="tabular-nums text-[var(--text)]">{stats.total}</span>{t("missing.autofit.subtitle.p3")}<span className="tabular-nums text-[var(--success)]">{stats.willChange}</span>.
             </p>
           </div>
           <button onClick={onClose} className="dp-btn dp-btn--ghost !w-7 !p-0 shrink-0">
@@ -284,7 +284,7 @@ export function MissingAutoFitModal({ open, onClose, files, heightInfo, referenc
           {/* Padding slider */}
           <div className="flex flex-col gap-1 min-w-[200px] flex-1">
             <label className="text-[10.5px] uppercase tracking-wider text-[var(--text-faint)] flex justify-between">
-              <span>Запас (multiplier)</span>
+              <span>{t("missing.autofit.padding")}</span>
               <span className="tabular-nums text-[var(--text)]">×{padding.toFixed(2)}</span>
             </label>
             <input
@@ -295,15 +295,15 @@ export function MissingAutoFitModal({ open, onClose, files, heightInfo, referenc
               className="accent-[var(--accent)]"
             />
             <div className="flex justify-between text-[9px] text-[var(--text-faint)] tabular-nums">
-              <span>1.00 (точно)</span>
+              <span>{t("missing.autofit.paddingMin")}</span>
               <span>1.25</span>
-              <span>1.50 (з запасом)</span>
+              <span>{t("missing.autofit.paddingMax")}</span>
             </div>
           </div>
           {/* Min pixel padding */}
           <div className="flex flex-col gap-1 w-[140px]">
-            <label className="text-[10.5px] uppercase tracking-wider text-[var(--text-faint)]" title="Додати фіксований запас у пікселях понад multiplier. Корисно для дуже коротких рядків.">
-              Мін. запас, px
+            <label className="text-[10.5px] uppercase tracking-wider text-[var(--text-faint)]" title={t("missing.autofit.minPaddingTitle")}>
+              {t("missing.autofit.minPadding")}
             </label>
             <input
               type="number" min={0} max={200} step={1}
@@ -314,41 +314,41 @@ export function MissingAutoFitModal({ open, onClose, files, heightInfo, referenc
           </div>
           {/* Checkboxes */}
           <div className="flex flex-col gap-1 text-[11px]">
-            <label className="flex items-center gap-1.5 cursor-pointer" title="Не звужувати, якщо UA коротший за EN">
+            <label className="flex items-center gap-1.5 cursor-pointer" title={t("missing.autofit.onlyGrowTitle")}>
               <input type="checkbox" checked={onlyGrow} onChange={(e) => setOnlyGrow(e.target.checked)} />
-              <span className="text-[var(--text-muted)]">Лише збільшувати</span>
+              <span className="text-[var(--text-muted)]">{t("missing.autofit.onlyGrow")}</span>
             </label>
-            <label className="flex items-center gap-1.5 cursor-pointer" title="Масштабувати height пропорційно кількості рядків UA">
+            <label className="flex items-center gap-1.5 cursor-pointer" title={t("missing.autofit.scaleHeightTitle")}>
               <input type="checkbox" checked={scaleHeight} onChange={(e) => setScaleHeight(e.target.checked)} />
-              <span className="text-[var(--text-muted)]">Масштабувати висоту</span>
+              <span className="text-[var(--text-muted)]">{t("missing.autofit.scaleHeight")}</span>
             </label>
           </div>
           {/* Sort */}
           <div className="flex flex-col gap-1 text-[11px]">
-            <label className="text-[10.5px] uppercase tracking-wider text-[var(--text-faint)]">Сортування</label>
+            <label className="text-[10.5px] uppercase tracking-wider text-[var(--text-faint)]">{t("missing.autofit.sort")}</label>
             <select
               className="dp-input !text-[12px]"
               value={sortMode}
               onChange={(e) => setSortMode(e.target.value as "diff" | "ratio" | "enum")}
             >
-              <option value="diff">За приростом (px)</option>
-              <option value="ratio">За співвідношенням len(UA)/len(EN)</option>
-              <option value="enum">За MsgEnum</option>
+              <option value="diff">{t("missing.autofit.sortDiff")}</option>
+              <option value="ratio">{t("missing.autofit.sortRatio")}</option>
+              <option value="enum">{t("missing.autofit.sortEnum")}</option>
             </select>
           </div>
           <div className="flex flex-col gap-1 text-[11px]">
             <label className="flex items-center gap-1.5 cursor-pointer">
               <input type="checkbox" checked={showAll} onChange={(e) => setShowAll(e.target.checked)} />
-              <span className="text-[var(--text-muted)]">Показати без змін</span>
+              <span className="text-[var(--text-muted)]">{t("missing.autofit.showAll")}</span>
             </label>
           </div>
         </div>
 
         <div className="flex-1 overflow-auto">
-          {loading && <p className="py-10 text-center text-[12.5px] text-[var(--text-muted)]">Сканую файли…</p>}
+          {loading && <p className="py-10 text-center text-[12.5px] text-[var(--text-muted)]">{t("missing.autofit.scanning")}</p>}
           {!loading && stats.total === 0 && (
             <p className="py-10 text-center text-[12.5px] text-[var(--text-faint)]">
-              Немає рядків з перекладом, які можна підлаштувати.
+              {t("missing.autofit.noRows")}
             </p>
           )}
           {!loading && stats.total > 0 && (
@@ -386,7 +386,7 @@ export function MissingAutoFitModal({ open, onClose, files, heightInfo, referenc
                           </>
                         )}
                       </td>
-                      <td className="px-3 py-1 text-right tabular-nums text-[10.5px] text-[var(--text-muted)]" title={`UA: ${r.uaLen} симв · EN: ${r.enLen} симв`}>
+                      <td className="px-3 py-1 text-right tabular-nums text-[10.5px] text-[var(--text-muted)]" title={t("missing.autofit.charsTitle", { ua: String(r.uaLen), en: String(r.enLen) })}>
                         {((ratio - 1) * 100).toFixed(0)}%
                       </td>
                     </tr>
@@ -395,7 +395,7 @@ export function MissingAutoFitModal({ open, onClose, files, heightInfo, referenc
                 {!loading && !showAll && stats.total > stats.willChange && visiblePreview.length >= stats.willChange && (
                   <tr>
                     <td colSpan={5} className="px-3 py-2 text-center text-[10.5px] text-[var(--text-faint)] italic">
-                      {stats.total - stats.willChange} рядків без змін приховано
+                      {t("missing.autofit.hiddenRows", { n: String(stats.total - stats.willChange) })}
                     </td>
                   </tr>
                 )}
@@ -406,11 +406,11 @@ export function MissingAutoFitModal({ open, onClose, files, heightInfo, referenc
 
         <div className="flex items-center justify-between gap-3 px-5 py-3 border-t border-[var(--border-soft)]">
           <p className="text-[10.5px] text-[var(--text-faint)] flex-1">
-            {stats.willChange > 0 && `Найбільший приріст: +${stats.biggest}px у одному рядку.`} Зміни запишуться у <span className="font-mono">Done/heightinfo.bin</span> — пакування у гру при наступному Pack.
+            {stats.willChange > 0 && t("missing.autofit.biggest", { n: String(stats.biggest) })}{t("missing.autofit.footer.p1")}<span className="font-mono">Done/heightinfo.bin</span>{t("missing.autofit.footer.p2")}
           </p>
-          <button className="dp-btn dp-btn--ghost" onClick={onClose}>Скасувати</button>
+          <button className="dp-btn dp-btn--ghost" onClick={onClose}>{t("btn.cancel")}</button>
           <button className="dp-btn dp-btn--primary" disabled={loading || stats.willChange === 0} onClick={handleApply}>
-            Підлаштувати ({stats.willChange})
+            {t("missing.autofit.apply")} ({stats.willChange})
           </button>
         </div>
       </div>

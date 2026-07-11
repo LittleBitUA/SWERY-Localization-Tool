@@ -56,8 +56,14 @@ export function D4CorpusStatsModal({ open, onClose }: { open: boolean; onClose: 
   const [loading, setLoading] = useState(false);
   useEffect(() => {
     if (!open) return;
+    let cancelled = false;
     setLoading(true);
-    window.dp2.d4TextCorpusStatsFull().then((r) => { setData(r); setLoading(false); });
+    window.dp2.d4TextCorpusStatsFull().then((r) => {
+      if (cancelled) return;
+      setData(r);
+      setLoading(false);
+    });
+    return () => { cancelled = true; };
   }, [open]);
   if (!open) return null;
   const pct = data?.percent ? Math.round(data.percent) : 0;

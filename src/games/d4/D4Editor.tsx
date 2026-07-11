@@ -6,7 +6,7 @@
 //   4. Edit one file → inline-редактор m_aString/m_aWord/m_aVoiceIdStr.
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { useT } from "../../lib/i18n";
+import { useT, localizeBackendError } from "../../lib/i18n";
 import { alert as dpAlert } from "../../lib/dialogs";
 import { D4CorpusStatsModal, D4GlobalSearchModal, D4BatchReplaceModal, D4GlossaryModal } from "./D4Modals";
 import { D4Hero } from "./D4Hero";
@@ -163,7 +163,7 @@ export function D4Editor({ onHome }: Props) {
       setOpCurrent(all.length);
       setOpDone(true);
       if (!r.ok) {
-        const failed = r.results?.filter((x) => !x.ok).map((x) => `${x.name}: ${x.error}`).join("\n") ?? t("d4.unknownError");
+        const failed = r.results?.filter((x) => !x.ok).map((x) => `${x.name}: ${localizeBackendError(x.error)}`).join("\n") ?? t("d4.unknownError");
         setOpError(failed);
       }
       await reloadStatus();
@@ -221,7 +221,7 @@ export function D4Editor({ onHome }: Props) {
       setOpCurrent(all.length);
       setOpDone(true);
       if (!r.ok) {
-        const failed = r.results?.filter((x) => !x.ok).map((x) => `${x.name}: ${x.error}`).join("\n") ?? r.error ?? t("d4.unknownError");
+        const failed = r.results?.filter((x) => !x.ok).map((x) => `${x.name}: ${localizeBackendError(x.error)}`).join("\n") ?? (localizeBackendError(r.error) || t("d4.unknownError"));
         setOpError(failed);
       }
     } catch (e) {
@@ -491,7 +491,7 @@ export function D4Editor({ onHome }: Props) {
                                 { tone: "success" }
                               );
                             } else {
-                              await dpAlert(t("d4.txt.exportFailTitle"), r.error ?? "?", { tone: "danger" });
+                              await dpAlert(t("d4.txt.exportFailTitle"), localizeBackendError(r.error) || "?", { tone: "danger" });
                             }
                           }}
                         >
@@ -515,7 +515,7 @@ export function D4Editor({ onHome }: Props) {
                               );
                               await reloadStatus();
                             } else {
-                              await dpAlert(t("d4.txt.importFailTitle"), r.error ?? "?", { tone: "danger" });
+                              await dpAlert(t("d4.txt.importFailTitle"), localizeBackendError(r.error) || "?", { tone: "danger" });
                             }
                           }}
                         >

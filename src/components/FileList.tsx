@@ -283,7 +283,7 @@ export function FileList() {
               }}
               className={`block w-full text-left px-3 py-1.5 hover:bg-[var(--row-hover)] ${allTranslated ? "text-[var(--success)] font-semibold" : ""}`}
             >
-              {allTranslated ? "✓ Зняти позначку «Перекладено»" : "✓ Позначити «Перекладено»"}
+              {allTranslated ? t("components.fileList.ctxMenu.unmarkTranslated") : t("components.fileList.ctxMenu.markTranslated")}
             </button>
             <button
               onClick={async () => {
@@ -292,7 +292,7 @@ export function FileList() {
               }}
               className={`block w-full text-left px-3 py-1.5 hover:bg-[var(--row-hover)] ${edited ? "text-[var(--warning,#d97706)] font-semibold" : ""}`}
             >
-              {edited ? "✎ Зняти позначку «Зредаговано»" : "✎ Позначити «Зредаговано»"}
+              {edited ? t("components.fileList.ctxMenu.unmarkEdited") : t("components.fileList.ctxMenu.markEdited")}
             </button>
             <div className="border-t border-[var(--border-soft)] my-1" />
             <button

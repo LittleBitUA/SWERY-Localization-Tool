@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { useT } from "../../lib/i18n";
+import { useT, localizeBackendError } from "../../lib/i18n";
 import { confirm as showConfirm } from "../../lib/dialogs";
 import { HBR_TEXTURES, type HbrTextureEntry } from "./textures-list";
 import { Dp2TextureBusyModal, type BusyKind, type BusyTarget } from "../dp2/Dp2TextureBusyModal";
@@ -173,7 +173,7 @@ export function HbrTexturesEditor({ onHome }: HbrTexturesEditorProps) {
     try {
       const res = await window.dp2.hbrTexturesExport({ pathIds: [tx.pathId] });
       if (!res.success) {
-        setModalError(res.error ?? "?");
+        setModalError(localizeBackendError(res.error) || "?");
         setModalDone(true);
         return;
       }
@@ -198,7 +198,7 @@ export function HbrTexturesEditor({ onHome }: HbrTexturesEditorProps) {
       const allPathIds = HBR_TEXTURES.map((tx) => tx.pathId);
       const res = await window.dp2.hbrTexturesExport({ pathIds: allPathIds });
       if (!res.success) {
-        setModalError(res.error ?? "?");
+        setModalError(localizeBackendError(res.error) || "?");
         setModalDone(true);
         return;
       }
@@ -261,7 +261,7 @@ export function HbrTexturesEditor({ onHome }: HbrTexturesEditorProps) {
         items: [{ pathId: tx.pathId, pngPath: picked }],
       });
       if (!res.success) {
-        setModalError(res.error ?? "?");
+        setModalError(localizeBackendError(res.error) || "?");
         setModalDone(true);
         return;
       }

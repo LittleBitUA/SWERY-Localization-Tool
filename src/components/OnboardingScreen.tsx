@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import type { SetupProgress, SetupStatus } from "../lib/ipc";
-import { useT } from "../lib/i18n";
+import { useT, localizeBackendError } from "../lib/i18n";
 import { LangToggle } from "./LangToggle";
 import bgImage from "../ui-v2/assets/dp-board.jpg";
 import "../ui-v2/theme.css";
@@ -152,7 +152,7 @@ export function OnboardingScreen({ status, onComplete }: OnboardingScreenProps) 
         downloadPwsh,
       });
       if (res.error) {
-        setError(res.error);
+        setError(localizeBackendError(res.error));
         return;
       }
       await refreshValidity();
@@ -169,14 +169,18 @@ export function OnboardingScreen({ status, onComplete }: OnboardingScreenProps) 
   }
 
   async function finish() {
-    // Зберігаємо корені ігор + setupCompleted. main.cjs далі автоматично
-    // обчислює конкретні шляхи (sharedassets0.assets, loc/English) при потребі.
-    const patch: Record<string, unknown> = { setupCompleted: true };
-    if (dp1Root.trim()) patch.dp1Root = dp1Root.trim();
-    if (dp2Root.trim()) patch.dp2Root = dp2Root.trim();
-    if (tglRoot.trim()) patch.tglRoot = tglRoot.trim();
-    if (hbrRoot.trim()) patch.hbrRoot = hbrRoot.trim();
-    await window.dp2.saveSettings(patch);
+    // Зберігаємо корені ігор + setupCompleted через дедикований IPC. НЕ через
+    // saveSettings — там setupCompleted відсіюється allow-list'ом, тож прапор
+    // не зберігався і при повторному вході в налаштування «Завершити» не
+    // завершувало онбординг (застрягало назавжди). main.cjs далі сам
+    // обчислює конкретні шляхи (sharedassets0.assets, loc/English).
+    await window.dp2.setupFinish({
+      dp1Root: dp1Root.trim() || undefined,
+      dp2Root: dp2Root.trim() || undefined,
+      tglRoot: tglRoot.trim() || undefined,
+      hbrRoot: hbrRoot.trim() || undefined,
+      toolsDir: toolsDir.trim() || undefined,
+    });
     onComplete();
   }
 

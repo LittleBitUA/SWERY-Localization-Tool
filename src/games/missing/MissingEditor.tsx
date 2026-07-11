@@ -7,7 +7,7 @@
 //   5. Pack → PowerShell вставляє Done/-файли назад у resources.assets.
 
 import { useEffect, useMemo, useRef, useState } from "react";
-import { useT } from "../../lib/i18n";
+import { useT, localizeBackendError } from "../../lib/i18n";
 import { alert as dpAlert, confirm as dpConfirm } from "../../lib/dialogs";
 import { parseMissingMsg, parseMissingMsgCached, invalidateMissingMsgCache, buildMissingMsg, type MissingMsgFile, type MissingMsgEntry } from "./parser";
 import { parseMissingHeightInfo, buildMissingHeightInfo, buildHeightInfoIndex, type MissingHeightInfo } from "./heightinfo";
@@ -210,8 +210,8 @@ export function MissingEditor({ onHome }: Props) {
   async function refreshStatus() {
     const s = await W.missingPrepStatus();
     setStatus(s);
-    if (!s.ok) { setPhase("error"); setErrMsg(s.error || "?"); return s; }
-    if (!s.assetsOk) { setPhase("error"); setErrMsg(`resources.assets не знайдено: ${s.assetsPath || "missingRoot не задано у налаштуваннях"}`); return s; }
+    if (!s.ok) { setPhase("error"); setErrMsg(localizeBackendError(s.error) || "?"); return s; }
+    if (!s.assetsOk) { setPhase("error"); setErrMsg(t("missing.editor.err.assetsNotFound", { path: s.assetsPath || t("missing.editor.err.rootNotSet") })); return s; }
     if (!s.metaExists || (s.originalCount ?? 0) === 0) { setPhase("needs-extract"); return s; }
     return s;
   }
@@ -376,32 +376,32 @@ export function MissingEditor({ onHome }: Props) {
   async function applyDialogFix() {
     if (dialogFixBusy) return;
     const ok = await dpConfirm(
-      "Виправити обрізання діалогів?",
-      "IL-патчі в Assembly-CSharp.dll:\n• Ballon.CheckProperties → SizeControlType примусово UseTextInfo (2): чат-пухир автоматично адаптує ширину під UA-текст (інакше обрізає по character-count).\n• BallonController.CheckProperties → так само.\n• TextExGenerator.get_WordWrapType → завжди 1 (Default): wrap йде по пробілах між словами (без цього wrap посеред слова: «потре|бувала», «психологічн|ий»).\n\nСтвориться .dll.bak (один раз). Після patch перезапусти TheMISSING.exe.",
-      { okLabel: "Виправити", cancelLabel: "Скасувати", tone: "warning" }
+      t("missing.editor.dialogFix.confirmTitle"),
+      t("missing.editor.dialogFix.confirmBody"),
+      { okLabel: t("missing.editor.dialogFix.fix"), cancelLabel: t("btn.cancel"), tone: "warning" }
     );
     if (!ok) return;
     setDialogFixBusy(true);
     const r = await W.missingDllDialogFix();
     setDialogFixBusy(false);
-    if (!r.ok) { showError(r.error || "?", "Dialog fix failed"); return; }
-    showOk(`Застосовано ${r.summary?.applied ?? 0} IL-патчів. Перезапусти TheMISSING.exe.`, "Dialog fix");
+    if (!r.ok) { showError(localizeBackendError(r.error) || "?", "Dialog fix failed"); return; }
+    showOk(t("missing.editor.dialogFix.appliedToast", { n: String(r.summary?.applied ?? 0) }), "Dialog fix");
     await refreshDialogFixStatus();
   }
 
   async function revertDialogFix() {
     if (dialogFixBusy) return;
     const ok = await dpConfirm(
-      "Повернути DLL до оригіналу?",
-      "Файл Assembly-CSharp.dll відновиться з .dll.bak. Усі правки (Quick Fix + Strings edits) буде втрачено.",
-      { okLabel: "Відкотити", cancelLabel: "Скасувати", tone: "danger" }
+      t("missing.editor.revertFix.confirmTitle"),
+      t("missing.editor.revertFix.confirmBody"),
+      { okLabel: t("missing.editor.revertFix.revert"), cancelLabel: t("btn.cancel"), tone: "danger" }
     );
     if (!ok) return;
     setDialogFixBusy(true);
     const r = await W.missingDllDialogFixRevert();
     setDialogFixBusy(false);
-    if (!r.ok) { showError(r.error || "?", "Revert failed"); return; }
-    showOk("DLL повернено з .bak. Перезапусти гру.", "Revert");
+    if (!r.ok) { showError(localizeBackendError(r.error) || "?", "Revert failed"); return; }
+    showOk(t("missing.editor.revertFix.doneToast"), "Revert");
     await refreshDialogFixStatus();
   }
 
@@ -415,10 +415,10 @@ export function MissingEditor({ onHome }: Props) {
         let bin = ""; for (let i = 0; i < bytes.length; i++) bin += String.fromCharCode(bytes[i]);
         const r = await W.missingBoxsizeSave({ base64: btoa(bin) });
         if (!r.ok) {
-          showError(r.error || "невідома помилка", "Box-sizes: не вдалося зберегти");
+          showError(localizeBackendError(r.error) || t("missing.editor.box.saveFailUnknown"), t("missing.editor.box.saveFailTitle"));
         }
       } catch (e) {
-        showError(e, "Box-sizes: помилка серіалізації");
+        showError(e, t("missing.editor.box.serializeFailTitle"));
       }
     }, 1000);
     return () => clearTimeout(id);
@@ -435,14 +435,14 @@ export function MissingEditor({ onHome }: Props) {
     try {
       const r = await W.missingBuildRelease();
       if (!r.ok) {
-        await dpAlert("Зібрати білд", r.error ?? "?", { tone: "danger" });
+        await dpAlert(t("missing.editor.build.errTitle"), localizeBackendError(r.error) || "?", { tone: "danger" });
         return;
       }
       const sizeMb = ((r.totalSize ?? 0) / (1024 * 1024)).toFixed(1);
       const ok = await dpConfirm(
-        "Білд готовий",
-        `Скопійовано ${r.count ?? 0} файлів (${sizeMb} MB) у:\n${r.releaseDir}\n\nВідкрити теку у Провіднику?`,
-        { okLabel: "Відкрити", cancelLabel: "Закрити", tone: "success" },
+        t("missing.editor.build.doneTitle"),
+        t("missing.editor.build.doneBody", { count: String(r.count ?? 0), size: sizeMb, dir: String(r.releaseDir) }),
+        { okLabel: t("missing.editor.build.open"), cancelLabel: t("btn.close"), tone: "success" },
       );
       if (ok && r.releaseDir) {
         (window.dp2 as unknown as { openFolder?: (p: string) => void }).openFolder?.(r.releaseDir);
@@ -456,7 +456,7 @@ export function MissingEditor({ onHome }: Props) {
     setExtractingBox(true);
     try {
       const r = await W.missingBoxsizeExtract();
-      if (!r.ok) { await dpAlert("Box-sizes", r.error ?? "extract failed", { tone: "danger" }); return; }
+      if (!r.ok) { await dpAlert("Box-sizes", localizeBackendError(r.error) || "extract failed", { tone: "danger" }); return; }
       // Reload after extract.
       const lr = await W.missingBoxsizeRead();
       if (lr.ok && lr.base64) {
@@ -465,9 +465,9 @@ export function MissingEditor({ onHome }: Props) {
           const info = parseMissingHeightInfo(bin);
           setHeightInfo(info);
           setHeightInfoIdx(buildHeightInfoIndex(info));
-          await dpAlert("Box-sizes", `Витягнуто IMHeightInfo: ${info.entries.length} записів × 4 мови.`, { tone: "success" });
+          await dpAlert("Box-sizes", t("missing.editor.box.extractedBody", { n: String(info.entries.length) }), { tone: "success" });
         } catch (e) {
-          await dpAlert("Box-sizes", `Витягнуто, але парс провалився: ${(e as Error).message}`, { tone: "warning" });
+          await dpAlert("Box-sizes", t("missing.editor.box.extractParseWarn", { msg: (e as Error).message }), { tone: "warning" });
         }
       }
     } finally { setExtractingBox(false); }
@@ -481,8 +481,8 @@ export function MissingEditor({ onHome }: Props) {
     const padding = 1.08; // 8% запас на варіативність шрифту/гліфів
     const ok = await dpConfirm(
       "Auto-fit box-sizes",
-      `Підлаштувати ширину слота L${targetLang} під довжину перекладу для всіх перекладених рядків (×${padding} запас)?\n\nЦе перепише розміри в IMHeightInfo. Збереження до Done/heightinfo.bin відбудеться автоматично.`,
-      { tone: "warning", okLabel: "Підлаштувати" }
+      t("missing.editor.autofitLegacy.confirmBody", { lang: String(targetLang), padding: String(padding) }),
+      { tone: "warning", okLabel: t("missing.editor.autofitLegacy.apply") }
     );
     if (!ok) return;
 
@@ -535,8 +535,8 @@ export function MissingEditor({ onHome }: Props) {
     setHeightInfo({ ...heightInfo, entries: nextEntries });
     heightInfoDirtyRef.current = true;
     await dpAlert(
-      "Готово",
-      `Перевірено: ${scanned}\nПодігнано: ${applied}\nПропущено: ${skipped} (без перекладу / плейсхолдери / коротший UA)\n\nЗміни збережуться у Done/heightinfo.bin через секунду. Пакування у гру — як зазвичай.`,
+      t("missing.editor.autofitLegacy.doneTitle"),
+      t("missing.editor.autofitLegacy.doneBody", { scanned: String(scanned), applied: String(applied), skipped: String(skipped) }),
       { tone: "success" }
     );
   }
@@ -565,7 +565,7 @@ export function MissingEditor({ onHome }: Props) {
   async function bulkMarkFileTranslated(file: FileItem, mark: boolean) {
     try {
       const r = await W.missingTextRead(file.origPath);
-      if (!r.ok || !r.base64) { showError("Не вдалося прочитати файл", "Bulk-mark"); return; }
+      if (!r.ok || !r.base64) { showError(t("missing.editor.bulk.readFail"), "Bulk-mark"); return; }
       const parsed = parseMissingMsg(b64ToBytes(r.base64));
       const keys: string[] = [];
       for (let i = 0; i < parsed.entries.length; i++) {
@@ -575,7 +575,7 @@ export function MissingEditor({ onHome }: Props) {
         if (isPlaceholderText(o)) continue;
         keys.push(e.msgEnum >= 0 ? String(e.msgEnum) : `${file.name}::${i}`);
       }
-      if (keys.length === 0) { showOk("Немає рядків для позначення", "Bulk-mark"); return; }
+      if (keys.length === 0) { showOk(t("missing.editor.bulk.nothing"), "Bulk-mark"); return; }
       setRowMeta((m) => {
         const next = { ...m };
         for (const k of keys) {
@@ -589,8 +589,8 @@ export function MissingEditor({ onHome }: Props) {
       });
       showOk(
         mark
-          ? `Позначено ${keys.length} рядків як перекладені`
-          : `Знято позначку з ${keys.length} рядків`,
+          ? t("missing.editor.bulk.marked", { n: String(keys.length) })
+          : t("missing.editor.bulk.unmarked", { n: String(keys.length) }),
         file.name,
       );
       // refreshProjectStats буде trigger'нутий через useEffect [rowMeta].
@@ -749,7 +749,7 @@ export function MissingEditor({ onHome }: Props) {
     setPhase("extracting");
     setProgressLines([]);
     const r = await W.missingPrepExtract();
-    if (!r.ok) { setPhase("error"); setErrMsg(r.error || "extract fail"); return; }
+    if (!r.ok) { setPhase("error"); setErrMsg(localizeBackendError(r.error) || "extract fail"); return; }
     await refreshStatus();
     await refreshFiles();
     // Одразу витягуємо box-sizes таблицю — silent fail, якщо нема прав/файла.
@@ -852,7 +852,7 @@ export function MissingEditor({ onHome }: Props) {
     if (packing) return;
     const status = await W.missingPrepStatus();
     if (!status.ok) {
-      await dpAlert(t("missing.pack.errTitle"), status.error || "?", { tone: "danger" });
+      await dpAlert(t("missing.pack.errTitle"), localizeBackendError(status.error) || "?", { tone: "danger" });
       return;
     }
     if ((status.doneCount ?? 0) === 0) {
@@ -868,13 +868,13 @@ export function MissingEditor({ onHome }: Props) {
       if (heightInfo) {
         const br = await W.missingBoxsizePack();
         if (!br.ok && !br.skipped) {
-          await dpAlert("Box-sizes pack failed", br.error || "?", { tone: "danger" });
+          await dpAlert("Box-sizes pack failed", localizeBackendError(br.error) || "?", { tone: "danger" });
           return;
         }
       }
       const r = await W.missingPack();
       if (!r.ok) {
-        await dpAlert(t("missing.pack.errTitle"), r.error || "?", { tone: "danger" });
+        await dpAlert(t("missing.pack.errTitle"), localizeBackendError(r.error) || "?", { tone: "danger" });
         return;
       }
       const applied = r.summary?.applied ?? 0;
@@ -975,7 +975,7 @@ export function MissingEditor({ onHome }: Props) {
     setExporting(true);
     try {
       const target = await W.pickSaveFile({
-        title: "Експортувати combined.txt",
+        title: t("missing.editor.exportPickTitle"),
         defaultPath: "missing-combined.txt",
         filters: [{ name: "Text", extensions: ["txt"] }],
       });
@@ -1052,7 +1052,7 @@ export function MissingEditor({ onHome }: Props) {
       if (!ok) await dpAlert(t("missing.export.errTitle"), t("missing.export.errBody"), { tone: "danger" });
       else await dpAlert(
         t("missing.export.doneTitle"),
-        t("missing.export.doneBody", { n: String(files.length), path: target }) + (uiEntries > 0 ? `\n\n+ Interface: ${uiEntries} UI-надписів у секції [__Interface__]` : ""),
+        t("missing.export.doneBody", { n: String(files.length), path: target }) + (uiEntries > 0 ? t("missing.editor.export.interfaceSuffix", { n: String(uiEntries) }) : ""),
         { tone: "success" }
       );
     } finally {
@@ -1067,7 +1067,7 @@ export function MissingEditor({ onHome }: Props) {
     if (importing) return;
     setImporting(true);
     try {
-      const src = await W.pickFile({ title: "Імпортувати combined.txt", filters: [{ name: "Text", extensions: ["txt"] }] });
+      const src = await W.pickFile({ title: t("missing.editor.importPickTitle"), filters: [{ name: "Text", extensions: ["txt"] }] });
       if (!src) return;
       const txt = await W.readFile(src);
       if (txt === null) {
@@ -1232,7 +1232,7 @@ export function MissingEditor({ onHome }: Props) {
     const CAT_JUMP = t("missing.cmd.cat.jumpFile");
     out.push({
       id: "save", category: CAT_ACT, icon: "💾", label: t("missing.cmd.save"),
-      shortcut: "Ctrl+S", hint: `${edits.size} незбережених`,
+      shortcut: "Ctrl+S", hint: t("missing.editor.cmdUnsavedHint", { n: String(edits.size) }),
       keywords: "save зберегти збер", disabled: edits.size === 0 || saving,
       run: () => { void saveFile(); },
     });
@@ -1281,7 +1281,7 @@ export function MissingEditor({ onHome }: Props) {
     }
     out.push({
       id: "build-release", category: CAT_TOOLS, icon: "📦",
-      label: buildingRelease ? "Збираю білд…" : "Зібрати білд для релізу",
+      label: buildingRelease ? t("missing.editor.buildReleaseBusy") : t("missing.editor.buildRelease"),
       keywords: "release build збирати ship реліз готовий",
       disabled: buildingRelease,
       run: () => { void runBuildRelease(); },
@@ -1357,7 +1357,7 @@ export function MissingEditor({ onHome }: Props) {
               <HeaderProgress
                 translated={projectStats.translated}
                 total={projectStats.total}
-                title={`Загальний прогрес проєкту · ${projectStats.files} файлів`}
+                title={t("missing.editor.projectProgressTitle", { n: String(projectStats.files) })}
               />
             )}
             {dirty && (
@@ -1409,8 +1409,8 @@ export function MissingEditor({ onHome }: Props) {
                 items.push({});
                 items.push({
                   icon: "📦",
-                  label: buildingRelease ? "Збираю білд…" : "Зібрати білд для релізу",
-                  title: "Копіює всі модифіковані ігрові файли (.bak counterparts) у Documents/SWERY-Localization-Tool/MISSING/Release/",
+                  label: buildingRelease ? t("missing.editor.buildReleaseBusy") : t("missing.editor.buildRelease"),
+                  title: t("missing.editor.buildReleaseHint"),
                   disabled: buildingRelease,
                   tone: "success",
                   onClick: () => { void runBuildRelease(); },
@@ -1539,7 +1539,7 @@ export function MissingEditor({ onHome }: Props) {
                   <div className="flex items-center gap-2">
                     <span className="text-[11px] text-[var(--text-faint)] font-mono">{activeFile.name}</span>
                     <span className="text-[11px] text-[var(--text-muted)]">·</span>
-                    <span className="text-[11px] text-[var(--text-muted)]">{origMsg.entries.length} рядків{origMsg.entries2.length > 0 ? `, voice-keys: ${origMsg.entries2.length}` : ""}</span>
+                    <span className="text-[11px] text-[var(--text-muted)]">{t("missing.editor.rowsCount", { n: String(origMsg.entries.length) })}{origMsg.entries2.length > 0 ? t("missing.editor.voiceKeys", { n: String(origMsg.entries2.length) }) : ""}</span>
                     <input
                       className="dp-input flex-1 text-[11.5px]"
                       placeholder={t("missing.editor.searchPlaceholder")}
@@ -1618,11 +1618,11 @@ export function MissingEditor({ onHome }: Props) {
                         }}
                       >
                         <div className="text-center py-2">
-                          {meta?.bookmark && <span title="Закладка (Ctrl+B)">🔖</span>}
+                          {meta?.bookmark && <span title={t("missing.editor.bookmarkTitle")}>🔖</span>}
                         </div>
                         <div
                           className="px-2 py-2 font-mono text-[10.5px] text-[var(--text)] tabular-nums"
-                          title={r.entry.enumCount > 1 ? `${r.entry.enumCount} enum-слотів` : undefined}
+                          title={r.entry.enumCount > 1 ? t("missing.editor.enumSlots", { n: String(r.entry.enumCount) }) : undefined}
                         >
                           {enumDisplay}
                           {r.entry.enumCount > 1 && <span className="ml-1 text-[var(--text-faint)]">×{r.entry.enumCount}</span>}
@@ -1743,7 +1743,7 @@ export function MissingEditor({ onHome }: Props) {
           // Видимий feedback: користувач щойно натиснув "Підлаштувати" і чекає
           // підтвердження. Save сам спрацює через 1с debounce; toast скаже
           // що зміни прийняті у пам'ять і пише на диск.
-          showOk(`Підлаштовано ${updates.length} рядків · слот L${targetLang} · зберігаю у Done/heightinfo.bin…`, "Auto-fit");
+          showOk(t("missing.editor.autofit.appliedToast", { n: String(updates.length), lang: String(targetLang) }), "Auto-fit");
         }}
       />
 
@@ -1771,21 +1771,21 @@ export function MissingEditor({ onHome }: Props) {
                 className="w-full text-left px-3 py-1.5 hover:bg-[var(--row-hover)] flex items-center gap-2 text-[var(--text)]"
                 onClick={() => { void bulkMarkFileTranslated(file, true); close(); }}
               >
-                ✓ Позначити увесь файл перекладеним
+                ✓ {t("missing.editor.ctx.markFileTranslated")}
               </button>
               <button
                 className="w-full text-left px-3 py-1.5 hover:bg-[var(--row-hover)] flex items-center gap-2 text-[var(--text)]"
                 disabled={!isFullyMarked}
                 onClick={() => { void bulkMarkFileTranslated(file, false); close(); }}
               >
-                ✗ Зняти позначку з усього файлу
+                ✗ {t("missing.editor.ctx.unmarkFile")}
               </button>
               <div className="border-t border-[var(--border-soft)] my-1" />
               <button
                 className="w-full text-left px-3 py-1.5 hover:bg-[var(--row-hover)] flex items-center gap-2 text-[var(--text)]"
                 onClick={() => { void openFile(file); close(); }}
               >
-                📂 Відкрити
+                📂 {t("missing.editor.ctx.openFile")}
               </button>
             </div>
           </>

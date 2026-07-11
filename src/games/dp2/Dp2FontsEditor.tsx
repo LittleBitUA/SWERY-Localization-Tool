@@ -3,7 +3,7 @@
 // шрифтом (експортований TTF реєструється через @font-face через base64-URL).
 
 import { useEffect, useState, useCallback } from "react";
-import { useT } from "../../lib/i18n";
+import { useT, localizeBackendError } from "../../lib/i18n";
 import { showToast, dismissToast } from "../../components/Toast";
 import { confirm as showConfirm, alert as showAlert } from "../../lib/dialogs";
 
@@ -133,7 +133,7 @@ export function Dp2FontsEditor({ onHome, onOpenSettings }: Props) {
       const res = await window.dp2.fontsExport();
       dismissToast(progressId);
       if (!res.success) {
-        await showAlert(t("dialog.error"), res.error ?? "fonts-export failed");
+        await showAlert(t("dialog.error"), localizeBackendError(res.error) || "fonts-export failed");
         return;
       }
       const n = (res.exported ?? []).length;
@@ -178,7 +178,7 @@ export function Dp2FontsEditor({ onHome, onOpenSettings }: Props) {
       } as { pathId: number; newFontPath: string; assetsFile?: string; name?: string });
       dismissToast(progressId);
       if (!res.success) {
-        await showAlert(t("dialog.error"), res.error ?? "replace failed");
+        await showAlert(t("dialog.error"), localizeBackendError(res.error) || "replace failed");
         return;
       }
       showToast(t("fonts.toast.replaced", { name: font.name }), {
@@ -248,7 +248,7 @@ export function Dp2FontsEditor({ onHome, onOpenSettings }: Props) {
                   const w = window.dp2 as unknown as { fontsRestoreBak: () => Promise<{ success: boolean; restored?: string[]; skipped?: { file: string; reason: string }[]; error?: string }> };
                   const r = await w.fontsRestoreBak();
                   if (!r.success) {
-                    await showAlert(t("dialog.error"), r.error ?? "?");
+                    await showAlert(t("dialog.error"), localizeBackendError(r.error) || "?");
                   } else {
                     showToast(
                       t("fonts.toast.restored", { files: (r.restored || []).join(", ") || "—" }),

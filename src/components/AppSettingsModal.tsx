@@ -4,7 +4,7 @@
 // перевірка оновлень + симуляція банера для dev.
 
 import { useEffect, useState } from "react";
-import { useT, getLang, setLang, type Lang } from "../lib/i18n";
+import { useT, getLang, setLang, localizeBackendError, type Lang } from "../lib/i18n";
 
 interface Props {
   open: boolean;
@@ -77,7 +77,7 @@ export function AppSettingsModal({ open, onClose }: Props) {
       await window.dp2.saveSettings({ [settingsKey]: r.path } as Record<string, unknown>);
       setDetectStatus((m) => ({ ...m, [settingsKey]: t("set.games.detected") }));
     } else {
-      setDetectStatus((m) => ({ ...m, [settingsKey]: r.error || t("set.games.notFound") }));
+      setDetectStatus((m) => ({ ...m, [settingsKey]: localizeBackendError(r.error) || t("set.games.notFound") }));
     }
   }
 
@@ -88,7 +88,7 @@ export function AppSettingsModal({ open, onClose }: Props) {
       setUpdateResult({
         current: r.current ?? appVer,
         latest: r.latest, available: r.available,
-        error: r.ok ? undefined : r.error, htmlUrl: r.htmlUrl,
+        error: r.ok ? undefined : localizeBackendError(r.error), htmlUrl: r.htmlUrl,
       });
     } finally { setUpdateBusy(false); }
   }

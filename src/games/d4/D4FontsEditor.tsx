@@ -4,8 +4,8 @@
 //  - Грід 25 шрифтів з preview-зображенням + TTF mapping
 //  - Phase 2 (Generate + Pack) — заглушки на майбутнє.
 
-import { useCallback, useEffect, useState } from "react";
-import { useT } from "../../lib/i18n";
+import { useCallback, useEffect, useRef, useState } from "react";
+import { useT, localizeBackendError } from "../../lib/i18n";
 import { D4Hero } from "./D4Hero";
 import { D4ProgressModal, type D4FileProgress } from "./D4ProgressModal";
 import { D4FontPreviewModal } from "./D4FontPreviewModal";
@@ -88,6 +88,18 @@ export function D4FontsEditor({ onHome }: Props) {
   const [previewMode, setPreviewMode] = useState<"original" | "generated">("original");
   const [generatedPreviews, setGeneratedPreviews] = useState<Record<string, string>>({});
 
+  // Гвардія проти setState після демонтажу + тримаємо активну progress-підписку,
+  // щоб очистити її при демонтажі (операція extract/generate/pack може ще тривати).
+  const mountedRef = useRef(true);
+  const progressUnsubRef = useRef<null | (() => void)>(null);
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+      if (progressUnsubRef.current) { progressUnsubRef.current(); progressUnsubRef.current = null; }
+    };
+  }, []);
+
   const reloadStatus = useCallback(async () => {
     const s = await window.dp2.d4FontsStatus();
     setStatus(s as StatusInfo);
@@ -123,6 +135,7 @@ export function D4FontsEditor({ onHome }: Props) {
     setOpDone(false);
     setOpError(null);
     const unsub = window.dp2.onD4FontsProgress((rawLine: string) => {
+      if (!mountedRef.current) return;
       // Великий RESULT_JSON-блоб у журналі лише засмічує — лишаємо короткий
       // тег без payload, оскільки структуру вже виводимо у status-картку.
       const line = rawLine.includes("RESULT_JSON:")
@@ -173,20 +186,24 @@ export function D4FontsEditor({ onHome }: Props) {
         ));
       }
     });
+    progressUnsubRef.current = unsub;
     try {
       const r = await window.dp2.d4FontsExtract();
+      if (!mountedRef.current) return;
       setFileProgress((prev) => prev.map((p) => ({ ...p, status: r.ok ? "done" : "error" })));
       setOpDone(true);
-      if (!r.ok) setOpError(r.error ?? t("d4.unknownError"));
+      if (!r.ok) setOpError(localizeBackendError(r.error) || t("d4.unknownError"));
       else if (r.warning) setLogLines((prev) => [...prev, `[WARN] ${r.warning}`]);
       await reloadStatus();
     } catch (e) {
+      if (!mountedRef.current) return;
       setOpError(String(e instanceof Error ? e.message : e));
       setOpDone(true);
     } finally {
       unsub();
+      if (progressUnsubRef.current === unsub) progressUnsubRef.current = null;
     }
-  }, [reloadStatus]);
+  }, [reloadStatus, t]);
 
   // Генерація UA-шрифтів: для кожного шрифту з TTF mapping — викликаємо
   // make_paired_fonts.py або make_single_font.py через IPC.
@@ -200,6 +217,7 @@ export function D4FontsEditor({ onHome }: Props) {
     setOpDone(false);
     setOpError(null);
     const unsub = window.dp2.onD4FontsProgress((rawLine: string) => {
+      if (!mountedRef.current) return;
       const line = rawLine.includes("RESULT_JSON:")
         ? rawLine.replace(/RESULT_JSON:.*$/, "RESULT_JSON: …")
         : rawLine;
@@ -229,20 +247,24 @@ export function D4FontsEditor({ onHome }: Props) {
         setFileProgress((prev) => prev.map((p) => p.name === name ? { ...p, status: "error" } : p));
       }
     });
+    progressUnsubRef.current = unsub;
     try {
       const r = await window.dp2.d4FontsGenerate();
+      if (!mountedRef.current) return;
       setFileProgress((prev) => prev.map((p) => {
         const res = r.results?.find((x) => x.name === p.name);
         if (!res) return p;
         return { ...p, status: res.ok ? "done" : "error" };
       }));
       setOpDone(true);
-      if (!r.ok) setOpError(r.error ?? t("d4.unknownError"));
+      if (!r.ok) setOpError(localizeBackendError(r.error) || t("d4.unknownError"));
     } catch (e) {
+      if (!mountedRef.current) return;
       setOpError(String(e instanceof Error ? e.message : e));
       setOpDone(true);
     } finally {
       unsub();
+      if (progressUnsubRef.current === unsub) progressUnsubRef.current = null;
     }
   }, [status?.mapping, t]);
 
@@ -256,6 +278,7 @@ export function D4FontsEditor({ onHome }: Props) {
     setOpDone(false);
     setOpError(null);
     const unsub = window.dp2.onD4FontsProgress((rawLine: string) => {
+      if (!mountedRef.current) return;
       const line = rawLine.includes("RESULT_JSON:")
         ? rawLine.replace(/RESULT_JSON:.*$/, "RESULT_JSON: …")
         : rawLine;
@@ -285,20 +308,24 @@ export function D4FontsEditor({ onHome }: Props) {
         setFileProgress((prev) => prev.map((p) => p.name === name ? { ...p, status: "error" } : p));
       }
     });
+    progressUnsubRef.current = unsub;
     try {
       const r = await window.dp2.d4FontsPack();
+      if (!mountedRef.current) return;
       setFileProgress((prev) => prev.map((p) => {
         const res = r.fonts?.find((x) => x.name === p.name);
         if (!res) return p;
         return { ...p, status: res.ok ? "done" : "error" };
       }));
       setOpDone(true);
-      if (!r.ok) setOpError(r.error ?? t("d4.unknownError"));
+      if (!r.ok) setOpError(localizeBackendError(r.error) || t("d4.unknownError"));
     } catch (e) {
+      if (!mountedRef.current) return;
       setOpError(String(e instanceof Error ? e.message : e));
       setOpDone(true);
     } finally {
       unsub();
+      if (progressUnsubRef.current === unsub) progressUnsubRef.current = null;
     }
   }, [status?.mapping, t]);
 

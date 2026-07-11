@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { useT } from "../../lib/i18n";
+import { useT, localizeBackendError } from "../../lib/i18n";
 import hbrHero from "../../ui-v2/assets/hbr-hero.jpg";
 import { HbrFontsGuideModal } from "./HbrFontsGuideModal";
 
@@ -135,7 +135,7 @@ export function HbrFontsEditor({ onHome }: Props) {
       } else {
         setPhase("downloading");
         const dl = await window.dp2.hbrFontgenDownload();
-        if (!dl.ok) { setErrorMsg(dl.error || "download fail"); setPhase("error"); return; }
+        if (!dl.ok) { setErrorMsg(localizeBackendError(dl.error) || "download fail"); setPhase("error"); return; }
         setExePath(dl.exePath ?? null);
       }
       setPhase("fontgenReady");
@@ -172,14 +172,14 @@ export function HbrFontsEditor({ onHome }: Props) {
 
     setExtractKind("atlas");
     const rA = await window.dp2.hbrFontsAtlasExport();
-    if (!rA.ok) { setErrorMsg(rA.error || "atlas export failed"); setPhase("error"); return; }
+    if (!rA.ok) { setErrorMsg(localizeBackendError(rA.error) || "atlas export failed"); setPhase("error"); return; }
     if (rA.summary?.total != null) {
       setAtlasProgress({ done: rA.summary.total, total: rA.summary.total });
     }
 
     setExtractKind("mono");
     const rM = await window.dp2.hbrFontsMonoExport();
-    if (!rM.ok) { setErrorMsg(rM.error || "mono export failed"); setPhase("error"); return; }
+    if (!rM.ok) { setErrorMsg(localizeBackendError(rM.error) || "mono export failed"); setPhase("error"); return; }
     if (rM.summary?.total != null) {
       setMonoProgress({ done: rM.summary.total, total: rM.summary.total });
     }
@@ -205,7 +205,7 @@ export function HbrFontsEditor({ onHome }: Props) {
   async function launchFontgen() {
     setLaunchError(null);
     const r = await window.dp2.hbrFontgenLaunch();
-    if (!r.ok) setLaunchError(r.error || "launch failed");
+    if (!r.ok) setLaunchError(localizeBackendError(r.error) || "launch failed");
   }
 
   // Step 4: pack-back state.
@@ -238,7 +238,7 @@ export function HbrFontsEditor({ onHome }: Props) {
     try {
       const r = await window.dp2.hbrFontsImport();
       if (!r.ok) {
-        setPackResult({ ok: false, error: r.error || "pack failed" });
+        setPackResult({ ok: false, error: localizeBackendError(r.error) || "pack failed" });
         return;
       }
       setPackResult({

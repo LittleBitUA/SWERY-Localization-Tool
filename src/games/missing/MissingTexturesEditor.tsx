@@ -6,7 +6,7 @@
 // Прев'ю PNG — звичайний <img src="data:image/png;base64,…">.
 
 import { useEffect, useState } from "react";
-import { useT } from "../../lib/i18n";
+import { useT, localizeBackendError } from "../../lib/i18n";
 import { alert as dpAlert, confirm as dpConfirm } from "../../lib/dialogs";
 
 interface Props { onHome: () => void; }
@@ -49,8 +49,8 @@ export function MissingTexturesEditor({ onHome }: Props) {
 
   async function refreshStatus() {
     const s = await W.missingTexturesStatus();
-    if (!s.ok) { setPhase("error"); setErrMsg(s.error || "?"); return; }
-    if (!s.assetsOk) { setPhase("error"); setErrMsg(`sharedassets*.assets не знайдено у ${s.assetsPath ? s.assetsPath.replace(/[\\/][^\\/]+$/, "") : "?"}`); return; }
+    if (!s.ok) { setPhase("error"); setErrMsg(localizeBackendError(s.error) || "?"); return; }
+    if (!s.assetsOk) { setPhase("error"); setErrMsg(t("missing.textures.err.assetsNotFound", { dir: s.assetsPath ? s.assetsPath.replace(/[\\/][^\\/]+$/, "") : "?" })); return; }
     setItems(s.items);
     const exportedCount = s.items.filter((i) => i.hasOrig).length;
     if (exportedCount === 0) setPhase("needs-export");
@@ -68,7 +68,7 @@ export function MissingTexturesEditor({ onHome }: Props) {
   async function runExport() {
     setPhase("exporting"); setExportLog([]);
     const r = await W.missingTexturesExport();
-    if (!r.ok) { setPhase("error"); setErrMsg(r.error || "export fail"); return; }
+    if (!r.ok) { setPhase("error"); setErrMsg(localizeBackendError(r.error) || "export fail"); return; }
     await refreshStatus();
     await dpAlert(t("missing.textures.exportDoneTitle"), t("missing.textures.exportDoneBody", { n: String(r.summary?.total ?? 0) }), { tone: "success" });
   }
@@ -76,7 +76,7 @@ export function MissingTexturesEditor({ onHome }: Props) {
   async function pickReplace(it: TexItem) {
     const r = await W.missingTexturesPickReplace({ item: it });
     if (r.ok) await refreshStatus();
-    else if (r.error && r.error !== "cancelled") await dpAlert(t("missing.textures.pickErr"), r.error, { tone: "danger" });
+    else if (r.error && r.error !== "cancelled") await dpAlert(t("missing.textures.pickErr"), localizeBackendError(r.error), { tone: "danger" });
   }
 
   async function clearReplace(it: TexItem) {
@@ -96,7 +96,7 @@ export function MissingTexturesEditor({ onHome }: Props) {
     setPacking(true); setPackLog([]);
     try {
       const r = await W.missingTexturesPack();
-      if (!r.ok) { await dpAlert(t("missing.textures.packErrTitle"), r.error || "?", { tone: "danger" }); return; }
+      if (!r.ok) { await dpAlert(t("missing.textures.packErrTitle"), localizeBackendError(r.error) || "?", { tone: "danger" }); return; }
       const applied = r.summary?.applied ?? 0;
       const failed = (r.summary?.failed?.length ?? 0);
       const changed = (r.summary?.changedAssets ?? []) as string[];

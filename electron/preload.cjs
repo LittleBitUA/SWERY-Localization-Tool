@@ -61,6 +61,7 @@ contextBridge.exposeInMainWorld("dp2", {
   setupStatus: () => ipcRenderer.invoke("dp2:setup-status"),
   setupRun: (payload) => ipcRenderer.invoke("dp2:setup-run", payload),
   setupReset: () => ipcRenderer.invoke("dp2:setup-reset"),
+  setupFinish: (payload) => ipcRenderer.invoke("dp2:setup-finish", payload),
   dp1SetupStatus: () => ipcRenderer.invoke("dp2:dp1-setup-status"),
   dp1DownloadTool: () => ipcRenderer.invoke("dp2:dp1-download-tool"),
   dp1PrepMes: (payload) => ipcRenderer.invoke("dp2:dp1-prep-mes", payload),

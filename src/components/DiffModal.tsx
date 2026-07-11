@@ -6,6 +6,7 @@
 // Принципово read-only: редагуємо у головному редакторі, тут лише дивимось.
 
 import { DiffEditor } from "@monaco-editor/react";
+import { useT } from "../lib/i18n";
 
 interface Props {
   open: boolean;
@@ -23,6 +24,7 @@ interface Props {
 export function DiffModal({
   open, original, modified, title, labelModified = "UA", labelOriginal = "EN", onClose,
 }: Props) {
+  const t = useT();
   if (!open) return null;
   return (
     <div
@@ -36,7 +38,7 @@ export function DiffModal({
       >
         <div className="px-4 py-2.5 border-b border-[var(--border-soft)] flex items-center gap-3">
           <span className="text-[12px] font-semibold uppercase tracking-wider text-[var(--text-muted)]">
-            Порівняння
+            {t("components.diffModal.title")}
           </span>
           {title && (
             <span className="text-[11px] font-mono text-[var(--text-faint)] truncate">{title}</span>
@@ -50,7 +52,7 @@ export function DiffModal({
           <button
             className="dp-btn dp-btn--ghost"
             onClick={onClose}
-            title="Закрити (Esc)"
+            title={t("components.diffModal.close")}
           >
             ✕
           </button>

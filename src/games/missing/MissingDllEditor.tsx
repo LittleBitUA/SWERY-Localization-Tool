@@ -13,6 +13,7 @@
 // створюється ОДИН РАЗ — наступні apply не перезаписують його.
 
 import { useEffect, useMemo, useState } from "react";
+import { useT, localizeBackendError } from "../../lib/i18n";
 import { confirm as dpConfirm, alert as dpAlert } from "../../lib/dialogs";
 import { isInDllWhitelist, getDllUaHint, MISSING_DLL_TEXT_WHITELIST } from "./dll-text-whitelist";
 
@@ -40,6 +41,7 @@ interface W {
 const API = window.dp2 as unknown as W;
 
 export function MissingDllEditor({ open, onClose }: Props) {
+  const t = useT();
   const [phase, setPhase] = useState<"idle" | "extracting" | "ready" | "applying">("idle");
   const [items, setItems] = useState<DllItem[]>([]);
   const [edits, setEdits] = useState<Map<number, string>>(new Map());
@@ -70,20 +72,20 @@ export function MissingDllEditor({ open, onClose }: Props) {
   async function extract() {
     setPhase("extracting"); setErrMsg(null);
     const r = await API.missingDllStringsExtract();
-    if (!r.ok) { setErrMsg(r.error || "extract failed"); setPhase("idle"); return; }
+    if (!r.ok) { setErrMsg(localizeBackendError(r.error) || "extract failed"); setPhase("idle"); return; }
     setItems(r.items || []);
     setPhase("ready");
   }
 
   async function apply() {
     if (edits.size === 0) {
-      await dpAlert("Нема правок", "Спочатку відредагуйте хоча б один рядок у таблиці.", { tone: "warning" });
+      await dpAlert(t("missing.dll.noEditsTitle"), t("missing.dll.noEditsBody"), { tone: "warning" });
       return;
     }
     const ok = await dpConfirm(
-      "Записати у Assembly-CSharp.dll?",
-      `Будуть змінені ${edits.size} string-літералів у DLL. Перед записом створюється Assembly-CSharp.dll.bak (один раз). Якщо щось піде не так — можна повернутися кнопкою «Відкотити DLL».\n\nГру треба буде ПЕРЕЗАПУСТИТИ, щоб зміни підхопилися.`,
-      { okLabel: "Записати", cancelLabel: "Скасувати", tone: "warning" }
+      t("missing.dll.applyConfirmTitle"),
+      t("missing.dll.applyConfirmBody", { n: String(edits.size) }),
+      { okLabel: t("missing.dll.write"), cancelLabel: t("btn.cancel"), tone: "warning" }
     );
     if (!ok) return;
     setPhase("applying"); setErrMsg(null);
@@ -92,11 +94,11 @@ export function MissingDllEditor({ open, onClose }: Props) {
       return { id, original: it.original, replacement };
     });
     const r = await API.missingDllStringsApply({ edits: payload });
-    if (!r.ok) { setErrMsg(r.error || "apply failed"); setPhase("ready"); return; }
+    if (!r.ok) { setErrMsg(localizeBackendError(r.error) || "apply failed"); setPhase("ready"); return; }
     const skipped = r.summary?.skipped?.length ?? 0;
     await dpAlert(
-      "DLL оновлено",
-      `Записано ${r.summary?.applied ?? 0} рядків. Пропущено: ${skipped}. Перезапусти гру.`,
+      t("missing.dll.appliedTitle"),
+      t("missing.dll.appliedBody", { applied: String(r.summary?.applied ?? 0), skipped: String(skipped) }),
       { tone: skipped > 0 ? "warning" : "success" }
     );
     setEdits(new Map());
@@ -105,22 +107,22 @@ export function MissingDllEditor({ open, onClose }: Props) {
 
   async function runQuickFix() {
     const ok = await dpConfirm(
-      "Виправити обрізання діалогів?",
-      "IL-патчі у Assembly-CSharp.dll:\n\n• Ballon.CheckProperties: SizeControlType примусово UseTextInfo (2) — pухир адаптує ширину під UA-текст (без цього обрізає по character-count).\n• BallonController.CheckProperties: те саме.\n• TextExGenerator.get_WordWrapType: завжди 1 (Default) — wrap йде по пробілах між словами (без цього wrap посеред слова: «потре|бувала», «психологічн|ий»).\n\n.dll.bak створиться (якщо ще нема). Перезапусти TheMISSING.exe.",
-      { okLabel: "Виправити", cancelLabel: "Скасувати", tone: "warning" }
+      t("missing.dll.quickFixConfirmTitle"),
+      t("missing.dll.quickFixConfirmBody"),
+      { okLabel: t("missing.dll.fix"), cancelLabel: t("btn.cancel"), tone: "warning" }
     );
     if (!ok) return;
     setBusyFix(true);
     const r = await API.missingDllDialogFix();
     setBusyFix(false);
     if (!r.ok) {
-      await dpAlert("Не вдалося застосувати fix", r.error || "?", { tone: "danger" });
+      await dpAlert(t("missing.dll.quickFixFailTitle"), localizeBackendError(r.error) || "?", { tone: "danger" });
       return;
     }
     const n = r.summary?.applied ?? 0;
     await dpAlert(
-      "Готово",
-      `Застосовано ${n} IL-патчів. Перезапусти гру і перевір сцену з Емілі.`,
+      t("missing.dll.doneTitle"),
+      t("missing.dll.quickFixDoneBody", { n: String(n) }),
       { tone: "success" }
     );
     await refreshFixStatus();
@@ -128,16 +130,16 @@ export function MissingDllEditor({ open, onClose }: Props) {
 
   async function revertFix() {
     const ok = await dpConfirm(
-      "Відкотити DLL до оригіналу?",
-      "Файл Assembly-CSharp.dll буде відновлено з .dll.bak. Усі правки (і Quick Fix, і Strings) втратяться.",
-      { okLabel: "Відкотити", cancelLabel: "Скасувати", tone: "danger" }
+      t("missing.dll.revertConfirmTitle"),
+      t("missing.dll.revertConfirmBody"),
+      { okLabel: t("missing.dll.revert"), cancelLabel: t("btn.cancel"), tone: "danger" }
     );
     if (!ok) return;
     setBusyFix(true);
     const r = await API.missingDllDialogFixRevert();
     setBusyFix(false);
-    if (!r.ok) { await dpAlert("Не вдалося відкотити", r.error || "?", { tone: "danger" }); return; }
-    await dpAlert("Готово", "DLL повернено до резервної копії.", { tone: "success" });
+    if (!r.ok) { await dpAlert(t("missing.dll.revertFailTitle"), localizeBackendError(r.error) || "?", { tone: "danger" }); return; }
+    await dpAlert(t("missing.dll.doneTitle"), t("missing.dll.revertDoneBody"), { tone: "success" });
     // Скидаємо стан — items застаріли.
     setItems([]); setEdits(new Map()); setPhase("idle");
     await refreshFixStatus();
@@ -174,7 +176,7 @@ export function MissingDllEditor({ open, onClose }: Props) {
           <div className="min-w-0 flex-1">
             <h2 className="text-[15px] font-semibold text-[var(--text-strong)]">DLL · Assembly-CSharp</h2>
             <p className="text-[12px] text-[var(--text-muted)] mt-0.5">
-              Швидкий fix обрізання діалогів + редактор string-літералів з гри (Mono.Cecil).
+              {t("missing.dll.subtitle")}
             </p>
           </div>
           <button onClick={onClose} className="dp-btn dp-btn--ghost !w-7 !p-0 shrink-0">
@@ -187,7 +189,7 @@ export function MissingDllEditor({ open, onClose }: Props) {
         <div className="px-5 py-3 border-b border-[var(--border-soft)] grid gap-3" style={{ gridTemplateColumns: "1fr auto" }}>
           <div>
             <p className="text-[12.5px] font-semibold text-[var(--text-strong)] flex items-center gap-2">
-              Виправити обрізання діалогів
+              {t("missing.dll.fixHeading")}
               {fixStatus && (
                 <span
                   className={`text-[10px] px-1.5 py-0.5 rounded-full font-normal ${
@@ -197,50 +199,48 @@ export function MissingDllEditor({ open, onClose }: Props) {
                   }`}
                   title={`Ballon: ${fixStatus.ballon ? "✓" : "✗"} · BallonController: ${fixStatus.ballonController ? "✓" : "✗"} · WordWrapType: ${fixStatus.wordWrap ? "✓" : "✗"}`}
                 >
-                  {fixStatus.patched ? "✓ застосовано" : "⚠ не застосовано"}
+                  {fixStatus.patched ? t("missing.dll.fixStatusOn") : t("missing.dll.fixStatusOff")}
                 </span>
               )}
             </p>
             <p className="text-[11px] text-[var(--text-muted)] mt-0.5">
-              3 IL-патчі: <span className="font-mono">Ballon</span> + <span className="font-mono">BallonController</span> → <span className="font-mono">SizeControlType=UseTextInfo</span> (chat-bubble адаптує ширину).
-              Плюс <span className="font-mono">TextExGenerator.get_WordWrapType</span> → завжди <span className="font-mono">Default</span> (wrap йде по пробілах між словами, а не посеред слова).
-              Після patch перезапусти гру.
+              {t("missing.dll.fixDesc.p1")}<span className="font-mono">Ballon</span>{" + "}<span className="font-mono">BallonController</span>{" → "}<span className="font-mono">SizeControlType=UseTextInfo</span>{t("missing.dll.fixDesc.p2")}<span className="font-mono">TextExGenerator.get_WordWrapType</span>{t("missing.dll.fixDesc.p3")}<span className="font-mono">Default</span>{t("missing.dll.fixDesc.p4")}
             </p>
           </div>
           <div className="flex gap-2 items-center">
             <button className="dp-btn dp-btn--success" disabled={busyFix || fixStatus?.patched === true} onClick={runQuickFix}>
-              {busyFix ? "…" : fixStatus?.patched === true ? "✓ Вже застосовано" : "Виправити"}
+              {busyFix ? "…" : fixStatus?.patched === true ? t("missing.dll.alreadyApplied") : t("missing.dll.fix")}
             </button>
-            <button className="dp-btn dp-btn--ghost" disabled={busyFix || !fixStatus?.bakExists} onClick={revertFix} title="Повернути DLL з .dll.bak">
-              ↺ Відкотити
+            <button className="dp-btn dp-btn--ghost" disabled={busyFix || !fixStatus?.bakExists} onClick={revertFix} title={t("missing.dll.revertBtnTitle")}>
+              ↺ {t("missing.dll.revert")}
             </button>
           </div>
         </div>
 
         <div className="px-5 py-3 border-b border-[var(--border-soft)] flex flex-wrap items-center gap-3">
           <button className="dp-btn dp-btn--primary" disabled={phase === "extracting" || phase === "applying"} onClick={extract}>
-            {phase === "extracting" ? "Витягую…" : (items.length ? "Перевитягти" : "Витягнути всі рядки")}
+            {phase === "extracting" ? t("missing.dll.extracting") : (items.length ? t("missing.dll.reExtract") : t("missing.dll.extractAll"))}
           </button>
           {items.length > 0 && (
             <>
               <input
                 type="search"
                 className="dp-input flex-1 max-w-md"
-                placeholder="Пошук за type / method / текстом…"
+                placeholder={t("missing.dll.searchPlaceholder")}
                 value={search}
                 onChange={(e) => setSearch(e.target.value)}
               />
-              <label className="flex items-center gap-1.5 text-[11px] text-[var(--text-muted)]" title={`Built-in whitelist із ${MISSING_DLL_TEXT_WHITELIST.length} user-facing ldstr-позицій (меню якості графіки, мова, ON/OFF тригери). Стабільний по type+method+offset — спрацює і на оригінальній EN-DLL.`}>
+              <label className="flex items-center gap-1.5 text-[11px] text-[var(--text-muted)]" title={t("missing.dll.whitelistTitle", { n: String(MISSING_DLL_TEXT_WHITELIST.length) })}>
                 <input type="checkbox" checked={onlyWhitelist} onChange={(e) => setOnlyWhitelist(e.target.checked)} />
-                <span>Лише UI-кандидати ({whitelistCount}/{MISSING_DLL_TEXT_WHITELIST.length})</span>
+                <span>{t("missing.dll.onlyUiCandidates")} ({whitelistCount}/{MISSING_DLL_TEXT_WHITELIST.length})</span>
               </label>
               <label className="flex items-center gap-1.5 text-[11px] text-[var(--text-muted)]">
                 <input type="checkbox" checked={onlyEdited} onChange={(e) => setOnlyEdited(e.target.checked)} />
-                <span>Лише відредаговані ({edits.size})</span>
+                <span>{t("missing.dll.onlyEdited")} ({edits.size})</span>
               </label>
               <span className="ml-auto text-[11px] text-[var(--text-faint)] tabular-nums">{filtered.length}/{items.length}</span>
               <button className="dp-btn dp-btn--success" disabled={edits.size === 0 || phase === "applying"} onClick={apply}>
-                {phase === "applying" ? "Записую…" : `Записати у DLL (${edits.size})`}
+                {phase === "applying" ? t("missing.dll.writing") : `${t("missing.dll.writeToDll")} (${edits.size})`}
               </button>
             </>
           )}
@@ -255,7 +255,7 @@ export function MissingDllEditor({ open, onClose }: Props) {
         <div className="flex-1 min-h-0 overflow-auto">
           {phase === "idle" && items.length === 0 && (
             <p className="py-10 text-center text-[12.5px] text-[var(--text-muted)]">
-              Натисни «Витягнути всі рядки», щоб побачити string-літерали з Assembly-CSharp.dll.
+              {t("missing.dll.emptyHint")}
             </p>
           )}
           {items.length > 0 && (
@@ -264,7 +264,7 @@ export function MissingDllEditor({ open, onClose }: Props) {
                 <tr className="text-[10px] uppercase tracking-wider text-[var(--text-faint)]">
                   <th className="text-left px-3 py-1.5 w-[40%]">Type / Method · Offset</th>
                   <th className="text-left px-2 py-1.5">Original (EN)</th>
-                  <th className="text-left px-2 py-1.5">Переклад (UA)</th>
+                  <th className="text-left px-2 py-1.5">{t("missing.dll.col.translation")}</th>
                 </tr>
               </thead>
               <tbody>
@@ -274,7 +274,7 @@ export function MissingDllEditor({ open, onClose }: Props) {
                   // Placeholder показує uaHint, якщо позиція у whitelist'і. Це
                   // дає перекладачеві старт із готового UA-варіанта (з нашого
                   // built-in словника), а не «(не редаговано)».
-                  const placeholder = uaHint ?? "(не редаговано)";
+                  const placeholder = uaHint ?? t("missing.dll.notEdited");
                   return (
                     <tr key={it.id} className="border-b border-[var(--border-soft)] hover:bg-[var(--row-hover)]">
                       <td className="px-3 py-1 font-mono text-[10.5px] text-[var(--text-muted)] align-top">
@@ -306,7 +306,7 @@ export function MissingDllEditor({ open, onClose }: Props) {
                               type="button"
                               className="dp-btn dp-btn--ghost !px-1.5 !py-0.5 text-[10px] shrink-0"
                               onClick={() => setEdits((prev) => new Map(prev).set(it.id, uaHint))}
-                              title={`Вставити: «${uaHint}»`}
+                              title={t("missing.dll.insertHint", { v: uaHint })}
                             >
                               ↧
                             </button>
@@ -319,7 +319,7 @@ export function MissingDllEditor({ open, onClose }: Props) {
                 {filtered.length > 500 && (
                   <tr>
                     <td colSpan={3} className="px-3 py-2 text-center text-[10.5px] text-[var(--text-faint)] italic">
-                      Показано перші 500 з {filtered.length}. Уточни пошук, щоб побачити інші.
+                      {t("missing.dll.truncated", { n: String(filtered.length) })}
                     </td>
                   </tr>
                 )}

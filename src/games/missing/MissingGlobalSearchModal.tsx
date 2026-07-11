@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { useT } from "../../lib/i18n";
 import { parseMissingMsg } from "./parser";
 
 interface FileItem {
@@ -81,6 +82,7 @@ function highlight(text: string, query: string, caseSensitive: boolean) {
 }
 
 export function MissingGlobalSearchModal({ open, onClose, files, onGoTo }: Props) {
+  const t = useT();
   const [draft, setDraft] = useState("");
   const [query, setQuery] = useState("");
   const [caseSensitive, setCaseSensitive] = useState(false);
@@ -118,9 +120,9 @@ export function MissingGlobalSearchModal({ open, onClose, files, onGoTo }: Props
       <div className="dp-card w-full max-w-4xl flex flex-col" style={{ maxHeight: "85vh" }} onClick={(e) => e.stopPropagation()}>
         <div className="flex items-center justify-between gap-3 px-5 py-3 border-b border-[var(--border-soft)]">
           <div className="min-w-0 flex-1">
-            <h2 className="text-[15px] font-semibold text-[var(--text-strong)]">Глобальний пошук</h2>
+            <h2 className="text-[15px] font-semibold text-[var(--text-strong)]">{t("missing.search.title")}</h2>
             <p className="text-[12px] text-[var(--text-muted)] mt-0.5">
-              {loading ? "Шукаю…" : query ? `${hits.length} результатів у ${files.length} файлах${hits.length >= 500 ? " (обрізано до 500)" : ""}` : "Введи запит — шукаємо по оригіналу та перекладу"}
+              {loading ? t("missing.search.searching") : query ? t("missing.search.results", { hits: String(hits.length), files: String(files.length) }) + (hits.length >= 500 ? t("missing.search.truncatedSuffix") : "") : t("missing.search.prompt")}
             </p>
           </div>
           <button onClick={onClose} className="dp-btn dp-btn--ghost !w-7 !p-0 shrink-0">
@@ -135,7 +137,7 @@ export function MissingGlobalSearchModal({ open, onClose, files, onGoTo }: Props
             autoFocus
             type="text"
             className="dp-input flex-1 min-w-[200px]"
-            placeholder="Що шукаємо? (Ctrl+Shift+F)"
+            placeholder={t("missing.search.placeholder")}
             value={draft}
             onChange={(e) => setDraft(e.target.value)}
           />
@@ -147,10 +149,10 @@ export function MissingGlobalSearchModal({ open, onClose, files, onGoTo }: Props
 
         <div className="flex-1 overflow-auto">
           {!query.trim() && (
-            <p className="py-10 text-center text-[12px] text-[var(--text-faint)] italic">Почни писати, щоб побачити результати</p>
+            <p className="py-10 text-center text-[12px] text-[var(--text-faint)] italic">{t("missing.search.startTyping")}</p>
           )}
           {query.trim() && !loading && hits.length === 0 && (
-            <p className="py-10 text-center text-[12px] text-[var(--text-faint)]">Нічого не знайдено.</p>
+            <p className="py-10 text-center text-[12px] text-[var(--text-faint)]">{t("missing.search.nothing")}</p>
           )}
           {hits.length > 0 && (
             <div className="divide-y divide-[var(--border-soft)]">

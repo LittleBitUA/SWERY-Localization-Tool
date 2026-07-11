@@ -10,6 +10,7 @@
 // бути спільні (Resizer тощо), а основна таблиця/Monaco — DP1-specific.
 
 import { create } from "zustand";
+import { localizeBackendError } from "../../lib/i18n";
 import type { Dp1Record, Dp1Meta } from "../../lib/ipc";
 import { isDp1RecordTranslated, dp1HasMarkerIssues } from "./parser";
 
@@ -70,7 +71,7 @@ export const useDp1Store = create<Dp1State>((set, get) => ({
     try {
       const r = await window.dp2.dp1TextLoad();
       if (!r.ok || !r.original || !r.done) {
-        set({ loading: false, error: r.error ?? "load failed" });
+        set({ loading: false, error: localizeBackendError(r.error) || "load failed" });
         return;
       }
       const original = r.original;

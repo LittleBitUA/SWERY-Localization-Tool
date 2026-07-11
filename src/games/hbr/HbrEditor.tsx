@@ -1,5 +1,5 @@
 import { memo, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
-import { useT } from "../../lib/i18n";
+import { useT, localizeBackendError } from "../../lib/i18n";
 import { alert as showAlert } from "../../lib/dialogs";
 import { applyCombinedToParsed, applyHbrEdits, formatHbrCombinedTxt, isHbrItemTranslatedByParser, isHbrSystemRow, parseHbrCombinedTxt, parseHbrJson, validatePlaceholders, type HbrParsedFile, type HbrTextItem } from "./parser";
 import { EditorFooter } from "../../components/EditorFooter";
@@ -513,7 +513,7 @@ export function HbrEditor({ onHome }: Props) {
       if (!r.ok || !r.raw) {
         const o = await w.hbrTextRead(file.origPath);
         if (!o.ok || !o.raw) {
-          showError("Не вдалося прочитати файл", "Bulk-mark");
+          showError(t("hbr.editor.toast.readFileFailed"), "Bulk-mark");
           return;
         }
         r.raw = o.raw;
@@ -522,7 +522,7 @@ export function HbrEditor({ onHome }: Props) {
       const p = parseHbrJson(r.raw, origRes.ok ? origRes.raw! : null, file.donePath, file.origPath);
       const keys = p.items.map((it) => statusKey(file.file, it.textId, it.variantIdx));
       if (keys.length === 0) {
-        showError("У файлі нема рядків для позначення", "Bulk-mark");
+        showError(t("hbr.editor.toast.noRowsToMark"), "Bulk-mark");
         return;
       }
       setStatusFile((f) => {
@@ -537,8 +537,8 @@ export function HbrEditor({ onHome }: Props) {
       });
       showOk(
         mark
-          ? `Позначено ${keys.length} рядків як перекладені`
-          : `Знято позначку з ${keys.length} рядків`,
+          ? t("hbr.editor.toast.markedN", { n: keys.length })
+          : t("hbr.editor.toast.unmarkedN", { n: keys.length }),
         file.file,
       );
     } catch (e) {
@@ -613,11 +613,11 @@ export function HbrEditor({ onHome }: Props) {
       setExtractedCount(0);
       setProgressLines([]);
       const r = await w.hbrTextPrepExtract();
-      if (!r.ok) { setErrorMsg(r.error || "extract fail"); setPhase("error"); return; }
+      if (!r.ok) { setErrorMsg(localizeBackendError(r.error) || "extract fail"); setPhase("error"); return; }
       setStep("extract", "done");
       setStep("mirror", "running");
       const mr = await w.hbrTextPrepMirror({ overwrite: false });
-      if (!mr.ok) { setErrorMsg(mr.error || "mirror fail"); setPhase("error"); return; }
+      if (!mr.ok) { setErrorMsg(localizeBackendError(mr.error) || "mirror fail"); setPhase("error"); return; }
       setStep("mirror", "done");
       await refreshFiles();
       setPhase("ready");
@@ -653,7 +653,7 @@ export function HbrEditor({ onHome }: Props) {
       // редактор, без блимання майстра з трьома галочками.
       let s = await w.hbrTextPrepStatus();
       setStatus(s);
-      if (!s.ok) { setErrorMsg(s.error || "status fail"); setPhase("error"); return; }
+      if (!s.ok) { setErrorMsg(localizeBackendError(s.error) || "status fail"); setPhase("error"); return; }
       const fullyReady =
         !!s.originalCount && (s.doneCount ?? 0) >= (s.originalCount ?? 0);
       if (fullyReady) {
@@ -683,7 +683,7 @@ export function HbrEditor({ onHome }: Props) {
           setStep("tool", "skipped");
         } else {
           const dl = await w.hbrToolsDownload();
-          if (!dl.ok) { setErrorMsg(dl.error || "tool download fail"); setPhase("error"); return; }
+          if (!dl.ok) { setErrorMsg(localizeBackendError(dl.error) || "tool download fail"); setPhase("error"); return; }
           await sleep(400);
           setStep("tool", "done");
         }
@@ -691,13 +691,13 @@ export function HbrEditor({ onHome }: Props) {
         // Step 2 — catalog.json patch.
         setStep("catalog", "running");
         const cs = await w.hbrCatalogStatus();
-        if (!cs.ok) { setErrorMsg(cs.error || "catalog status fail"); setPhase("error"); return; }
+        if (!cs.ok) { setErrorMsg(localizeBackendError(cs.error) || "catalog status fail"); setPhase("error"); return; }
         if (cs.hasOld) {
           await sleep(700);
           setStep("catalog", "skipped");
         } else {
           const cp = await w.hbrCatalogPatch();
-          if (!cp.ok) { setErrorMsg(cp.error || "catalog patch fail"); setPhase("error"); return; }
+          if (!cp.ok) { setErrorMsg(localizeBackendError(cp.error) || "catalog patch fail"); setPhase("error"); return; }
           await sleep(400);
           setStep("catalog", cp.alreadyPatched ? "skipped" : "done");
         }
@@ -705,7 +705,7 @@ export function HbrEditor({ onHome }: Props) {
         // Step 3 — extract text.
         setStep("extract", "running");
         const r = await w.hbrTextPrepExtract();
-        if (!r.ok) { setErrorMsg(r.error || "extract fail"); setPhase("error"); return; }
+        if (!r.ok) { setErrorMsg(localizeBackendError(r.error) || "extract fail"); setPhase("error"); return; }
         setStep("extract", "done");
         s = await w.hbrTextPrepStatus(); setStatus(s);
       }
@@ -714,7 +714,7 @@ export function HbrEditor({ onHome }: Props) {
       if (!s.doneCount || (s.doneCount ?? 0) < (s.originalCount ?? 0)) {
         setStep("mirror", "running");
         const r = await w.hbrTextPrepMirror({ overwrite: false });
-        if (!r.ok) { setErrorMsg(r.error || "mirror fail"); setPhase("error"); return; }
+        if (!r.ok) { setErrorMsg(localizeBackendError(r.error) || "mirror fail"); setPhase("error"); return; }
         setStep("mirror", "done");
       } else if (steps.mirror !== "skipped") {
         setStep("mirror", "skipped");
@@ -744,7 +744,7 @@ export function HbrEditor({ onHome }: Props) {
     if (dirty && activeFile && parsed) {
       try { await saveActive(); }
       catch (e) {
-        showError(e instanceof Error ? e.message : String(e), `Не вдалося зберегти ${activeFile.file} перед переключенням`);
+        showError(e instanceof Error ? e.message : String(e), t("hbr.editor.toast.saveBeforeSwitchFailed", { file: activeFile.file }));
       }
     }
     setActiveFile(f);
@@ -1092,7 +1092,7 @@ export function HbrEditor({ onHome }: Props) {
   // на запит юзера ("додай TM, щоб я не перекладав 'Yes' двадцять разів").
   function applyTmToActiveFile() {
     if (!parsed) return;
-    if (tm.size === 0) { showError("TM порожній — у проєкті ще немає перекладів", "Translation Memory"); return; }
+    if (tm.size === 0) { showError(t("hbr.editor.toast.tmEmpty"), "Translation Memory"); return; }
     const items = parsed.items.slice();
     let applied = 0;
     for (let i = 0; i < items.length; i++) {
@@ -1106,10 +1106,10 @@ export function HbrEditor({ onHome }: Props) {
       items[i] = { ...it, current: hit.translation };
       applied++;
     }
-    if (applied === 0) { showOk("Нічого підходящого з TM", "Translation Memory"); return; }
+    if (applied === 0) { showOk(t("hbr.editor.toast.tmNothingSuitable"), "Translation Memory"); return; }
     setParsed({ ...parsed, items });
     setDirty(true);
-    showOk(`Auto-fill: ${applied} рядків з Translation Memory`, "Translation Memory");
+    showOk(t("hbr.editor.toast.tmAutofillN", { n: applied }), "Translation Memory");
   }
 
   // Знайти перший неперекладений рядок у всьому проєкті. Іде по всіх файлах,
@@ -1135,12 +1135,12 @@ export function HbrEditor({ onHome }: Props) {
           // Знайдено! Відкриваємо файл, ставимо активним рядок.
           await openFile(f);
           setActiveItemIndex(i);
-          showOk(`Знайдено у ${f.file}, textId=${it.textId}`, "Untranslated");
+          showOk(t("hbr.editor.toast.foundInFile", { file: f.file, id: it.textId }), "Untranslated");
           return;
         }
       } catch { /* skip broken file */ }
     }
-    showOk("Усі рядки перекладені або позначені перекладеними 🎉", "Untranslated");
+    showOk(t("hbr.editor.toast.allTranslated"), "Untranslated");
   }
 
   // Перевірка patch-міграції: коли редактор стає ready, питаємо main чи bundle
@@ -1187,7 +1187,7 @@ export function HbrEditor({ onHome }: Props) {
       };
       const r = await w.hbrPatchMigrate();
       if (!r.ok) {
-        await showAlert(t("hbr.migrate.errTitle"), r.error || "?", { tone: "danger" });
+        await showAlert(t("hbr.migrate.errTitle"), localizeBackendError(r.error) || "?", { tone: "danger" });
         return;
       }
       await showAlert(
@@ -1323,13 +1323,13 @@ export function HbrEditor({ onHome }: Props) {
       const errors: string[] = [...parsed.warnings];
       for (const block of parsed.blocks) {
         const fileItem = files.find((x) => x.file === block.fileName);
-        if (!fileItem) { errors.push(`Файл [${block.fileName}] не знайдено у Done — пропущено`); continue; }
+        if (!fileItem) { errors.push(t("hbr.editor.toast.importFileNotFound", { file: block.fileName })); continue; }
         const doneRes = await w.hbrTextRead(fileItem.donePath);
         const origRes = await w.hbrTextRead(fileItem.origPath);
-        if (!doneRes.ok || !doneRes.raw) { errors.push(`Не прочитано ${block.fileName}`); continue; }
+        if (!doneRes.ok || !doneRes.raw) { errors.push(t("hbr.editor.toast.importReadFailed", { file: block.fileName })); continue; }
         const parsedFile = parseHbrJson(doneRes.raw, origRes.ok ? origRes.raw! : null, fileItem.donePath, fileItem.origPath);
         const apply = applyCombinedToParsed(parsedFile, block.records);
-        for (const k of apply.missing) errors.push(`[${block.fileName}] запис не знайдено: ${k}`);
+        for (const k of apply.missing) errors.push(t("hbr.editor.toast.importRecordNotFound", { file: block.fileName, key: k }));
         if (apply.updated > 0) {
           // applyHbrEdits тепер кидає при невідповідності кількості _Text у raw vs items.
           // Це сигналізує що bundle оновлено між extract і import — пропускаємо файл,
@@ -1342,7 +1342,7 @@ export function HbrEditor({ onHome }: Props) {
             continue;
           }
           const wr = await w.hbrTextWrite({ fullPath: fileItem.donePath, raw: newRaw });
-          if (!wr.ok) { errors.push(`Не вдалося записати ${block.fileName}: ${wr.error}`); continue; }
+          if (!wr.ok) { errors.push(t("hbr.editor.toast.importWriteFailed", { file: block.fileName, error: wr.error ?? "" })); continue; }
           updatedFiles.push({ name: block.fileName, updated: apply.updated });
           totalUpdated += apply.updated;
         }
@@ -1422,7 +1422,7 @@ export function HbrEditor({ onHome }: Props) {
       if (mode === "release") {
         const r = await w.hbrBuildRelease();
         if (!r.ok) {
-          await showAlert(t("hbr.pack.errTitle"), r.error ?? "?", { tone: "danger" });
+          await showAlert(t("hbr.pack.errTitle"), localizeBackendError(r.error) || "?", { tone: "danger" });
           return;
         }
         const applied = r.packSummary?.applied ?? 0;
@@ -1442,7 +1442,7 @@ export function HbrEditor({ onHome }: Props) {
       const r = await w.hbrPackIntoGame();
       if (!r.ok) {
         const logHint = r.logPath ? `\n\n${t("hbr.pack.logSaved", { path: r.logPath })}` : "";
-        await showAlert(t("hbr.pack.errTitle"), (r.error ?? "?") + logHint, { tone: "danger" });
+        await showAlert(t("hbr.pack.errTitle"), (localizeBackendError(r.error) || "?") + logHint, { tone: "danger" });
         return;
       }
       setPackSuccess({
@@ -1526,85 +1526,85 @@ export function HbrEditor({ onHome }: Props) {
     const out: CommandItem[] = [];
     // Дії
     out.push({
-      id: "save", category: "Дії", icon: "💾", label: "Зберегти файл",
+      id: "save", category: t("hbr.editor.cmd.catActions"), icon: "💾", label: t("hbr.editor.cmd.save"),
       shortcut: "Ctrl+S", disabled: !parsed || !dirty || saving,
       run: () => { void saveActive(); },
     });
     out.push({
-      id: "pack", category: "Дії", icon: "📦", label: "Pack у bundle",
+      id: "pack", category: t("hbr.editor.cmd.catActions"), icon: "📦", label: t("hbr.editor.cmd.pack"),
       disabled: saving || !files.length,
       run: () => setPackMenuOpen(true),
     });
     out.push({
-      id: "export", category: "Дії", icon: "↓", label: t("hbr.combined.exportBtn"),
+      id: "export", category: t("hbr.editor.cmd.catActions"), icon: "↓", label: t("hbr.combined.exportBtn"),
       disabled: saving || !files.length,
       run: () => { void exportCombined(); },
     });
     out.push({
-      id: "import", category: "Дії", icon: "↑", label: t("hbr.combined.importBtn"),
+      id: "import", category: t("hbr.editor.cmd.catActions"), icon: "↑", label: t("hbr.combined.importBtn"),
       disabled: saving || !files.length,
       run: () => { void importCombined(); },
     });
     // Інструменти
     out.push({
-      id: "stats", category: "Інструменти", icon: "📊", label: t("hbr.stats.btn"),
+      id: "stats", category: t("hbr.editor.cmd.catTools"), icon: "📊", label: t("hbr.stats.btn"),
       disabled: saving, run: () => setStatsOpen(true),
     });
     out.push({
-      id: "reextract", category: "Інструменти", icon: "🔄", label: t("hbr.reextract.btn"),
+      id: "reextract", category: t("hbr.editor.cmd.catTools"), icon: "🔄", label: t("hbr.reextract.btn"),
       disabled: saving, run: () => { void reExtractFromGame(); },
     });
     out.push({
-      id: "findReplace", category: "Інструменти", icon: "🔍", label: "Знайти / Замінити у файлі",
+      id: "findReplace", category: t("hbr.editor.cmd.catTools"), icon: "🔍", label: t("hbr.editor.cmd.findReplace"),
       shortcut: "Ctrl+H", disabled: !parsed || !parsed.items.length,
       run: () => setFindReplaceOpen(true),
     });
     out.push({
-      id: "tm-apply", category: "Інструменти", icon: "✨", label: "Translation Memory: auto-fill",
-      hint: `${tm.size} оригіналів`, disabled: !parsed || tm.size === 0,
+      id: "tm-apply", category: t("hbr.editor.cmd.catTools"), icon: "✨", label: t("hbr.editor.cmd.tmApply"),
+      hint: t("hbr.editor.cmd.tmApplyHint", { n: tm.size }), disabled: !parsed || tm.size === 0,
       run: () => applyTmToActiveFile(),
     });
     out.push({
-      id: "tm-rebuild", category: "Інструменти", icon: "🔁", label: "Translation Memory: перерахувати",
+      id: "tm-rebuild", category: t("hbr.editor.cmd.catTools"), icon: "🔁", label: t("hbr.editor.cmd.tmRebuild"),
       run: () => { void rebuildTm(); },
     });
     out.push({
-      id: "find-untranslated", category: "Інструменти", icon: "🔎",
-      label: "Знайти перший неперекладений рядок",
+      id: "find-untranslated", category: t("hbr.editor.cmd.catTools"), icon: "🔎",
+      label: t("hbr.editor.cmd.findUntranslated"),
       keywords: "untranslated 99 99% missing search неперекладений",
       disabled: files.length === 0,
       run: () => { void findFirstUntranslated(); },
     });
     out.push({
-      id: "glossary", category: "Інструменти", icon: "📚", label: "Glossary…",
+      id: "glossary", category: t("hbr.editor.cmd.catTools"), icon: "📚", label: "Glossary…",
       disabled: !status?.doneDir, run: () => setGlossaryOpen(true),
     });
     out.push({
-      id: "diff-view", category: "Інструменти", icon: "🧬", label: "Перегляд змін bundle",
+      id: "diff-view", category: t("hbr.editor.cmd.catTools"), icon: "🧬", label: t("hbr.editor.cmd.diffView"),
       disabled: diffEntries.length === 0,
-      hint: diffEntries.length > 0 ? `${diffEntries.length} змін` : "немає",
+      hint: diffEntries.length > 0 ? t("hbr.editor.cmd.diffHintN", { n: diffEntries.length }) : t("hbr.editor.cmd.diffHintNone"),
       run: () => setDiffOpen(true),
     });
     out.push({
-      id: "monaco-toggle", category: "Перегляд",
+      id: "monaco-toggle", category: t("hbr.editor.cmd.catView"),
       icon: monacoCollapsed ? "▶" : "◀",
-      label: monacoCollapsed ? "Показати редактор справа" : "Сховати редактор справа",
+      label: monacoCollapsed ? t("hbr.editor.cmd.monacoShow") : t("hbr.editor.cmd.monacoHide"),
       run: () => setMonacoCollapsed(!monacoCollapsed),
     });
     out.push({
-      id: "shortcuts", category: "Перегляд", icon: "⌨", label: "Гарячі клавіші",
+      id: "shortcuts", category: t("hbr.editor.cmd.catView"), icon: "⌨", label: t("hbr.editor.cmd.shortcuts"),
       shortcut: "?", run: () => setShortcutsOpen(true),
     });
     // Фільтри активного файлу
     const filters: Array<[RowFilter, string]> = [
-      ["all", "Усі рядки"],
-      ["untranslated", "Лиш неперекладені"],
-      ["translated", "Лиш перекладені"],
-      ["samesAsOriginal", "Однакові з оригіналом"],
+      ["all", t("hbr.editor.filter.all")],
+      ["untranslated", t("hbr.editor.filter.untranslated")],
+      ["translated", t("hbr.editor.filter.translated")],
+      ["samesAsOriginal", t("hbr.editor.filter.sameAsOriginal")],
     ];
     for (const [k, lab] of filters) {
       out.push({
-        id: `filter-${k}`, category: "Фільтр рядків",
+        id: `filter-${k}`, category: t("hbr.editor.cmd.catRowFilter"),
         icon: rowFilter === k ? "●" : "○",
         label: lab, run: () => setRowFilter(k),
       });
@@ -1614,7 +1614,7 @@ export function HbrEditor({ onHome }: Props) {
       const st = fileStats[f.file];
       const pct = st && st.total > 0 ? Math.round((st.translated / st.total) * 100) : 0;
       out.push({
-        id: `file-${f.donePath}`, category: "Перехід до файлу", icon: "📄",
+        id: `file-${f.donePath}`, category: t("hbr.editor.cmd.catGotoFile"), icon: "📄",
         label: f.file, hint: st ? `${st.translated}/${st.total} · ${pct}%` : undefined,
         run: () => { void openFile(f); },
       });
@@ -1634,7 +1634,7 @@ export function HbrEditor({ onHome }: Props) {
             <HeaderProgress
               translated={tr}
               total={projectStats.total}
-              title={`Загальний прогрес проєкту · ${projectStats.files} файлів`}
+              title={t("hbr.editor.projectProgressTitle", { n: projectStats.files })}
             />
           );
         })()}
@@ -1644,7 +1644,7 @@ export function HbrEditor({ onHome }: Props) {
             <button
               className="dp-btn dp-btn--ghost"
               onClick={() => setCmdOpen(true)}
-              title="Командна палітра (Ctrl+K)"
+              title={t("hbr.editor.cmdPaletteTitle")}
             >
               <svg className="w-3.5 h-3.5 inline" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
                 <path strokeLinecap="round" strokeLinejoin="round" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
@@ -1652,26 +1652,26 @@ export function HbrEditor({ onHome }: Props) {
               <span className="ml-1 text-[10px] font-mono px-1 py-0.5 border border-[var(--border-soft)] rounded">⌘K</span>
             </button>
             <HeaderMenu
-              trigger={<span className="flex items-center gap-1"><span aria-hidden>🛠</span> Інструменти</span>}
+              trigger={<span className="flex items-center gap-1"><span aria-hidden>🛠</span> {t("hbr.editor.menu.tools")}</span>}
               items={[
                 { icon: "📊", label: t("hbr.stats.btn"), title: t("hbr.stats.btnHint"), disabled: saving, onClick: () => setStatsOpen(true) },
                 { icon: "🔄", label: t("hbr.reextract.btn"), title: t("hbr.reextract.hint"), disabled: saving, onClick: () => reExtractFromGame() },
-                { icon: "🔍", label: "Знайти / Замінити", shortcut: "Ctrl+H", disabled: !parsed || !parsed.items.length, onClick: () => setFindReplaceOpen(true) },
+                { icon: "🔍", label: t("hbr.editor.menu.findReplace"), shortcut: "Ctrl+H", disabled: !parsed || !parsed.items.length, onClick: () => setFindReplaceOpen(true) },
                 {},
-                { icon: "✨", label: `Translation Memory: auto-fill`, title: `${tm.size} оригіналів у пам'яті`, disabled: !parsed || tm.size === 0, onClick: () => applyTmToActiveFile() },
-                { icon: "🔎", label: "Знайти неперекладений рядок", title: "Сканує всі файли і відкриває перший неперекладений рядок. Корисно коли % застряг на 99.9%.", disabled: files.length === 0, onClick: () => { void findFirstUntranslated(); } },
-                { icon: "📚", label: "Glossary…", title: "Терміновий словник UK ↔ EN для консистентності перекладу", disabled: !status?.doneDir, onClick: () => setGlossaryOpen(true) },
-                { icon: "🧬", label: "Перегляд змін bundle…", title: "Diff між старим/новим bundle після patch-migrate", disabled: diffEntries.length === 0, onClick: () => setDiffOpen(true) },
+                { icon: "✨", label: t("hbr.editor.cmd.tmApply"), title: t("hbr.editor.menu.tmApplyTitle", { n: tm.size }), disabled: !parsed || tm.size === 0, onClick: () => applyTmToActiveFile() },
+                { icon: "🔎", label: t("hbr.editor.menu.findUntranslated"), title: t("hbr.editor.menu.findUntranslatedTitle"), disabled: files.length === 0, onClick: () => { void findFirstUntranslated(); } },
+                { icon: "📚", label: "Glossary…", title: t("hbr.editor.menu.glossaryTitle"), disabled: !status?.doneDir, onClick: () => setGlossaryOpen(true) },
+                { icon: "🧬", label: t("hbr.editor.menu.diffView"), title: t("hbr.editor.menu.diffViewTitle"), disabled: diffEntries.length === 0, onClick: () => setDiffOpen(true) },
               ]}
             />
             <HeaderMenu
-              trigger={<span className="flex items-center gap-1"><span aria-hidden>📁</span> Файл</span>}
+              trigger={<span className="flex items-center gap-1"><span aria-hidden>📁</span> {t("hbr.editor.menu.file")}</span>}
               items={[
                 { icon: "↓", label: t("hbr.combined.exportBtn"), title: t("hbr.combined.exportBtnHint"), disabled: saving || !files.length, onClick: () => exportCombined() },
                 { icon: "↑", label: t("hbr.combined.importBtn"), title: t("hbr.combined.importBtnHint"), disabled: saving || !files.length, onClick: () => importCombined() },
                 {},
-                { icon: "⌨", label: "Гарячі клавіші", shortcut: "?", onClick: () => setShortcutsOpen(true) },
-                { icon: monacoCollapsed ? "▶" : "◀", label: monacoCollapsed ? "Показати pane редактора" : "Сховати pane редактора", onClick: () => setMonacoCollapsed(!monacoCollapsed) },
+                { icon: "⌨", label: t("hbr.editor.cmd.shortcuts"), shortcut: "?", onClick: () => setShortcutsOpen(true) },
+                { icon: monacoCollapsed ? "▶" : "◀", label: monacoCollapsed ? t("hbr.editor.menu.monacoShow") : t("hbr.editor.menu.monacoHide"), onClick: () => setMonacoCollapsed(!monacoCollapsed) },
               ]}
             />
             <button
@@ -2172,13 +2172,13 @@ export function HbrEditor({ onHome }: Props) {
                   className="px-3 py-1.5 hover:bg-[var(--row-hover)] cursor-pointer text-[var(--success)]"
                   onClick={() => { void bulkMarkFileTranslated(file, true); setCtxMenu(null); }}
                 >
-                  ✓ Позначити увесь файл перекладеним
+                  {t("hbr.editor.menu.markFileTranslated")}
                 </li>
                 <li
                   className={`px-3 py-1.5 hover:bg-[var(--row-hover)] cursor-pointer ${isFullyMarked ? "text-[var(--text)]" : "text-[var(--text-faint)]"}`}
                   onClick={() => { void bulkMarkFileTranslated(file, false); setCtxMenu(null); }}
                 >
-                  ✗ Зняти позначку з усього файлу
+                  {t("hbr.editor.menu.unmarkFile")}
                 </li>
                 <li className="border-t border-[var(--border-soft)] my-1" />
                 <li
@@ -2415,7 +2415,7 @@ export function HbrEditor({ onHome }: Props) {
             <button
               className="w-7 shrink-0 border-l border-[var(--border-soft)] text-[var(--text-faint)] hover:bg-[var(--row-hover)] hover:text-[var(--text)] flex flex-col items-center justify-center gap-1"
               onClick={() => setMonacoCollapsed(false)}
-              title="Розгорнути pane редактора"
+              title={t("hbr.editor.expandEditorTitle")}
             >
               <span aria-hidden>◀</span>
               <span className="text-[9px] [writing-mode:vertical-rl] tracking-wider uppercase">Editor</span>

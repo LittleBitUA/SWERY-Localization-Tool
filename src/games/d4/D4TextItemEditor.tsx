@@ -216,6 +216,21 @@ export function D4TextItemEditor({ file, onClose }: Props) {
     return { total, translated, pct };
   }, [done, origByName]);
 
+  // Пер-запис {tr,total} — рахуємо ОДИН раз (не на кожен рендер сайдбар-рядка).
+  // Раніше кожен видимий рядок перераховував це на кожне натискання у пошуку
+  // → O(видимих × рядків) за клавішу. Тепер перерахунок лише коли done змінився.
+  const perEntryCounts = useMemo(() => {
+    const out: Array<{ tr: number; total: number }> = [];
+    for (const m of done) {
+      const arr = m.m_aString ?? [];
+      const origArr = origByName.get(m.objectName)?.m_aString ?? [];
+      let tr = 0;
+      for (let i = 0; i < arr.length; i++) if (isTranslated(arr[i], origArr[i] ?? "")) tr++;
+      out.push({ tr, total: arr.length });
+    }
+    return out;
+  }, [done, origByName]);
+
   // Список Ms01DataMessage для лівої колонки (фільтр).
   const filteredIdxs = useMemo(() => {
     const lower = search.trim().toLowerCase();
@@ -276,7 +291,10 @@ export function D4TextItemEditor({ file, onClose }: Props) {
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       const ctrl = e.ctrlKey || e.metaKey;
-      if (ctrl && !e.shiftKey && (e.code === "KeyH" || e.code === "KeyF")) {
+      // Якщо фокус усередині Monaco (popup-редактор відкрито) — не перехоплюємо
+      // Ctrl+F/Ctrl+H, хай спрацює власний find/replace-віджет Monaco.
+      const inMonaco = e.target instanceof Element && e.target.closest(".monaco-editor");
+      if (ctrl && !e.shiftKey && !inMonaco && (e.code === "KeyH" || e.code === "KeyF")) {
         e.preventDefault();
         e.stopPropagation();
         setFindOpen(true);
@@ -469,9 +487,7 @@ export function D4TextItemEditor({ file, onClose }: Props) {
           <div className="flex-1 overflow-y-auto" style={{ scrollbarWidth: "thin" }}>
             {filteredIdxs.map((idx) => {
               const m = done[idx];
-              const total = m.m_aString?.length ?? 0;
-              const origArr = origByName.get(m.objectName)?.m_aString ?? [];
-              const tr = (m.m_aString ?? []).filter((s, i) => isTranslated(s, origArr[i] ?? "")).length;
+              const { tr, total } = perEntryCounts[idx] ?? { tr: 0, total: m.m_aString?.length ?? 0 };
               const isActive = idx === activeIdx;
               const preview = m.m_aString?.[0] ?? m.fileName ?? "";
               const mm = meta[m.objectName] ?? {};
@@ -583,8 +599,11 @@ export function D4TextItemEditor({ file, onClose }: Props) {
                 </div>
               </div>
 
-              {/* Field sections */}
+              {/* Field sections — key прив'язаний до активного запису, щоб при
+                  перемиканні запису локальний monacoIdx скидався (не редагувати
+                  чужий запис через відкритий popup). */}
               <FieldSection
+                key={`${activeMsg.objectName}:m_aString`}
                 label="m_aString"
                 description={t("d4.item.field.m_aString")}
                 items={activeMsg.m_aString ?? []}
@@ -594,6 +613,7 @@ export function D4TextItemEditor({ file, onClose }: Props) {
               />
               {(activeMsg.m_aWord?.length ?? 0) > 0 && (
                 <FieldSection
+                  key={`${activeMsg.objectName}:m_aWord`}
                   label="m_aWord"
                   description={t("d4.item.field.m_aWord")}
                   items={activeMsg.m_aWord}
@@ -603,6 +623,7 @@ export function D4TextItemEditor({ file, onClose }: Props) {
               )}
               {(activeMsg.m_aVoiceIdStr?.length ?? 0) > 0 && (
                 <FieldSection
+                  key={`${activeMsg.objectName}:m_aVoiceIdStr`}
                   label="m_aVoiceIdStr"
                   description={t("d4.item.field.m_aVoiceIdStr")}
                   items={activeMsg.m_aVoiceIdStr}

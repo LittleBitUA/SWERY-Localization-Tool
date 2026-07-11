@@ -130,7 +130,7 @@ export function dismissToast(id: number) {
 /** Помилка: червона рамка, 10с (довше за info — щоб встигли прочитати). */
 export function showError(body: string | unknown, title?: string) {
   const msg = body instanceof Error ? body.message : typeof body === "string" ? body : String(body);
-  return showToast(msg, { title: title ?? "Помилка", tone: "error", durationMs: 10000 });
+  return showToast(msg, { title: title ?? t("components.toast.error"), tone: "error", durationMs: 10000 });
 }
 
 /** Успіх: зелена рамка, 4с (короткий ack). */

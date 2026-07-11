@@ -35,12 +35,17 @@ interface Props {
   onClose: () => void;
 }
 
-const LANG_LABELS = ["EN", "JP", "CN?", "KR?"];
-const LANG_HINTS = [
-  "Англійська (зазвичай тут пишеться UA-переклад)",
-  "Японська (оригінал гри)",
-  "Третій слот — можливо китайська",
-  "Четвертий слот — можливо корейська",
+const LANG_LABEL_KEYS = [
+  "missing.item.lang.en.label",
+  "missing.item.lang.jp.label",
+  "missing.item.lang.cn.label",
+  "missing.item.lang.kr.label",
+];
+const LANG_HINT_KEYS = [
+  "missing.item.lang.en.hint",
+  "missing.item.lang.jp.hint",
+  "missing.item.lang.cn.hint",
+  "missing.item.lang.kr.hint",
 ];
 
 export function MissingItemEditor({ item, prev, next, onChange, onSizeChange, targetLang = 0, onJumpPrev, onJumpNext, onClose }: Props) {
@@ -139,9 +144,9 @@ export function MissingItemEditor({ item, prev, next, onChange, onSizeChange, ta
         <div className="px-4 py-2 border-b border-[var(--border-soft)]">
           <div className="flex items-center justify-between mb-1.5 gap-2">
             <span className="text-[10px] font-semibold uppercase tracking-wider text-[var(--text-faint)]">
-              Розмір боксу · слот L{targetLang} ({LANG_LABELS[targetLang] ?? "?"})
+              {t("missing.item.boxSize", { lang: String(targetLang), code: LANG_LABEL_KEYS[targetLang] ? t(LANG_LABEL_KEYS[targetLang]) : "?" })}
             </span>
-            <span className="text-[10px] text-[var(--text-faint)]" title="MsgEnum — позиція у глобальній таблиці box-sizes (IMHeightInfo)">
+            <span className="text-[10px] text-[var(--text-faint)]" title={t("missing.item.enumTitle")}>
               enum {item.msgEnum && item.msgEnum >= 0 ? item.msgEnum : "—"}
             </span>
           </div>
@@ -152,7 +157,7 @@ export function MissingItemEditor({ item, prev, next, onChange, onSizeChange, ta
               className="dp-input !p-1 !text-[12px] tabular-nums w-[80px]"
               value={item.sizes[targetLang].w}
               onChange={(e) => onSizeChange?.(targetLang, parseFloat(e.target.value) || 0, item.sizes![targetLang].h)}
-              title="Ширина боксу (px)"
+              title={t("missing.item.widthTitle")}
             />
             <span className="text-[var(--text-faint)]">×</span>
             <label className="text-[10px] text-[var(--text-faint)] uppercase">H</label>
@@ -161,10 +166,10 @@ export function MissingItemEditor({ item, prev, next, onChange, onSizeChange, ta
               className="dp-input !p-1 !text-[12px] tabular-nums w-[80px]"
               value={item.sizes[targetLang].h}
               onChange={(e) => onSizeChange?.(targetLang, item.sizes![targetLang].w, parseFloat(e.target.value) || 0)}
-              title="Висота боксу (px)"
+              title={t("missing.item.heightTitle")}
             />
             <span className="text-[10px] text-[var(--text-faint)] ml-auto italic">
-              {LANG_HINTS[targetLang]}
+              {LANG_HINT_KEYS[targetLang] ? t(LANG_HINT_KEYS[targetLang]) : ""}
             </span>
           </div>
         </div>

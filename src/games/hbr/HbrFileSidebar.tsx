@@ -154,29 +154,29 @@ export function HbrFileSidebar({
           <div className="flex items-center gap-1.5">
             <input
               className="dp-input flex-1 text-[11px] h-7"
-              placeholder="Пошук файлу…"
+              placeholder={t("hbr.sidebar.searchPlaceholder")}
               value={nameQuery}
               onChange={(e) => setNameQuery(e.target.value)}
             />
             {nameQuery && (
-              <button className="text-[var(--text-faint)] hover:text-[var(--text)] text-[14px] px-1" onClick={() => setNameQuery("")} title="Очистити">×</button>
+              <button className="text-[var(--text-faint)] hover:text-[var(--text)] text-[14px] px-1" onClick={() => setNameQuery("")} title={t("hbr.sidebar.clear")}>×</button>
             )}
           </div>
           <div className="flex gap-1 text-[10px]">
-            <TabBtn active={tab === "all"} onClick={() => setTab("all")}>Усі <span className="text-[var(--text-faint)]">{counts.all}</span></TabBtn>
-            <TabBtn active={tab === "incomplete"} onClick={() => setTab("incomplete")}>Незавершені <span className="text-[var(--text-faint)]">{counts.incomplete}</span></TabBtn>
-            <TabBtn active={tab === "complete"} onClick={() => setTab("complete")}>Готові <span className="text-[var(--text-faint)]">{counts.complete}</span></TabBtn>
+            <TabBtn active={tab === "all"} onClick={() => setTab("all")}>{t("hbr.sidebar.tabAll")} <span className="text-[var(--text-faint)]">{counts.all}</span></TabBtn>
+            <TabBtn active={tab === "incomplete"} onClick={() => setTab("incomplete")}>{t("hbr.sidebar.tabIncomplete")} <span className="text-[var(--text-faint)]">{counts.incomplete}</span></TabBtn>
+            <TabBtn active={tab === "complete"} onClick={() => setTab("complete")}>{t("hbr.sidebar.tabComplete")} <span className="text-[var(--text-faint)]">{counts.complete}</span></TabBtn>
           </div>
           <div className="flex items-center gap-1.5 text-[10px] text-[var(--text-faint)]">
-            <span>Сорт:</span>
+            <span>{t("hbr.sidebar.sortLabel")}</span>
             <select
               className="bg-transparent text-[var(--text)] outline-none cursor-pointer"
               value={sort}
               onChange={(e) => setSort(e.target.value as SortKey)}
             >
-              <option value="name">за ім'ям</option>
-              <option value="percent">за %</option>
-              <option value="size">за розміром</option>
+              <option value="name">{t("hbr.sidebar.sortName")}</option>
+              <option value="percent">{t("hbr.sidebar.sortPercent")}</option>
+              <option value="size">{t("hbr.sidebar.sortSize")}</option>
             </select>
             <span className="ml-auto text-[var(--text-faint)] tabular-nums">{filtered.length}/{files.length}</span>
           </div>
@@ -206,7 +206,7 @@ export function HbrFileSidebar({
         ) : (
           <>
             {filtered.length === 0 && (
-              <div className="px-3 py-4 text-center text-[11px] text-[var(--text-faint)] italic">Нічого не знайдено</div>
+              <div className="px-3 py-4 text-center text-[11px] text-[var(--text-faint)] italic">{t("hbr.sidebar.empty")}</div>
             )}
             {filtered.map((f) => {
               const st = getStats(f);
@@ -255,7 +255,7 @@ export function HbrFileSidebar({
           document.body.style.cursor = "col-resize";
           document.body.style.userSelect = "none";
         }}
-        title="Потягни для зміни ширини"
+        title={t("hbr.sidebar.resizeHint")}
       />
     </aside>
   );

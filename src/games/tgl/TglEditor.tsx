@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { useTglStore } from "./store";
 import { isTglTranslated, tglStats } from "./parser";
-import { useT } from "../../lib/i18n";
+import { useT, localizeBackendError } from "../../lib/i18n";
 import { alert as showAlert, confirm as showConfirm } from "../../lib/dialogs";
 import heroImage from "./assets/tgl-hero.png";
 import { TglTextEditor } from "./TglTextEditor";
@@ -231,7 +231,7 @@ export function TglEditor({ onHome }: TglEditorProps) {
       const r = await w.tglMonoExport({ bundlePath: bp, outDir: out, nameFilter: filter || undefined });
       try { await w.saveSettings({ tglMonoBundlePath: bp, tglMonoOutDir: out, tglMonoFilter: filter }); } catch {}
       if (!r.ok) {
-        await showAlert(t("tgl.mono.exportErrTitle"), r.error ?? "?", { tone: "danger" });
+        await showAlert(t("tgl.mono.exportErrTitle"), localizeBackendError(r.error) || "?", { tone: "danger" });
         return;
       }
       const n = r.summary?.total ?? 0;
@@ -285,7 +285,7 @@ export function TglEditor({ onHome }: TglEditorProps) {
       const r = await w.tglMonoImport({ bundlePath: bp, jsonPath: jp });
       try { await w.saveSettings({ tglMonoBundlePath: bp }); } catch {}
       if (!r.ok) {
-        await showAlert(t("tgl.mono.importErrTitle"), r.error ?? "?", { tone: "danger" });
+        await showAlert(t("tgl.mono.importErrTitle"), localizeBackendError(r.error) || "?", { tone: "danger" });
         return;
       }
       await showAlert(t("tgl.mono.importDoneTitle"), t("tgl.mono.importDoneBody", { bundle: bp, json: jp }), { tone: "success" });
@@ -304,7 +304,7 @@ export function TglEditor({ onHome }: TglEditorProps) {
     try {
       const res = await pack();
       if (res.error) {
-        await showAlert(t("tgl.pack.errorTitle"), res.error, { tone: "danger" });
+        await showAlert(t("tgl.pack.errorTitle"), localizeBackendError(res.error), { tone: "danger" });
         return;
       }
       setPackSuccess({

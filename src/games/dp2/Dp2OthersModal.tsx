@@ -9,6 +9,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { DP2_OTHERS_PATH_IDS } from "./othersPathIds";
 import { useStore } from "../../lib/store";
+import { localizeBackendError } from "../../lib/i18n";
 
 interface FileRow {
   pathId: number;
@@ -97,7 +98,7 @@ export function Dp2OthersModal({ open, onClose }: Props) {
     try {
       const r = await window.dp2.dp2OthersExtract({ pathIds });
       if (!r.ok) {
-        setLastResult({ ok: false, message: r.error ?? "?" });
+        setLastResult({ ok: false, message: localizeBackendError(r.error) || "?" });
         return;
       }
       const exported = r.summary?.exported?.length ?? 0;

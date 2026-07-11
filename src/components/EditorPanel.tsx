@@ -358,7 +358,7 @@ export function EditorPanel() {
             <button
               className="text-[10px] uppercase tracking-wider text-[var(--accent)] hover:underline"
               onClick={() => setDiffOpen(true)}
-              title="Side-by-side порівняння оригіналу і перекладу"
+              title={t("components.editorPanel.diffTooltip")}
               disabled={!active.originalEn && !active.jp}
             >
               Diff
