@@ -12,7 +12,11 @@
     "electron": "node scripts/run-electron.cjs",
     "build": "vite build",
     "build:exe": "npm run build && electron-builder --win portable",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "typecheck": "tsc --noEmit",
+    "i18n:check": "node scripts/i18n-check.cjs",
+    "check": "npm run typecheck && npm run i18n:check",
+    "release": "node scripts/release.cjs"
   },
   "dependencies": {
     "@monaco-editor/react": "^4.6.0",

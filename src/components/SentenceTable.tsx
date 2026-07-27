@@ -35,6 +35,13 @@ const Dp2TableRow = memo(function Dp2TableRow(props: {
       ref={isActive ? registerActiveRef : undefined}
       onClick={(ev) => onClick(i, ev)}
       onContextMenu={(ev) => onContext(i, ev)}
+      // CSS-віртуалізація: для off-screen рядків браузер пропускає layout+paint,
+      // а contain-intrinsic-size «auto» запам'ятовує реальну висоту (працює зі
+      // змінною висотою wrap-режиму). ~18K рядків DP2 монтуються без jank.
+      style={{
+        contentVisibility: "auto" as React.CSSProperties["contentVisibility"],
+        containIntrinsicSize: "auto 44px",
+      }}
       className={`cursor-pointer border-b border-[var(--border-soft)] transition-colors ${
         isActive ? "bg-[var(--row-active)]"
         : isSelected ? "bg-[var(--accent-soft)]"
